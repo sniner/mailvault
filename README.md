@@ -11,10 +11,11 @@
 After years of Python packaging being an adventure in its own right --
 virtualenvs, pip, pipx, setup.py, setuptools, poetry, and whatever else came
 and went -- [uv](https://docs.astral.sh/uv/) has finally brought sanity to the
-table. The recommended way to install `imapbackup` is:
+table. The recommended way to install `imapbackup` is straight from the
+repository:
 
 ```console
-$ uv tool install imapbackup
+$ uv tool install git+https://github.com/sniner/imapbackup
 ```
 
 This installs the three CLI tools (`ib-mailbox`, `ib-archive`, `ib-copy`)
@@ -24,10 +25,16 @@ manual virtualenv juggling required.
 To include support for Microsoft 365 mailboxes via MS Graph:
 
 ```console
-$ uv tool install imapbackup[graph]
+$ uv tool install "imapbackup[graph] @ git+https://github.com/sniner/imapbackup"
 ```
 
-Pre-compiled Windows executables are also available on the
+Add `@v0.4.0` to the URL to pin a specific release.
+
+> **Note:** this project is not published on PyPI -- the name `imapbackup`
+> there belongs to an unrelated project. Install from this repository or from
+> the release artifacts, not from PyPI.
+
+Wheels and pre-compiled Windows executables are also available on the
 [GitHub Releases](https://github.com/sniner/imapbackup/releases) page.
 
 
