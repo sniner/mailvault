@@ -63,6 +63,26 @@ def parse_arguments() -> argparse.Namespace:
         help="Destination base directory",
     )
 
+    verify_parser = subparsers.add_parser(
+        "verify",
+        description="Compare the mailbox against the local archive and report gaps",
+    )
+    verify_parser.add_argument(
+        "--repair",
+        action="store_true",
+        help="Download and store the missing emails",
+    )
+    verify_parser.add_argument(
+        "--compress",
+        action="store_true",
+        help="Compress stored emails with zstd",
+    )
+    verify_parser.add_argument(
+        "destination",
+        type=pathlib.Path,
+        help="Archive directory to check",
+    )
+
     args = parser.parse_args()
     if args.subcommand is None:
         parser.print_help()
@@ -70,6 +90,26 @@ def parse_arguments() -> argparse.Namespace:
     if args.config is None:
         parser.error("the following arguments are required: --config")
     return args
+
+
+def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: bool) -> None:
+    for r in results:
+        line = (
+            f"{job_name}::{r.folder}: {r.on_server:,} on server, {r.missing:,} not archived"
+        )
+        if repaired:
+            line += f", {r.restored:,} restored"
+            if r.failed:
+                line += f", {r.failed:,} failed"
+        print(line)
+    total_missing = sum(r.missing for r in results)
+    total_restored = sum(r.restored for r in results)
+    if not total_missing:
+        print(f"{job_name}: archive is complete")
+    elif not repaired:
+        print(f"{job_name}: {total_missing:,} message(s) missing, run again with --repair")
+    else:
+        print(f"{job_name}: {total_restored:,} of {total_missing:,} message(s) restored")
 
 
 def run_job(job: conf.JobConfig, args: argparse.Namespace, config: conf.Config) -> None:
@@ -80,6 +120,12 @@ def run_job(job: conf.JobConfig, args: argparse.Namespace, config: conf.Config) 
     elif args.subcommand == "backup":
         compress = args.compress or config.compress
         jobs.backup(job, args.destination, compress=compress)
+    elif args.subcommand == "verify":
+        compress = args.compress or config.compress
+        results = jobs.verify(
+            job, args.destination, repair=args.repair, compress=compress
+        )
+        report_verify(job.name, results, repaired=args.repair)
 
 
 def main() -> None:
@@ -100,7 +146,11 @@ def main() -> None:
             for name in unknown:
                 log.error("Unknown job: %s", name)
         for job in selected:
-            run_job(job, args, config)
+            try:
+                run_job(job, args, config)
+            except Exception as exc:
+                # One broken job must not stop the remaining ones.
+                log.exception("Job '%s' failed: %s", job.name, exc)
     except Exception as exc:
         log.exception("Fatal error: %s", exc)
     except KeyboardInterrupt:

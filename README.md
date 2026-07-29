@@ -35,7 +35,7 @@ Pre-compiled Windows executables are also available on the
 
 `imapbackup` provides three command line tools:
 
-* `ib-mailbox` backs up emails from IMAP mailboxes to a local archive
+* `ib-mailbox` backs up emails from IMAP mailboxes to a local archive and verifies the result
 * `ib-archive` manages the local email archive (import, compress, statistics, etc.)
 * `ib-copy` copies emails between IMAP mailboxes (experimental)
 
@@ -88,6 +88,39 @@ $ ib-mailbox --config example.toml backup ./backup
 
 Use `--compress` to store emails compressed with zstd. Use `--job NAME` to run
 only specific jobs from the configuration file.
+
+### Verify and repair
+
+A backup run can lose individual messages: the server may answer a single
+download with a `504 Gateway Timeout` or drop the connection, and that message
+is skipped. With `incremental = true` the gap is invisible to every later run,
+because the message is older than the snapshot date and thus filtered out.
+
+`verify` compares the mailbox against the archive and reports what is missing:
+
+```console
+$ ib-mailbox --config example.toml verify ./backup
+example.org::INBOX: 77,592 on server, 43 not archived
+example.org: 43 message(s) missing, run again with --repair
+```
+
+The comparison only lists the folder's message headers, which costs a handful
+of requests instead of one download per message — checking a large mailbox
+takes minutes, not hours. With `--repair` the missing messages are downloaded
+and added to the archive:
+
+```console
+$ ib-mailbox --config example.toml verify --repair ./backup
+example.org::INBOX: 77,592 on server, 43 not archived, 43 restored
+example.org: 43 of 43 message(s) restored
+```
+
+Messages are matched by their `Message-ID`. A message whose `Message-ID` is
+missing or ambiguous is treated as not archived and fetched again, which is
+harmless: the content-addressed storage recognizes the duplicate and discards
+it. `verify` requires a job with `with_db = true` and does not support
+`exchange_journal` jobs, because there the archived message and the server's
+journal envelope carry different `Message-ID`s.
 
 
 ## `ib-archive`
@@ -384,6 +417,7 @@ with a warning.
 | `delete_after_export` | `false` | Delete emails from the server after export (use with caution) |
 | `with_db` | `true` | Maintain a metadata SQLite database in the archive |
 | `incremental` | `true` | Only download messages added since the last backup run (requires `with_db`) |
+| `max_retries` | `5` | Retries for failed MS Graph requests (throttling, gateway and connection errors) |
 | `compress` | `false` | Compress stored emails with zstd (global option) |
 
 

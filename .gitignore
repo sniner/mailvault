@@ -12,5 +12,4 @@ __pycache__/
 !example.job
 !example.toml
 
-/archive
-/testarchive
+/archive*

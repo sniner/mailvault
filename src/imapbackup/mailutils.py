@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import collections.abc
 import email.message
 import email.parser
@@ -73,8 +74,90 @@ def message_id(msg: email.message.EmailMessage) -> str:
     return msg.get("Message-Id") or ""
 
 
+def normalize_message_id(value: str | None) -> str:
+    """Normalise a Message-ID so that values from different sources compare equal.
+
+    Besides folding whitespace, angle brackets and case, the value is run through
+    the same header parser that produced the archived Message-ID. That parser
+    silently truncates malformed values -- "<a$b@host@domain.example>" becomes
+    "<a$b@host>" -- so a value reported verbatim by a server would never match its
+    archived counterpart unless both are treated identically.
+
+    Returns an empty string for missing or unusable values, which callers must
+    treat as "cannot be matched" rather than as a valid key.
+    """
+    if not value:
+        return ""
+    collapsed = " ".join(value.split())
+    if not collapsed:
+        return ""
+    parsed = str(email.policy.default.header_fetch_parse("Message-Id", collapsed))
+    return parsed.strip().strip("<>").strip().casefold()
+
+
+class MessageIdIndex:
+    """Lookup of archived Message-IDs that tolerates server-side truncation.
+
+    Exchange caps the Message-ID it reports in folder listings at around 255
+    characters, so a long value can reach us as a strict prefix of the one stored
+    in the archive. Exact hits are answered from a set; only values long enough to
+    have been truncated fall back to a prefix search, and only over those archived
+    IDs that are long enough to be affected -- normally a mere handful.
+
+    All values are expected to be normalised with normalize_message_id().
+    """
+
+    # Well below the observed 255 character cap: only keeps the prefix search
+    # small, so its exact value is not critical.
+    TRUNCATION_THRESHOLD = 128
+
+    def __init__(self, message_ids: collections.abc.Iterable[str]):
+        self._exact = {mid for mid in message_ids if mid}
+        self._long = sorted(
+            mid for mid in self._exact if len(mid) > self.TRUNCATION_THRESHOLD
+        )
+
+    def __contains__(self, value: str) -> bool:
+        if not value:
+            return False
+        if value in self._exact:
+            return True
+        if len(value) <= self.TRUNCATION_THRESHOLD:
+            return False
+        # In a sorted list, if any entry starts with `value`, the first entry
+        # that is >= `value` is one of them.
+        pos = bisect.bisect_left(self._long, value)
+        return pos < len(self._long) and self._long[pos].startswith(value)
+
+    def __len__(self) -> int:
+        return len(self._exact)
+
+
 def subject(msg: email.message.EmailMessage) -> str:
     return msg.get("Subject") or ""
+
+
+def metadata(
+    msg: bytes,
+    mailbox: str,
+    folder: str,
+    store_id: str,
+    labels: list[str] | None = None,
+) -> dict:
+    """Extract the metadata record that the storage database is fed with."""
+    header = decode_email_header(msg)
+    from_addrs, to_addrs = addresses(header)
+    return {
+        "mailbox": mailbox,
+        "folder": folder,
+        "email_id": message_id(header),
+        "store_id": store_id,
+        "labels": labels if labels is not None else [folder],
+        "sender": from_addrs,
+        "recipients": to_addrs,
+        "date": date(header),
+        "subject": subject(header),
+    }
 
 
 def unwrap_exchange_journal_item(msg: io.IOBase | bytes) -> bytes | None:

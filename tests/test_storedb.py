@@ -273,3 +273,43 @@ def test_store_db_add_message_idempotent(tmp_path):
         id1 = db.add_message(store_id="same_hash", email_id="<a@b>", date=date, subject="First")
         id2 = db.add_message(store_id="same_hash", email_id="<a@b>", date=date, subject="First")
         assert id1 == id2
+
+
+# ---------------------------------------------------------------------------
+# get_known_message_ids
+# ---------------------------------------------------------------------------
+
+def test_get_known_message_ids(tmp_path):
+    with storedb.StoreDatabase(tmp_path / "test.db") as db:
+        date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        mb_id = db.add_mailbox("mbox")
+        other_mb = db.add_mailbox("other-mbox")
+        inbox = db.add_label("INBOX")
+        sent = db.add_label("Sent")
+
+        msg = db.add_message("hash_a", "<A@example.com>", date, "A", mailbox_id=mb_id)
+        db.add_message_labels(msg, "INBOX")
+        other_folder = db.add_message("hash_b", "<b@example.com>", date, "B", mailbox_id=mb_id)
+        db.add_message_labels(other_folder, "Sent")
+        other_mailbox = db.add_message(
+            "hash_c", "<c@example.com>", date, "C", mailbox_id=other_mb
+        )
+        db.add_message_labels(other_mailbox, "INBOX")
+
+        known = db.get_known_message_ids(mb_id, inbox)
+        # Normalised: no angle brackets, case-folded.
+        assert known == {"a@example.com"}
+        assert db.get_known_message_ids(mb_id, sent) == {"b@example.com"}
+
+
+def test_get_known_message_ids_skips_unusable(tmp_path):
+    """Messages without a Message-ID cannot be matched and must not be listed."""
+    with storedb.StoreDatabase(tmp_path / "test.db") as db:
+        date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        mb_id = db.add_mailbox("mbox")
+        inbox = db.add_label("INBOX")
+        for store_id, email_id in [("h1", ""), ("h2", "<>"), ("h3", "<ok@example.com>")]:
+            msg = db.add_message(store_id, email_id, date, "S", mailbox_id=mb_id)
+            db.add_message_labels(msg, "INBOX")
+
+        assert db.get_known_message_ids(mb_id, inbox) == {"ok@example.com"}

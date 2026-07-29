@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import collections.abc
+import dataclasses
 import imaplib
 import logging
 import pathlib
@@ -17,36 +19,166 @@ class JobError(Exception):
     pass
 
 
-def backup(job: conf.JobConfig, store_path: pathlib.Path, compress: bool = False) -> None:
-    def _store_metadata(email: dict):
+@dataclasses.dataclass
+class VerifyResult:
+    """Outcome of comparing one server folder against the local archive."""
+
+    folder: str
+    on_server: int = 0
+    missing: int = 0
+    restored: int = 0
+    failed: int = 0
+
+
+def _metadata_writer(
+    db: storedb.StoreDatabaseConnection, mailbox_id: int
+) -> collections.abc.Callable[[dict], None]:
+    """Build the callback that records a message's metadata in the store database."""
+
+    def _store_metadata(email: dict) -> None:
         msg = db.add_message(
             email["store_id"], email["email_id"], email["date"], email["subject"]
         )
-        db.assign_message_to_mailbox(msg, mb_id)
+        db.assign_message_to_mailbox(msg, mailbox_id)
         db.add_message_labels(msg, *email["labels"])
         db.add_message_sender(msg, *email["sender"])
         db.add_message_recipients(msg, *email["recipients"])
 
+    return _store_metadata
+
+
+def backup(job: conf.JobConfig, store_path: pathlib.Path, compress: bool = False) -> None:
     with mailbox.Mailbox(job=job) as mb:
         store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
         if job.with_db:
             with storedb.StoreDatabase(path=store_path / "store.db") as db:
                 mb_id = db.add_mailbox(job.name)
+                _store_metadata = _metadata_writer(db, mb_id)
                 folders = job.folders if job.folders else mb.folders()
                 for folder in folders:
                     folder_id = db.add_label(folder)
                     start_date = db.get_snapshot_date(mb_id, folder_id) if job.incremental else None
                     snapshot_date = datetime.now(timezone.utc)
-                    mb.folder_backup(
+                    result = mb.folder_backup(
                         folder, store, since=start_date, callback=_store_metadata
                     )
-                    db.set_snapshot(mb_id, folder_id, date=snapshot_date)
+                    if result.complete:
+                        db.set_snapshot(mb_id, folder_id, date=snapshot_date)
+                    else:
+                        # Advancing the snapshot now would push the failed messages
+                        # out of every future date filter, losing them permanently.
+                        log.warning(
+                            "%s::%s: %s of %s message(s) failed, snapshot not advanced",
+                            job.name, folder, result.failed, result.total,
+                        )
         else:
             if job.folders:
                 for folder in job.folders:
                     mb.folder_backup(folder, store)
             else:
                 mb.full_backup(store)
+
+
+def _verify_folder(
+    mb: mailbox.MailboxClient,
+    db: storedb.StoreDatabaseConnection,
+    store: cas.ContentAddressedStorage,
+    mailbox_id: int,
+    job_name: str,
+    folder: str,
+    repair: bool = False,
+) -> VerifyResult:
+    """Compare one server folder against the archive and optionally refetch gaps.
+
+    Matching is done by Message-ID, which is cheap: listing a folder's headers
+    costs a handful of requests, while re-downloading it costs one request per
+    message. A message counts as missing whenever its Message-ID is not archived
+    for this folder, so messages with an absent or duplicated Message-ID may be
+    fetched needlessly -- that is deliberate, since the content-addressed storage
+    discards the redundant copy anyway. The reverse mistake, skipping a message
+    that really is missing, is the one worth avoiding.
+    """
+    label_id = db.add_label(folder)
+    known = mailutils.MessageIdIndex(db.get_known_message_ids(mailbox_id, label_id))
+    log.info("%s::%s: %s message(s) in archive", job_name, folder, len(known))
+
+    result = VerifyResult(folder=folder)
+    missing: list[mailbox.MessageRef] = []
+    for ref in mb.message_index(folder):
+        result.on_server += 1
+        if mailutils.normalize_message_id(ref.message_id) not in known:
+            missing.append(ref)
+        if result.on_server % 5000 == 0:
+            log.info("%s::%s: %s message(s) indexed", job_name, folder, result.on_server)
+    result.missing = len(missing)
+
+    log.info(
+        "%s::%s: %s of %s message(s) on the server are not archived",
+        job_name, folder, result.missing, result.on_server,
+    )
+    if not repair or not missing:
+        return result
+
+    store_metadata = _metadata_writer(db, mailbox_id)
+    for ref in missing:
+        label = ref.message_id or ref.msg_id
+        try:
+            msg = mb.fetch_message(ref.msg_id, folder)
+        except Exception as exc:
+            log.error("%s::%s: download failed for %s: %s", job_name, folder, label, exc)
+            result.failed += 1
+            continue
+        try:
+            status, store_id, _path = store.add(msg)
+            store_metadata(
+                mailutils.metadata(msg, mailbox=job_name, folder=folder, store_id=store_id)
+            )
+        except Exception as exc:
+            log.exception("%s::%s: storing %s failed: %s", job_name, folder, label, exc)
+            result.failed += 1
+            continue
+        log.info("%s::%s: restored %s: %s id=%s", job_name, folder, label, status, store_id)
+        result.restored += 1
+
+    return result
+
+
+def verify(
+    job: conf.JobConfig,
+    store_path: pathlib.Path,
+    repair: bool = False,
+    compress: bool = False,
+) -> list[VerifyResult]:
+    """Check the archive for messages the server still has but the archive lacks.
+
+    Gaps arise when individual downloads fail during a backup run. The snapshot
+    date of an incremental job hides them from every later run, so they need an
+    explicit comparison to be found. With `repair` the missing messages are
+    fetched and added to the archive. The snapshot dates are left untouched.
+    """
+    if not job.with_db:
+        raise JobError(f"{job.name}: verify requires a job with 'with_db' enabled")
+    if job.exchange_journal:
+        raise JobError(
+            f"{job.name}: verify does not support 'exchange_journal' jobs, because the"
+            " archive holds the unwrapped message whose Message-ID differs from the"
+            " journal envelope reported by the server"
+        )
+
+    results: list[VerifyResult] = []
+    with mailbox.Mailbox(job=job) as mb:
+        store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
+        with storedb.StoreDatabase(path=store_path / "store.db") as db:
+            mb_id = db.add_mailbox(job.name)
+            folders = job.folders if job.folders else list(mb.folders())
+            for folder in folders:
+                try:
+                    results.append(
+                        _verify_folder(mb, db, store, mb_id, job.name, folder, repair=repair)
+                    )
+                except Exception as exc:
+                    log.error("%s::%s: verify failed: %s", job.name, folder, exc)
+    return results
 
 
 def folder_list(job: conf.JobConfig) -> None:

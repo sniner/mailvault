@@ -86,6 +86,7 @@ class JobConfig:
     move_to_archive: bool = False
     archive_folder: str | None = None
     backend: str = "imap"
+    max_retries: int = 5
     tenant_id: str = ""
     client_id: str = ""
     client_secret: str = ""

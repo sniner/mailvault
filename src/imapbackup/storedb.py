@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
+from imapbackup import mailutils
+
 log = logging.getLogger(__name__)
 
 
@@ -294,6 +296,26 @@ class StoreDatabaseConnection(DatabaseConnection):
                 "INSERT OR IGNORE INTO message_mailbox(message_id, mailbox_id) VALUES (?, ?)",
                 (message_id, mailbox_id),
             )
+
+    def get_known_message_ids(self, mailbox_id: int, label_id: int) -> set[str]:
+        """Return the normalised Message-IDs archived for this mailbox and folder.
+
+        Messages without a usable Message-ID are omitted: they cannot serve as a
+        comparison key and must count as "not present" so that a verify run
+        re-fetches them (which is harmless, the storage deduplicates by content).
+        """
+        rows = self.execute(
+            """
+            SELECT DISTINCT msg.email_id FROM message msg
+            JOIN message_label USING (message_id)
+            JOIN message_mailbox USING (message_id)
+            WHERE message_label.label_id=? AND message_mailbox.mailbox_id=?
+            """,
+            (label_id, mailbox_id),
+        ).fetchall()
+        known = {mailutils.normalize_message_id(row[0]) for row in rows}
+        known.discard("")
+        return known
 
     def get_message_labels(self, message_id: int) -> list[str]:
         return [

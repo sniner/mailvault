@@ -15,6 +15,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Verify tag matches package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(awk '/^\[project\]/{p=1;next} /^\[/{p=0} p&&/^[[:space:]]*version[[:space:]]*=/{gsub(/^[[:space:]]*version[[:space:]]*=[[:space:]]*"/,"");gsub(/".*$/,"");print;exit}' pyproject.toml)
+          [ "$tag" = "$pkg" ] || { echo "::error::tag v$tag != pyproject.toml $pkg"; exit 1; }
+
+      - name: Extract release notes from CHANGELOG
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v ver="$version" '
+              $0 ~ "^## " ver "( |$|\\()" { grab=1; next }
+              grab && /^## /              { exit }
+              grab                        { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' > release-notes.md
+          [ -s release-notes.md ] || { echo "::error::No CHANGELOG section for $version"; exit 1; }
+          cat release-notes.md
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
@@ -27,7 +44,7 @@ jobs:
           files: |
             dist/*.whl
             dist/*.tar.gz
-          generate_release_notes: true
+          body_path: release-notes.md
 
   build-windows:
     runs-on: windows-latest

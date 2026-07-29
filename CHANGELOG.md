@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.4.0 (2026-07-29)
+
+### Added
+
+- **`ib-mailbox verify`:** compare a mailbox against its local archive and report messages that
+  the server still holds but the archive is missing. Matching is done by Message-ID and only
+  needs the folder listing, so checking a large mailbox takes minutes instead of the hours a
+  full re-download would. With `--repair` the missing messages are fetched and added to the
+  archive. Requires a job with `with_db = true`; not available for `exchange_journal` jobs,
+  where the archived message and the server's journal envelope carry different Message-IDs.
+  Malformed Message-IDs and the length cap Exchange applies to the ones it reports are
+  accounted for, so a repaired archive verifies as complete instead of reporting the same
+  messages again on every run
+
+- **`max_retries` job option** (default 5): how often a failed request to the MS Graph API is
+  retried
+
+### Fixed
+
+- **MS Graph backend:** transient HTTP failures (`429`, `500`, `502`, `503`, `504`, `408`) and
+  connection/timeout errors are now retried with exponential backoff, honouring the
+  `Retry-After` header. Previously any such failure made the affected message be skipped
+  silently, which regularly cost single messages during long export runs
+
+- **Incremental backups no longer hide failed downloads.** The snapshot date is only advanced
+  when every message of a folder was archived. Previously it advanced regardless, so messages
+  lost to a failed download fell outside the date filter of every later run and were never
+  picked up again. Existing archives with such gaps can be repaired with `ib-mailbox verify
+  --repair`
+
+- **`ib-mailbox`:** a job that fails no longer prevents the remaining jobs of a config file
+  from running
+
 ## 0.3.0 (2026-03-28)
 
 This is a major release with several **breaking changes**. If you are upgrading

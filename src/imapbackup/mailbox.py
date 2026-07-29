@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import collections.abc
+import dataclasses
 import functools
 import imaplib
 import logging
@@ -35,6 +36,43 @@ class MailboxError(Exception):
     pass
 
 
+# Index page size for message_index(); only headers are fetched, no bodies.
+INDEX_CHUNK_SIZE = 500
+
+
+@dataclasses.dataclass
+class BackupResult:
+    """Outcome of a folder backup.
+
+    `failed` counts messages that were seen on the server but could not be
+    stored locally. A run with failures is incomplete, so the caller must not
+    advance the incremental snapshot — otherwise those messages would fall
+    outside the date filter of every future run and stay lost for good.
+    """
+
+    total: int = 0
+    stored: int = 0
+    failed: int = 0
+
+    @property
+    def complete(self) -> bool:
+        """True if every message seen on the server was accounted for."""
+        return self.failed == 0
+
+
+@dataclasses.dataclass(frozen=True)
+class MessageRef:
+    """Reference to a message on the server, without its content.
+
+    `msg_id` is backend-specific (IMAP UID, Graph message id) and only valid
+    together with the folder it was listed from.
+    """
+
+    msg_id: Any
+    message_id: str
+    date: datetime | None = None
+
+
 class MailboxClient(Protocol):
     """Protocol defining the interface for mailbox backends.
 
@@ -52,7 +90,13 @@ class MailboxClient(Protocol):
         store: cas.ContentAddressedStorage,
         since: datetime | None = ...,
         callback: collections.abc.Callable[[dict], None] | None = ...,
-    ) -> int: ...
+    ) -> BackupResult: ...
+
+    def message_index(
+        self, folder_name: str, since: datetime | None = ...,
+    ) -> collections.abc.Generator[MessageRef, None, None]: ...
+
+    def fetch_message(self, msg_id: Any, folder_name: str) -> bytes: ...
 
     def full_backup(
         self,
@@ -156,6 +200,7 @@ class ImapClient:
         message_ids: list[int],
         chunk_size: int = 10,
         delete: bool = False,
+        result: BackupResult | None = None,
     ) -> collections.abc.Generator[tuple[int, bytes, datetime | None], None, None]:
         for msg_ids in utils.chunks(message_ids, chunk_size):
             msg_ids_str = ", ".join([str(i) for i in msg_ids])
@@ -168,6 +213,10 @@ class ImapClient:
                     yield msg_id, msg_data[b"RFC822"], msg_data[b"INTERNALDATE"]  # type: ignore
             except (OSError, imaplib.IMAP4.error) as exc:
                 log.exception("%s::%s[%s]: fetch failed: %s", self.job_name, folder_name, msg_id, exc)
+                if result is not None:
+                    # fetch() returns the whole chunk at once, so nothing of it
+                    # was yielded before the failure.
+                    result.failed += len(msg_ids)
             else:
                 if delete:
                     log.debug("%s::%s: deleting %s", self.job_name, folder_name, msg_ids_str)
@@ -181,19 +230,13 @@ class ImapClient:
                 labels = [folder_name] + labels
         else:
             labels = [folder_name]
-        header = mailutils.decode_email_header(msg)
-        from_addrs, to_addrs = mailutils.addresses(header)
-        return {
-            "mailbox": self.mbox.job_name,
-            "folder": folder_name,
-            "email_id": mailutils.message_id(header),
-            "store_id": store_id,
-            "labels": labels,
-            "sender": from_addrs,
-            "recipients": to_addrs,
-            "date": mailutils.date(header),
-            "subject": mailutils.subject(header),
-        }
+        return mailutils.metadata(
+            msg,
+            mailbox=self.mbox.job_name,
+            folder=folder_name,
+            store_id=store_id,
+            labels=labels,
+        )
 
     def _clear_folder(self, folder_name: str) -> None:
         with self.lock:
@@ -211,10 +254,20 @@ class ImapClient:
             except Exception as exc:
                 log.error("%s::%s: %s", self.job_name, folder_name, exc)
 
+    def _search_folder(self, since: datetime | None = None) -> list[int]:
+        """Search the selected folder for messages, optionally limited by date."""
+        if since:
+            start_date = since - timedelta(days=1)
+            query = ["NOT", "DELETED", "SINCE", start_date.date()]
+        else:
+            query = ["NOT", "DELETED"]
+        return self.conn.search(query)  # type: ignore
+
     def _iter_folder(
         self,
         folder_name: str,
         since: datetime | None = None,
+        result: BackupResult | None = None,
     ) -> collections.abc.Generator[tuple[int, bytes, datetime | None], None, None]:
         """Select folder, search and yield messages, handle cleanup.
 
@@ -228,13 +281,10 @@ class ImapClient:
             )
             try:
                 items_in_folder = folder_info[b"EXISTS"]
-                if since:
-                    start_date = since - timedelta(days=1)
-                    query = ["NOT", "DELETED", "SINCE", start_date.date()]
-                else:
-                    query = ["NOT", "DELETED"]
-                message_ids = self.conn.search(query)  # type: ignore
+                message_ids = self._search_folder(since)
                 items_found = len(message_ids)
+                if result is not None:
+                    result.total = items_found
                 if items_found != items_in_folder:
                     log.info(
                         "%s::%s: found %s/%s messages",
@@ -249,7 +299,7 @@ class ImapClient:
                     )
                 processed = 0
                 for msg_id, msg, msg_date in self._walk_folder(
-                    folder_name, message_ids, delete=False
+                    folder_name, message_ids, delete=False, result=result
                 ):
                     yield msg_id, msg, msg_date
                     processed += 1
@@ -275,9 +325,9 @@ class ImapClient:
         store: cas.ContentAddressedStorage,
         since: datetime | None = None,
         callback: collections.abc.Callable[[dict], None] | None = None,
-    ) -> int:
-        counter = 0
-        for msg_id, msg, _ in self._iter_folder(folder_name, since):
+    ) -> BackupResult:
+        result = BackupResult()
+        for msg_id, msg, _ in self._iter_folder(folder_name, since, result=result):
             if self.exchange_journal:
                 msg = mailutils.unwrap_exchange_journal_item(msg)
                 if msg is None:
@@ -297,13 +347,13 @@ class ImapClient:
                             msg_id,
                         )
                     continue
-            result, store_id, _path = store.add(msg)
+            status, store_id, _path = store.add(msg)
             log.info(
                 "%s::%s[%s]: %s: id=%s",
                 self.job_name,
                 folder_name,
                 msg_id,
-                result,
+                status,
                 store_id,
             )
             if callback:
@@ -323,11 +373,12 @@ class ImapClient:
                         msg_id,
                         exc,
                     )
+                    result.failed += 1
                     continue
-            counter += 1
+            result.stored += 1
         if self.gmail and self.trash_folder:
             self._clear_folder(self.trash_folder)
-        return counter
+        return result
 
     def full_backup(
         self,
@@ -349,6 +400,48 @@ class ImapClient:
         for msg_id, msg, msg_date in self._iter_folder(folder_name, since):
             log.info("%s::%s[%s]: fetched", self.job_name, folder_name, msg_id)
             yield msg_id, msg_date, msg
+
+    def message_index(
+        self, folder_name: str, since: datetime | None = None
+    ) -> collections.abc.Generator[MessageRef, None, None]:
+        """List the folder's messages by Message-ID only, without fetching bodies."""
+        with self.lock:
+            self.conn.select_folder(folder_name, readonly=True)
+            try:
+                message_ids = self._search_folder(since)
+                log.info(
+                    "%s::%s: indexing %s messages",
+                    self.job_name, folder_name, len(message_ids),
+                )
+                for chunk in utils.chunks(message_ids, INDEX_CHUNK_SIZE):
+                    try:
+                        fetched = self.conn.fetch(chunk, ["ENVELOPE"])
+                    except (OSError, imaplib.IMAP4.error) as exc:
+                        raise MailboxError(
+                            f"{folder_name}: indexing failed: {exc}"
+                        ) from exc
+                    for msg_id, msg_data in fetched.items():
+                        envelope = msg_data[b"ENVELOPE"]
+                        raw_id = getattr(envelope, "message_id", None)
+                        yield MessageRef(
+                            msg_id=msg_id,
+                            message_id=raw_id.decode("ascii", "replace") if raw_id else "",
+                            date=getattr(envelope, "date", None),
+                        )
+            finally:
+                self.conn.unselect_folder()
+
+    def fetch_message(self, msg_id: int, folder_name: str) -> bytes:
+        """Fetch a single message by UID from the given folder."""
+        with self.lock:
+            self.conn.select_folder(folder_name, readonly=True)
+            try:
+                msg_data = self.conn.fetch([msg_id], ["RFC822"]).get(msg_id)
+                if not msg_data or b"RFC822" not in msg_data:
+                    raise MailboxError(f"{folder_name}[{msg_id}]: message not found")
+                return msg_data[b"RFC822"]  # type: ignore[return-value]
+            finally:
+                self.conn.unselect_folder()
 
     def save_message(self, msg: bytes, folder_name: str, date: datetime | None = None) -> None:
         with self.lock:

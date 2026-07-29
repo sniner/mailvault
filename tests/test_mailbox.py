@@ -347,8 +347,10 @@ class TestFolderBackup:
         client = _make_client(conn=conn)
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
 
-        count = client.folder_backup("INBOX", store)
-        assert count == 1
+        result = client.folder_backup("INBOX", store)
+        assert result.stored == 1
+        assert result.failed == 0
+        assert result.complete
         assert len(list(store.walk())) == 1
 
     def test_callback_receives_metadata(self, tmp_path):
@@ -389,10 +391,12 @@ class TestFolderBackup:
             raise ValueError("callback error")
 
         # Should not raise, continues processing
-        count = client.folder_backup("INBOX", store, callback=failing_callback)
-        # counter increments only after successful callback, but continues on error
-        # Actually looking at the code: continue skips counter increment
-        assert count == 0  # both callbacks failed
+        result = client.folder_backup("INBOX", store, callback=failing_callback)
+        # The mails are in the store, but without metadata they count as failed,
+        # so the run is incomplete and the snapshot must not advance.
+        assert result.stored == 0
+        assert result.failed == 2
+        assert not result.complete
 
     def test_exchange_journal_unwrap(self, tmp_path):
         journal_eml = (
@@ -427,8 +431,9 @@ class TestFolderBackup:
         client = _make_client(exchange_journal=True, conn=conn)
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
 
-        count = client.folder_backup("INBOX", store)
-        assert count == 1
+        result = client.folder_backup("INBOX", store)
+        assert result.stored == 1
+        assert result.complete
 
     def test_exchange_journal_skip_non_journal(self, tmp_path):
         conn = _make_mock_conn()
@@ -448,8 +453,10 @@ class TestFolderBackup:
         client = _make_client(exchange_journal=True, conn=conn)
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
 
-        count = client.folder_backup("INBOX", store)
-        assert count == 0  # skipped because not a journal item
+        result = client.folder_backup("INBOX", store)
+        assert result.stored == 0  # skipped because not a journal item
+        # A deliberate skip is not a failure: it must not block the snapshot.
+        assert result.complete
 
     def test_gmail_clears_trash(self, tmp_path):
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
@@ -717,3 +724,93 @@ class TestCapabilityDetection:
         client = _make_client(conn=conn)
         assert client.move_cap is False
         assert client.error_folder is None  # disabled without MOVE
+
+
+# ---------------------------------------------------------------------------
+# message_index / fetch_message
+# ---------------------------------------------------------------------------
+
+class _Envelope:
+    """Stand-in for imapclient's Envelope namedtuple."""
+
+    def __init__(self, message_id, date=None):
+        self.message_id = message_id
+        self.date = date
+
+
+class TestMessageIndex:
+    def test_yields_refs_without_bodies(self):
+        conn = _make_mock_conn()
+        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        conn.search.return_value = [1, 2]
+        conn.fetch.return_value = {
+            1: {b"ENVELOPE": _Envelope(b"<a@example.com>", msg_date)},
+            2: {b"ENVELOPE": _Envelope(b"<b@example.com>", msg_date)},
+        }
+        client = _make_client(conn=conn)
+
+        refs = list(client.message_index("INBOX"))
+
+        assert [r.msg_id for r in refs] == [1, 2]
+        assert [r.message_id for r in refs] == ["<a@example.com>", "<b@example.com>"]
+        assert refs[0].date == msg_date
+        # Only envelopes are requested, never RFC822.
+        assert conn.fetch.call_args[0][1] == ["ENVELOPE"]
+
+    def test_missing_message_id_yields_empty_string(self):
+        conn = _make_mock_conn()
+        conn.search.return_value = [1]
+        conn.fetch.return_value = {1: {b"ENVELOPE": _Envelope(None)}}
+        client = _make_client(conn=conn)
+
+        refs = list(client.message_index("INBOX"))
+        assert refs[0].message_id == ""
+
+    def test_folder_is_selected_readonly_and_released(self):
+        conn = _make_mock_conn()
+        conn.search.return_value = []
+        client = _make_client(conn=conn)
+
+        list(client.message_index("Archive"))
+
+        conn.select_folder.assert_called_with("Archive", readonly=True)
+        conn.unselect_folder.assert_called_once()
+
+    def test_since_narrows_the_search(self):
+        conn = _make_mock_conn()
+        conn.search.return_value = []
+        client = _make_client(conn=conn)
+
+        list(client.message_index("INBOX", since=datetime(2026, 2, 20, tzinfo=timezone.utc)))
+
+        query = conn.search.call_args[0][0]
+        assert "SINCE" in query
+
+    def test_fetch_failure_is_reported(self):
+        conn = _make_mock_conn()
+        conn.search.return_value = [1]
+        conn.fetch.side_effect = imaplib.IMAP4.error("connection lost")
+        client = _make_client(conn=conn)
+
+        with pytest.raises(mailbox.MailboxError):
+            list(client.message_index("INBOX"))
+        conn.unselect_folder.assert_called_once()
+
+
+class TestFetchMessage:
+    def test_returns_raw_message(self):
+        conn = _make_mock_conn()
+        conn.fetch.return_value = {7: {b"RFC822": DUMMY_EML}}
+        client = _make_client(conn=conn)
+
+        assert client.fetch_message(7, "INBOX") == DUMMY_EML
+        conn.select_folder.assert_called_with("INBOX", readonly=True)
+        conn.unselect_folder.assert_called_once()
+
+    def test_unknown_uid_raises(self):
+        conn = _make_mock_conn()
+        conn.fetch.return_value = {}
+        client = _make_client(conn=conn)
+
+        with pytest.raises(mailbox.MailboxError):
+            client.fetch_message(7, "INBOX")
