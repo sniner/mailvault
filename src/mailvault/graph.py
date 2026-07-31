@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 import msal
 
-from mailvault import cas, conf, mailbox, mailutils
+from mailvault import backend, cas, conf, mailutils
 
 log = logging.getLogger(__name__)
 
@@ -266,7 +266,7 @@ class MSGraphClient:
         self,
         folder_name: str,
         since: datetime | None = None,
-    ) -> collections.abc.Generator[mailbox.MessageRef, None, None]:
+    ) -> collections.abc.Generator[backend.MessageRef, None, None]:
         """List the folder's messages by Message-ID only, without downloading bodies."""
         folder_id = self._resolve_folder(folder_name)
         for item in self._iter_messages(
@@ -276,7 +276,7 @@ class MSGraphClient:
             select="id,internetMessageId,receivedDateTime",
             page_size=INDEX_PAGE_SIZE,
         ):
-            yield mailbox.MessageRef(
+            yield backend.MessageRef(
                 msg_id=item["id"],
                 message_id=item.get("internetMessageId") or "",
                 date=_parse_graph_datetime(item.get("receivedDateTime")),
@@ -295,12 +295,12 @@ class MSGraphClient:
         store: cas.ContentAddressedStorage,
         since: datetime | None = None,
         callback: collections.abc.Callable[[dict], None] | None = None,
-    ) -> mailbox.BackupResult:
+    ) -> backend.BackupResult:
         folder_id = self._resolve_folder(folder_name)
         messages = list(self._iter_messages(folder_name, folder_id, since))
         log.info("%s::%s: found %s messages", self.job_name, folder_name, len(messages))
 
-        result = mailbox.BackupResult(total=len(messages))
+        result = backend.BackupResult(total=len(messages))
         for idx, msg_info in enumerate(messages, 1):
             msg_id = msg_info["id"]
             try:
