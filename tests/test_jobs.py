@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from mailvault import cas, conf, jobs, mailbox, mailutils, storedb
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -48,6 +47,7 @@ def _make_mock_client():
 # backup
 # ---------------------------------------------------------------------------
 
+
 class TestBackup:
     def test_backup_with_db(self, tmp_path):
         job = _make_job(with_db=True, folders=["INBOX"])
@@ -62,7 +62,10 @@ class TestBackup:
 
         mock_client.folder_backup.assert_called_once()
         call_kwargs = mock_client.folder_backup.call_args
-        assert call_kwargs.kwargs.get("callback") is not None or call_kwargs[1].get("callback") is not None
+        assert (
+            call_kwargs.kwargs.get("callback") is not None
+            or call_kwargs[1].get("callback") is not None
+        )
 
         # DB should exist
         assert (tmp_path / "store.db").exists()
@@ -103,7 +106,7 @@ class TestBackup:
         with storedb.StoreDatabase(tmp_path / "store.db") as db:
             mb_id = db.add_mailbox("test-job")
             label_id = db.add_label("INBOX")
-            snapshot_date = datetime(2026, 2, 1, tzinfo=timezone.utc)
+            snapshot_date = datetime(2026, 2, 1, tzinfo=UTC)
             db.set_snapshot(mb_id, label_id, date=snapshot_date)
 
         with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
@@ -137,15 +140,17 @@ class TestBackup:
 
         def fake_folder_backup(folder_name, store, since=None, callback=None):
             if callback:
-                callback({
-                    "store_id": "abc123",
-                    "email_id": "<test@example.com>",
-                    "date": datetime(2026, 2, 20, tzinfo=timezone.utc),
-                    "subject": "Test",
-                    "labels": ["INBOX"],
-                    "sender": ["sender@example.com"],
-                    "recipients": ["recipient@example.com"],
-                })
+                callback(
+                    {
+                        "store_id": "abc123",
+                        "email_id": "<test@example.com>",
+                        "date": datetime(2026, 2, 20, tzinfo=UTC),
+                        "subject": "Test",
+                        "labels": ["INBOX"],
+                        "sender": ["sender@example.com"],
+                        "recipients": ["recipient@example.com"],
+                    }
+                )
             return mailbox.BackupResult(total=1, stored=1)
 
         mock_client.folder_backup.side_effect = fake_folder_backup
@@ -184,10 +189,12 @@ class TestBackup:
         mock_client.folder_backup.return_value = mailbox.BackupResult(
             total=3, stored=2, failed=1
         )
-        old_snapshot = datetime(2026, 2, 1, tzinfo=timezone.utc)
+        old_snapshot = datetime(2026, 2, 1, tzinfo=UTC)
 
         with storedb.StoreDatabase(tmp_path / "store.db") as db:
-            db.set_snapshot(db.add_mailbox("test-job"), db.add_label("INBOX"), date=old_snapshot)
+            db.set_snapshot(
+                db.add_mailbox("test-job"), db.add_label("INBOX"), date=old_snapshot
+            )
 
         with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -205,6 +212,7 @@ class TestBackup:
 # verify
 # ---------------------------------------------------------------------------
 
+
 def _eml(message_id: str, subject: str = "Subject") -> bytes:
     return (
         b"From: sender@example.com\r\n"
@@ -212,8 +220,7 @@ def _eml(message_id: str, subject: str = "Subject") -> bytes:
         + f"Subject: {subject}\r\n".encode()
         + f"Message-ID: {message_id}\r\n".encode()
         + b"Date: Wed, 20 Feb 2026 12:00:00 +0100\r\n"
-        b"\r\n"
-        + f"Body of {subject}.\r\n".encode()
+        b"\r\n" + f"Body of {subject}.\r\n".encode()
     )
 
 
@@ -224,9 +231,7 @@ def _archive_message(store_path, job_name: str, folder: str, msg: bytes) -> None
     with storedb.StoreDatabase(store_path / "store.db") as db:
         mb_id = db.add_mailbox(job_name)
         writer = jobs._metadata_writer(db, mb_id)
-        writer(
-            mailutils.metadata(msg, mailbox=job_name, folder=folder, store_id=store_id)
-        )
+        writer(mailutils.metadata(msg, mailbox=job_name, folder=folder, store_id=store_id))
 
 
 def _verify_client(index: list[mailbox.MessageRef], bodies: dict[str, bytes]):
@@ -349,9 +354,11 @@ class TestVerify:
 
     def test_verify_leaves_snapshot_untouched(self, tmp_path):
         job = _make_job(with_db=True, folders=["INBOX"])
-        old_snapshot = datetime(2026, 2, 1, tzinfo=timezone.utc)
+        old_snapshot = datetime(2026, 2, 1, tzinfo=UTC)
         with storedb.StoreDatabase(tmp_path / "store.db") as db:
-            db.set_snapshot(db.add_mailbox("test-job"), db.add_label("INBOX"), date=old_snapshot)
+            db.set_snapshot(
+                db.add_mailbox("test-job"), db.add_label("INBOX"), date=old_snapshot
+            )
 
         client = _verify_client([], {})
         with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
@@ -399,6 +406,7 @@ class TestVerify:
 # folder_list
 # ---------------------------------------------------------------------------
 
+
 class TestFolderList:
     def test_prints_folders(self, capsys):
         job = _make_job()
@@ -421,6 +429,7 @@ class TestFolderList:
 # copy
 # ---------------------------------------------------------------------------
 
+
 class TestCopy:
     def test_copy_basic(self):
         source = _make_job(name="src", role="source", folders=["INBOX"])
@@ -432,7 +441,7 @@ class TestCopy:
         mock_dst_client.job_name = "dst"
 
         # get_messages returns (msg_id, msg_date, msg)
-        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         mock_src_client.get_messages.return_value = iter([(1, msg_date, DUMMY_EML)])
 
         with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
@@ -446,15 +455,18 @@ class TestCopy:
 
     def test_copy_with_archive(self):
         source = _make_job(
-            name="src", role="source", folders=["INBOX"],
-            move_to_archive=True, archive_folder="Archive/%Y/%m",
+            name="src",
+            role="source",
+            folders=["INBOX"],
+            move_to_archive=True,
+            archive_folder="Archive/%Y/%m",
         )
         dest = _make_job(name="dst", role="destination")
 
         mock_src_client = _make_mock_client()
         mock_dst_client = _make_mock_client()
 
-        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         mock_src_client.get_messages.return_value = iter([(1, msg_date, DUMMY_EML)])
 
         with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
@@ -469,8 +481,10 @@ class TestCopy:
 
     def test_copy_missing_archive_folder_raises(self):
         source = _make_job(
-            name="src", role="source",
-            move_to_archive=True, archive_folder=None,
+            name="src",
+            role="source",
+            move_to_archive=True,
+            archive_folder=None,
         )
         dest = _make_job(name="dst", role="destination")
 
@@ -498,6 +512,7 @@ class TestCopy:
 # ---------------------------------------------------------------------------
 # update_db_from_archive
 # ---------------------------------------------------------------------------
+
 
 class TestUpdateDbFromArchive:
     def test_rebuilds_db(self, tmp_path):
@@ -528,6 +543,7 @@ class TestUpdateDbFromArchive:
 # ---------------------------------------------------------------------------
 # _format_archive_folder
 # ---------------------------------------------------------------------------
+
 
 class TestFormatArchiveFolder:
     def test_strftime_expansion(self):
