@@ -363,39 +363,32 @@ name = "mailvault"
 version = "0.5.0"
 source = { editable = "." }
 dependencies = [
+    { name = "httpx" },
     { name = "imapclient" },
+    { name = "msal" },
     { name = "pyyaml" },
     { name = "zstandard" },
-]
-
-[package.optional-dependencies]
-graph = [
-    { name = "httpx" },
-    { name = "msal" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "basedpyright" },
-    { name = "mailvault", extra = ["graph"] },
     { name = "pylint" },
     { name = "pytest" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "httpx", marker = "extra == 'graph'" },
+    { name = "httpx" },
     { name = "imapclient" },
-    { name = "msal", marker = "extra == 'graph'" },
+    { name = "msal" },
     { name = "pyyaml" },
     { name = "zstandard" },
 ]
-provides-extras = ["graph"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "basedpyright", specifier = ">=1.38.1" },
-    { name = "mailvault", extras = ["graph"] },
     { name = "pylint" },
     { name = "pytest" },
 ]

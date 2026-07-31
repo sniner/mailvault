@@ -67,7 +67,7 @@ jobs:
       - name: Create virtual environment and install dependencies
         run: |
           uv venv
-          uv pip install .[graph] pyinstaller
+          uv pip install . pyinstaller
 
       - name: Build EXEs with PyInstaller
         run: |

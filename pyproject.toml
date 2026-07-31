@@ -1,23 +1,21 @@
 [project]
 name = "mailvault"
 version = "0.5.0"
-description = "Export and backup tool for IMAP mailboxes"
+description = "Back up and archive email from IMAP and Microsoft 365 (Graph) mailboxes"
 authors = [{ name = "Stefan Schönberger", email = "stefan@sniner.dev" }]
 requires-python = ">=3.11"
 dependencies = [
     "imapclient",
     "pyyaml",
     "zstandard",
+    "msal",
+    "httpx",
 ]
-
-[project.optional-dependencies]
-graph = ["msal", "httpx"]
 
 [dependency-groups]
 dev = [
     "pylint",
     "pytest",
-    "mailvault[graph]",
     "basedpyright>=1.38.1",
 ]
 
