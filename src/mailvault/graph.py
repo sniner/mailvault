@@ -8,13 +8,12 @@ import re
 import time
 import urllib.parse
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+import httpx
+import msal
 
 from mailvault import cas, conf, mailbox, mailutils
-
-if TYPE_CHECKING:
-    import httpx
-    import msal
 
 log = logging.getLogger(__name__)
 
@@ -69,10 +68,6 @@ class MSGraphClient:
     """
 
     def __init__(self, job: conf.JobConfig):
-        import httpx as _httpx
-        import msal as _msal
-
-        self._httpx = _httpx
         self.job = job
         self.job_name = job.name
         self.delete_after_export = job.delete_after_export
@@ -80,16 +75,14 @@ class MSGraphClient:
         self.max_retries = max(job.max_retries, 0)
 
         authority = f"https://login.microsoftonline.com/{job.tenant_id}"
-        self._msal_app: msal.ConfidentialClientApplication = (
-            _msal.ConfidentialClientApplication(
-                client_id=job.client_id,
-                authority=authority,
-                client_credential=job.client_secret,
-            )
+        self._msal_app: msal.ConfidentialClientApplication = msal.ConfidentialClientApplication(
+            client_id=job.client_id,
+            authority=authority,
+            client_credential=job.client_secret,
         )
         token = self._acquire_token()
 
-        self._http: httpx.Client = _httpx.Client(
+        self._http: httpx.Client = httpx.Client(
             headers={
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/json",
@@ -129,17 +122,19 @@ class MSGraphClient:
         while True:
             try:
                 resp = self._http.request(method, url, **kwargs)
-            except self._httpx.TransportError as exc:
+            except httpx.TransportError as exc:
                 if attempt >= self.max_retries:
-                    log.error(
-                        "%s: giving up after %s attempt(s): %s", url, attempt + 1, exc
-                    )
+                    log.error("%s: giving up after %s attempt(s): %s", url, attempt + 1, exc)
                     raise
                 delay = _backoff_delay(attempt)
                 attempt += 1
                 log.warning(
                     "%s: %s, retrying in %.0fs (attempt %s/%s)",
-                    url, exc, delay, attempt, self.max_retries,
+                    url,
+                    exc,
+                    delay,
+                    attempt,
+                    self.max_retries,
                 )
                 time.sleep(delay)
                 continue
@@ -155,7 +150,11 @@ class MSGraphClient:
                 attempt += 1
                 log.warning(
                     "%s: HTTP %s, retrying in %.0fs (attempt %s/%s)",
-                    url, resp.status_code, delay, attempt, self.max_retries,
+                    url,
+                    resp.status_code,
+                    delay,
+                    attempt,
+                    self.max_retries,
                 )
                 time.sleep(delay)
                 continue

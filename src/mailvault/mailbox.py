@@ -93,7 +93,9 @@ class MailboxClient(Protocol):
     ) -> BackupResult: ...
 
     def message_index(
-        self, folder_name: str, since: datetime | None = ...,
+        self,
+        folder_name: str,
+        since: datetime | None = ...,
     ) -> collections.abc.Generator[MessageRef, None, None]: ...
 
     def fetch_message(self, msg_id: Any, folder_name: str) -> bytes: ...
@@ -106,11 +108,16 @@ class MailboxClient(Protocol):
     ) -> None: ...
 
     def get_messages(
-        self, folder_name: str, since: datetime | None = ...,
+        self,
+        folder_name: str,
+        since: datetime | None = ...,
     ) -> collections.abc.Generator[tuple[Any, datetime | None, bytes], None, None]: ...
 
     def save_message(
-        self, msg: bytes, folder_name: str, date: datetime | None = ...,
+        self,
+        msg: bytes,
+        folder_name: str,
+        date: datetime | None = ...,
     ) -> None: ...
 
     def move_message(self, msg_id: Any, folder_name: str) -> None: ...
@@ -166,7 +173,10 @@ class ImapClient:
         self.conn.select_folder(folder_name, readonly=readonly)
 
     def watch_folder(
-        self, folder_name: str, timeout: int = 20, break_out: int = 3600,
+        self,
+        folder_name: str,
+        timeout: int = 20,
+        break_out: int = 3600,
     ) -> collections.abc.Generator[tuple[str, list], None, None]:
         with self.lock:
             start_time = time.monotonic()
@@ -212,7 +222,9 @@ class ImapClient:
                 ).items():
                     yield msg_id, msg_data[b"RFC822"], msg_data[b"INTERNALDATE"]  # type: ignore
             except (OSError, imaplib.IMAP4.error) as exc:
-                log.exception("%s::%s[%s]: fetch failed: %s", self.job_name, folder_name, msg_id, exc)
+                log.exception(
+                    "%s::%s[%s]: fetch failed: %s", self.job_name, folder_name, msg_id, exc
+                )
                 if result is not None:
                     # fetch() returns the whole chunk at once, so nothing of it
                     # was yielded before the failure.
@@ -222,7 +234,9 @@ class ImapClient:
                     log.debug("%s::%s: deleting %s", self.job_name, folder_name, msg_ids_str)
                     self.conn.delete_messages(msg_ids)
 
-    def _collect_metadata(self, folder_name: str, msg_id: Any, store_id: str, msg: bytes) -> dict:
+    def _collect_metadata(
+        self, folder_name: str, msg_id: Any, store_id: str, msg: bytes
+    ) -> dict:
         if self.gmail:
             labels = self.conn.get_gmail_labels(msg_id)
             labels = labels.get(msg_id, [])
@@ -311,7 +325,10 @@ class ImapClient:
                     if processed % 100 == 0:
                         log.info(
                             "%s::%s: %s/%s messages processed",
-                            self.job_name, folder_name, processed, items_found,
+                            self.job_name,
+                            folder_name,
+                            processed,
+                            items_found,
                         )
                     if self.delete_after_export and auto_delete:
                         self.conn.delete_messages(msg_id)
@@ -433,15 +450,15 @@ class ImapClient:
                 message_ids = self._search_folder(since)
                 log.info(
                     "%s::%s: indexing %s messages",
-                    self.job_name, folder_name, len(message_ids),
+                    self.job_name,
+                    folder_name,
+                    len(message_ids),
                 )
                 for chunk in utils.chunks(message_ids, INDEX_CHUNK_SIZE):
                     try:
                         fetched = self.conn.fetch(chunk, ["ENVELOPE"])
                     except (OSError, imaplib.IMAP4.error) as exc:
-                        raise MailboxError(
-                            f"{folder_name}: indexing failed: {exc}"
-                        ) from exc
+                        raise MailboxError(f"{folder_name}: indexing failed: {exc}") from exc
                     for msg_id, msg_data in fetched.items():
                         envelope = msg_data[b"ENVELOPE"]
                         raw_id = getattr(envelope, "message_id", None)
@@ -525,7 +542,9 @@ class Mailbox:
         self._client = ImapClient(self)
         return self._client
 
-    def __exit__(self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any) -> None:
+    def __exit__(
+        self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any
+    ) -> None:
         if self._conn:
             self._conn.logout()
             self._conn = None

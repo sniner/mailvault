@@ -1,6 +1,7 @@
 """
-Workaround for "UnicodeEncodeError: 'ascii' codec can't encode character '\\x..' in position ..: ordinal not in range(128)"
-in msg_part.as_bytes() of Python 3.9.
+Workaround for a Python 3.9 bug in msg_part.as_bytes() that raises
+"UnicodeEncodeError: 'ascii' codec can't encode character '\\x..' in position
+..: ordinal not in range(128)".
 
 Source: https://bugs.python.org/issue41307
 """

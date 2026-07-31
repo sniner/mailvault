@@ -45,10 +45,19 @@ def _resolve_values(data: dict, allow_exec: bool = False) -> dict:
             continue
         try:
             result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, timeout=10,
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if result.returncode != 0:
-                log.error("Command '%s' failed (exit %d): %s", cmd, result.returncode, result.stderr.strip())
+                log.error(
+                    "Command '%s' failed (exit %d): %s",
+                    cmd,
+                    result.returncode,
+                    result.stderr.strip(),
+                )
                 continue
             resolved[target_key] = result.stdout.strip()
         except subprocess.TimeoutExpired:
@@ -114,10 +123,13 @@ class Config:
         jobs = []
         for job_data in data.get("job", []):
             name = job_data.get("name", ".")
-            jobs.append(JobConfig.from_dict(
-                name, {k: v for k, v in job_data.items() if k != "name"},
-                allow_exec=allow_exec,
-            ))
+            jobs.append(
+                JobConfig.from_dict(
+                    name,
+                    {k: v for k, v in job_data.items() if k != "name"},
+                    allow_exec=allow_exec,
+                )
+            )
 
         return cls(jobs=jobs, **known_global)
 

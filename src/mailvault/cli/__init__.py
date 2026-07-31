@@ -103,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify = sub.add_parser(
         "verify",
         help="Compare mailboxes against the archive and report gaps",
-        description="Compare each mailbox against its local archive and report missing messages.",
+        description="Compare mailboxes against their archives and report missing messages.",
     )
     p_verify.add_argument(
         "--repair", action="store_true", help="Download and store the missing emails"
@@ -135,12 +135,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maintain the local archive (stats, import, compress, ...)",
         description="Manage and maintain the local email archive.",
     )
-    asub = p_archive.add_subparsers(dest="archive_command", metavar="<subcommand>", required=True)
+    asub = p_archive.add_subparsers(
+        dest="archive_command", metavar="<subcommand>", required=True
+    )
 
     a_stats = asub.add_parser(
-        "stats", help="Show archive statistics", description="Show statistics of the email archive."
+        "stats",
+        help="Show archive statistics",
+        description="Show statistics of the email archive.",
     )
-    a_stats.add_argument("--docuware", action="store_true", help="Archive is a Docuware archive")
+    a_stats.add_argument(
+        "--docuware", action="store_true", help="Archive is a Docuware archive"
+    )
     a_stats.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
     a_import = asub.add_parser(
@@ -165,7 +171,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="List all email addresses in the archive",
         description="Show mail addresses of all emails in the archive.",
     )
-    a_addr.add_argument("--docuware", action="store_true", help="Directory is a Docuware archive")
+    a_addr.add_argument(
+        "--docuware", action="store_true", help="Directory is a Docuware archive"
+    )
     a_addr.add_argument("source", type=pathlib.Path, help="Archive directory")
 
     a_comp = asub.add_parser(

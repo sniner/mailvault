@@ -114,6 +114,7 @@ def test_cas_reader_rejects_invalid_type(tmp_path):
 # Compression (zstd)
 # ---------------------------------------------------------------------------
 
+
 def test_cas_compress_add(tmp_path):
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml", compress=True)
     data = b"compressible " * 100
@@ -253,7 +254,9 @@ def test_cas_compress_all_mixed(tmp_path):
     store_plain = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
     store_plain.add(b"plain file")
 
-    store_zst = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml", compress=True)
+    store_zst = cas.ContentAddressedStorage(
+        root_dir=tmp_path / "cas", suffix=".eml", compress=True
+    )
     store_zst.add(b"compressed file")
 
     compressed, skipped = store_plain.compress_all()

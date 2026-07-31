@@ -5,9 +5,8 @@ import dataclasses
 import imaplib
 import logging
 import pathlib
-import socket
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import cast
 
 from mailvault import cas, conf, mailbox, mailutils, storedb
@@ -57,8 +56,10 @@ def backup(job: conf.JobConfig, store_path: pathlib.Path, compress: bool = False
                 folders = job.folders if job.folders else mb.folders()
                 for folder in folders:
                     folder_id = db.add_label(folder)
-                    start_date = db.get_snapshot_date(mb_id, folder_id) if job.incremental else None
-                    snapshot_date = datetime.now(timezone.utc)
+                    start_date = (
+                        db.get_snapshot_date(mb_id, folder_id) if job.incremental else None
+                    )
+                    snapshot_date = datetime.now(UTC)
                     result = mb.folder_backup(
                         folder, store, since=start_date, callback=_store_metadata
                     )
@@ -69,7 +70,10 @@ def backup(job: conf.JobConfig, store_path: pathlib.Path, compress: bool = False
                         # out of every future date filter, losing them permanently.
                         log.warning(
                             "%s::%s: %s of %s message(s) failed, snapshot not advanced",
-                            job.name, folder, result.failed, result.total,
+                            job.name,
+                            folder,
+                            result.failed,
+                            result.total,
                         )
         else:
             if job.folders:
@@ -114,7 +118,10 @@ def _verify_folder(
 
     log.info(
         "%s::%s: %s of %s message(s) on the server are not archived",
-        job_name, folder, result.missing, result.on_server,
+        job_name,
+        folder,
+        result.missing,
+        result.on_server,
     )
     if not repair or not missing:
         return result
@@ -237,7 +244,9 @@ def _copy_folder(
                 mb_from.delete_message(msg_id, expunge=True)
 
 
-def _copy(source: conf.JobConfig, destination: conf.JobConfig, archive_folder: str | None = None) -> None:
+def _copy(
+    source: conf.JobConfig, destination: conf.JobConfig, archive_folder: str | None = None
+) -> None:
     with mailbox.Mailbox(job=source) as mb_from:
         with mailbox.Mailbox(job=destination) as mb_to:
             folders = source.folders if source.folders else ["INBOX"]
@@ -265,10 +274,12 @@ def _idle_copy(
                 while True:
                     for _, _ in imap_client.watch_folder("INBOX"):
                         _copy_to_dest(imap_client)
-        except (imaplib.IMAP4.abort, socket.error):
+        except (OSError, imaplib.IMAP4.abort):
             log.warning(
                 "%s::%s: Connection lost, reconnecting in %ds",
-                source.name, folder_name, backoff,
+                source.name,
+                folder_name,
+                backoff,
             )
             time.sleep(backoff)
             backoff = min(backoff * 2, 60)

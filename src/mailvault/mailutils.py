@@ -30,7 +30,7 @@ def decode_email(
     reader = _mail_reader(msg)
     return email.parser.BytesParser(policy=email.policy.default).parse(
         reader,  # type: ignore
-        headersonly=headersonly
+        headersonly=headersonly,
     )
 
 
@@ -119,9 +119,7 @@ class MessageIdIndex:
 
     def __init__(self, message_ids: collections.abc.Iterable[str]):
         self._exact = {mid for mid in message_ids if mid}
-        self._long = sorted(
-            mid for mid in self._exact if len(mid) > self.TRUNCATION_THRESHOLD
-        )
+        self._long = sorted(mid for mid in self._exact if len(mid) > self.TRUNCATION_THRESHOLD)
 
     def __contains__(self, value: str) -> bool:
         if not value:

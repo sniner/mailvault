@@ -7,7 +7,7 @@ import pathlib
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from mailvault import mailutils
@@ -32,7 +32,9 @@ class StoreDatabase:
         self.client.setup()
         return self.client
 
-    def __exit__(self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any) -> None:
+    def __exit__(
+        self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any
+    ) -> None:
         if self.dbconn:
             self.dbconn.close()
             self.dbconn = None
@@ -136,10 +138,12 @@ class StoreDatabaseConnection(DatabaseConnection):
                 UNIQUE(message_id, mailbox_id) ON CONFLICT IGNORE)
             """)
             self.execute(
-                "CREATE INDEX IF NOT EXISTS idx_message_mailbox_1 ON message_mailbox(message_id)"
+                "CREATE INDEX IF NOT EXISTS idx_message_mailbox_1 "
+                "ON message_mailbox(message_id)"
             )
             self.execute(
-                "CREATE INDEX IF NOT EXISTS idx_message_mailbox_2 ON message_mailbox(mailbox_id)"
+                "CREATE INDEX IF NOT EXISTS idx_message_mailbox_2 "
+                "ON message_mailbox(mailbox_id)"
             )
 
             self.execute("""
@@ -183,10 +187,12 @@ class StoreDatabaseConnection(DatabaseConnection):
             self.execute("DROP INDEX IF EXISTS idx_message_recipient_1")
             self.execute("DROP INDEX IF EXISTS idx_message_recipient_2")
             self.execute(
-                "CREATE INDEX IF NOT EXISTS idx_message_recipient_1 ON message_recipient(message_id)"
+                "CREATE INDEX IF NOT EXISTS idx_message_recipient_1 "
+                "ON message_recipient(message_id)"
             )
             self.execute(
-                "CREATE INDEX IF NOT EXISTS idx_message_recipient_2 ON message_recipient(address_id)"
+                "CREATE INDEX IF NOT EXISTS idx_message_recipient_2 "
+                "ON message_recipient(address_id)"
             )
 
             self.execute("""
@@ -280,7 +286,8 @@ class StoreDatabaseConnection(DatabaseConnection):
         with self.transaction():
             subject_id = self.add_subject(subject)
             self.execute(
-                "INSERT OR IGNORE INTO message(store_id, email_id, date, subject_id) VALUES (?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO message(store_id, email_id, date, subject_id) "
+                "VALUES (?, ?, ?, ?)",
                 (store_id, email_id, date.isoformat() if date else None, subject_id),
             )
             msg_id = self.execute(
@@ -366,7 +373,8 @@ class StoreDatabaseConnection(DatabaseConnection):
             for addr in sender:
                 addr_id = self.add_address(addr)
                 self.execute(
-                    "INSERT OR IGNORE INTO message_sender(message_id, address_id) VALUES (?, ?)",
+                    "INSERT OR IGNORE INTO message_sender(message_id, address_id) "
+                    "VALUES (?, ?)",
                     (message_id, addr_id),
                 )
 
@@ -375,7 +383,8 @@ class StoreDatabaseConnection(DatabaseConnection):
             for addr in recipients:
                 addr_id = self.add_address(addr)
                 self.execute(
-                    "INSERT OR IGNORE INTO message_recipient(message_id, address_id) VALUES (?, ?)",
+                    "INSERT OR IGNORE INTO message_recipient(message_id, address_id) "
+                    "VALUES (?, ?)",
                     (message_id, addr_id),
                 )
 
@@ -385,9 +394,11 @@ class StoreDatabaseConnection(DatabaseConnection):
         ).fetchone()
         return dict(row) if row else None
 
-    def set_snapshot(self, mailbox_id: int, label_id: int, date: datetime | None = None) -> None:
+    def set_snapshot(
+        self, mailbox_id: int, label_id: int, date: datetime | None = None
+    ) -> None:
         if date is None:
-            date = datetime.now(timezone.utc)
+            date = datetime.now(UTC)
         isodate = date.isoformat()
         # NB: does work because of ON CONFLICT REPLACE
         with self.transaction():
@@ -422,7 +433,7 @@ if __name__ == "__main__":
         msg = db.add_message(
             "12345678901234567890",
             "<hulla@example.org>",
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
             mailbox_id=mb,
             subject="Test",
         )

@@ -16,6 +16,7 @@ dependencies = [
 dev = [
     "pylint",
     "pytest",
+    "ruff",
     "basedpyright>=1.38.1",
 ]
 
@@ -30,9 +31,9 @@ venv = ".venv"
 
 [tool.ruff]
 line-length = 96
-ignore = ["E402"]
 
 [tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP"]
 per-file-ignores = { "__init__.py" = ["F401"] }
 
 [project.scripts]
