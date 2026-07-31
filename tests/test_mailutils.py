@@ -200,20 +200,20 @@ def test_normalize_message_id_matches_across_sources():
 
 def test_metadata_record(dummy_eml_bytes):
     md = mailutils.metadata(dummy_eml_bytes, mailbox="mb", folder="INBOX", store_id="deadbeef")
-    assert md["mailbox"] == "mb"
-    assert md["folder"] == "INBOX"
-    assert md["store_id"] == "deadbeef"
-    assert md["labels"] == ["INBOX"]
-    assert md["subject"] == "Test Email"
-    assert "test@example.com" in md["sender"]
-    assert "recipient@example.com" in md["recipients"]
+    assert md.mailbox == "mb"
+    assert md.folder == "INBOX"
+    assert md.store_id == "deadbeef"
+    assert md.labels == ["INBOX"]
+    assert md.subject == "Test Email"
+    assert "test@example.com" in md.sender
+    assert "recipient@example.com" in md.recipients
 
 
 def test_metadata_explicit_labels(dummy_eml_bytes):
     md = mailutils.metadata(
         dummy_eml_bytes, mailbox="mb", folder="INBOX", store_id="x", labels=["A", "B"]
     )
-    assert md["labels"] == ["A", "B"]
+    assert md.labels == ["A", "B"]
 
 
 @pytest.mark.parametrize(

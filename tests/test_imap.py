@@ -60,42 +60,40 @@ def _make_client(job=None, conn=None, **job_overrides):
         job = _make_job(**job_overrides)
     if conn is None:
         conn = _make_mock_conn()
-    mb = imap.Mailbox(job=job)
-    mb._conn = conn
-    client = imap.ImapClient(mb)
-    return client
+    return imap.ImapClient(conn, job)
 
 
 # ---------------------------------------------------------------------------
-# Mailbox context manager
+# ImapClient.connect / close
 # ---------------------------------------------------------------------------
 
 
-class TestMailboxContextManager:
+class TestConnect:
     @patch("mailvault.backend.imap.imapclient.IMAPClient")
-    def test_enter_creates_connection_with_tls(self, mock_imap_cls):
+    def test_creates_connection_with_tls(self, mock_imap_cls):
         mock_conn = _make_mock_conn()
         mock_imap_cls.return_value = mock_conn
         job = _make_job()
 
-        with imap.Mailbox(job=job) as client:
-            assert client is not None
-            mock_imap_cls.assert_called_once()
-            kwargs = mock_imap_cls.call_args
-            assert kwargs.kwargs["host"] == "imap.example.com"
-            assert kwargs.kwargs["port"] == 993
-            assert kwargs.kwargs["ssl"] is True
-            assert kwargs.kwargs["ssl_context"] is not None
-            mock_conn.login.assert_called_once_with("user", "pass")
+        client = imap.ImapClient.connect(job)
+
+        assert client is not None
+        mock_imap_cls.assert_called_once()
+        kwargs = mock_imap_cls.call_args
+        assert kwargs.kwargs["host"] == "imap.example.com"
+        assert kwargs.kwargs["port"] == 993
+        assert kwargs.kwargs["ssl"] is True
+        assert kwargs.kwargs["ssl_context"] is not None
+        mock_conn.login.assert_called_once_with("user", "pass")
 
     @patch("mailvault.backend.imap.imapclient.IMAPClient")
-    def test_exit_calls_logout(self, mock_imap_cls):
+    def test_close_calls_logout(self, mock_imap_cls):
         mock_conn = _make_mock_conn()
         mock_imap_cls.return_value = mock_conn
-        job = _make_job()
 
-        with imap.Mailbox(job=job):
-            pass
+        client = imap.ImapClient.connect(_make_job())
+        client.close()
+
         mock_conn.logout.assert_called_once()
 
     @patch("mailvault.backend.imap.imapclient.IMAPClient")
@@ -104,10 +102,11 @@ class TestMailboxContextManager:
         mock_imap_cls.return_value = mock_conn
         job = _make_job(tls=False)
 
-        with imap.Mailbox(job=job):
-            kwargs = mock_imap_cls.call_args
-            assert kwargs.kwargs["ssl"] is False
-            assert kwargs.kwargs["ssl_context"] is None
+        imap.ImapClient.connect(job)
+
+        kwargs = mock_imap_cls.call_args
+        assert kwargs.kwargs["ssl"] is False
+        assert kwargs.kwargs["ssl_context"] is None
 
     @patch("mailvault.backend.imap.imapclient.IMAPClient")
     def test_tls_no_hostname_check(self, mock_imap_cls):
@@ -115,10 +114,11 @@ class TestMailboxContextManager:
         mock_imap_cls.return_value = mock_conn
         job = _make_job(tls_check_hostname=False, tls_verify_cert=True)
 
-        with imap.Mailbox(job=job):
-            ssl_ctx = mock_imap_cls.call_args.kwargs["ssl_context"]
-            assert ssl_ctx is not None
-            assert ssl_ctx.check_hostname is False
+        imap.ImapClient.connect(job)
+
+        ssl_ctx = mock_imap_cls.call_args.kwargs["ssl_context"]
+        assert ssl_ctx is not None
+        assert ssl_ctx.check_hostname is False
 
 
 # ---------------------------------------------------------------------------
@@ -376,11 +376,11 @@ class TestFolderBackup:
 
         assert len(collected) == 1
         md = collected[0]
-        assert md["folder"] == "INBOX"
-        assert md["email_id"] == "<abc123@example.com>"
-        assert "sender@example.com" in md["sender"]
-        assert "recipient@example.com" in md["recipients"]
-        assert md["subject"] == "Hello World"
+        assert md.folder == "INBOX"
+        assert md.email_id == "<abc123@example.com>"
+        assert "sender@example.com" in md.sender
+        assert "recipient@example.com" in md.recipients
+        assert md.subject == "Hello World"
 
     def test_callback_error_continues(self, tmp_path):
         conn = _make_mock_conn()
@@ -685,14 +685,14 @@ class TestCollectMetadata:
         client = _make_client(conn=conn)
 
         md = client._collect_metadata("INBOX", 1, "hash123", DUMMY_EML)
-        assert md["mailbox"] == "test-mailbox"
-        assert md["folder"] == "INBOX"
-        assert md["store_id"] == "hash123"
-        assert md["email_id"] == "<abc123@example.com>"
-        assert md["labels"] == ["INBOX"]
-        assert "sender@example.com" in md["sender"]
-        assert "recipient@example.com" in md["recipients"]
-        assert md["subject"] == "Hello World"
+        assert md.mailbox == "test-mailbox"
+        assert md.folder == "INBOX"
+        assert md.store_id == "hash123"
+        assert md.email_id == "<abc123@example.com>"
+        assert md.labels == ["INBOX"]
+        assert "sender@example.com" in md.sender
+        assert "recipient@example.com" in md.recipients
+        assert md.subject == "Hello World"
 
     def test_gmail_labels(self):
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
@@ -700,9 +700,9 @@ class TestCollectMetadata:
         client = _make_client(conn=conn)
 
         md = client._collect_metadata("INBOX", 1, "hash123", DUMMY_EML)
-        assert "INBOX" in md["labels"]
-        assert b"\\Important" in md["labels"]
-        assert b"Work" in md["labels"]
+        assert "INBOX" in md.labels
+        assert b"\\Important" in md.labels
+        assert b"Work" in md.labels
 
     def test_gmail_labels_google_mail_prefix(self):
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
@@ -711,8 +711,8 @@ class TestCollectMetadata:
 
         md = client._collect_metadata("[Google Mail]/Sent", 1, "hash123", DUMMY_EML)
         # folder_name starting with [Google Mail] should not be prepended
-        assert "[Google Mail]/Sent" not in md["labels"]
-        assert md["labels"] == [b"\\Sent"]
+        assert "[Google Mail]/Sent" not in md.labels
+        assert md.labels == [b"\\Sent"]
 
 
 # ---------------------------------------------------------------------------

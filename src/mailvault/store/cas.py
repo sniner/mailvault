@@ -69,7 +69,7 @@ class ContentAddressedStorage:
     def _hashval(self, reader: io.IOBase) -> str:
         m = self.hashfactory()
         while True:
-            block = reader.read(self.blocksize or 4096)
+            block = reader.read(self.blocksize)
             if block is None or len(block) == 0:
                 break
             m.update(block)
@@ -113,14 +113,14 @@ class ContentAddressedStorage:
                 with open(tmp_file, "wb") as f:
                     with cctx.stream_writer(f) as compressor:
                         while True:
-                            block = reader.read(self.blocksize or 4096)
+                            block = reader.read(self.blocksize)
                             if block is None or len(block) == 0:
                                 break
                             compressor.write(block)
             else:
                 with open(tmp_file, "wb") as f:
                     while True:
-                        block = reader.read(self.blocksize or 4096)
+                        block = reader.read(self.blocksize)
                         if block is None or len(block) == 0:
                             break
                         f.write(block)
