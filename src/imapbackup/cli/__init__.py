@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import importlib.metadata
 import logging
 import pathlib
 import sys
+
+
+def get_version() -> str:
+    """Return the installed package version, or 'unknown' when not packaged."""
+    try:
+        return importlib.metadata.version("imapbackup")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
 
 
 def setup_logger(loglevel: int = logging.INFO, logfile: pathlib.Path | None = None):

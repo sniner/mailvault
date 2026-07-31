@@ -252,7 +252,7 @@ structure:
 │   │   └── 0030f33161416b03e...97aa.eml
 ```
 
-The filename is the SHA-256 hash of the file content and serves as the key to
+The filename is the SHA-384 hash of the file content and serves as the key to
 the archive. This makes it easy to verify file integrity by comparing the hash
 with the filename.
 

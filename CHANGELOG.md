@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.5.0 (2026-07-31)
+
+### Breaking changes
+
+- **Minimum Python is now 3.11** (was 3.10). TOML configuration relies on the standard-library
+  `tomllib`, which only exists from 3.11 on; on 3.10 TOML configs never worked and only YAML was
+  usable. Dropping 3.10 removes that split. Migration: run `imapbackup` under Python 3.11 or newer
+
+### Fixed
+
+- **`ib-archive`:** `stats`, `addresses` and `import` now see zstd-compressed archives. Previously
+  they only matched plain `.eml` files, so an archive written with `--compress` (files ending in
+  `.eml.zst`) was reported as empty and could not be used as an import source
+- **`ib-copy`:** a configuration in which a job omits `role` no longer crashes the role lookup
+- **`ib-mailbox` (exchange_journal + delete_after_export):** a message that is not a journal item
+  is no longer deleted from the server while being skipped. Without an `error_folder` such a
+  message is now kept on the server instead of being removed unarchived
+
+### Changed
+
+- **CLI:** `ib-mailbox`, `ib-archive` and `ib-copy` now exit with a non-zero status when a job or
+  operation fails, so cron jobs and scripts can detect failures
+- **CLI:** all three tools gained a `--version` flag
+- **`ib-archive`:** the default log level is now `INFO`, consistent with `ib-mailbox` and
+  `ib-copy` (was `WARNING`)
+
 ## 0.4.0 (2026-07-29)
 
 ### Added

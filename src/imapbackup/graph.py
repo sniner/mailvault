@@ -32,6 +32,18 @@ RETRY_MAX_DELAY = 60.0
 INDEX_PAGE_SIZE = 500
 
 
+def _parse_graph_datetime(value: str | None) -> datetime | None:
+    """Parse a Graph `receivedDateTime` (e.g. `2024-01-01T12:00:00Z`).
+
+    Graph reports UTC with a trailing `Z`, which `datetime.fromisoformat` only
+    accepts from Python 3.11 on. Normalising it to `+00:00` keeps the 3.10
+    baseline working.
+    """
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 def _backoff_delay(attempt: int) -> float:
     """Exponentially growing delay (in seconds) for retry number `attempt`."""
     return min(RETRY_BASE_DELAY * 2**attempt, RETRY_MAX_DELAY)
@@ -265,11 +277,10 @@ class MSGraphClient:
             select="id,internetMessageId,receivedDateTime",
             page_size=INDEX_PAGE_SIZE,
         ):
-            received = item.get("receivedDateTime")
             yield mailbox.MessageRef(
                 msg_id=item["id"],
                 message_id=item.get("internetMessageId") or "",
-                date=datetime.fromisoformat(received) if received else None,
+                date=_parse_graph_datetime(item.get("receivedDateTime")),
             )
 
     def folders(self) -> collections.abc.Generator[str, None, None]:
@@ -393,8 +404,7 @@ class MSGraphClient:
         folder_id = self._resolve_folder(folder_name)
         for msg_info in self._iter_messages(folder_name, folder_id, since):
             msg_id = msg_info["id"]
-            received = msg_info.get("receivedDateTime")
-            msg_date = datetime.fromisoformat(received) if received else None
+            msg_date = _parse_graph_datetime(msg_info.get("receivedDateTime"))
             try:
                 msg = self._download_mime(msg_id)
             except Exception as exc:

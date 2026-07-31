@@ -7,7 +7,7 @@ import logging
 import pathlib
 
 from imapbackup import archive, cas, jobs
-from imapbackup.cli import setup_logger
+from imapbackup.cli import get_version, setup_logger
 
 log = logging.getLogger(__name__)
 
@@ -18,6 +18,11 @@ def parse_arguments() -> argparse.Namespace:
         description=__doc__,
     )
 
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {get_version()}",
+    )
     parser.add_argument("--logfile", type=pathlib.Path, help="Log file path")
     parser.add_argument("--verbose", action="store_true", help="Set log level to DEBUG")
 
@@ -119,11 +124,7 @@ def run() -> None:
 
     setup_logger(
         logfile=args.logfile,
-        loglevel=logging.DEBUG
-        if args.verbose
-        else logging.INFO
-        if args.logfile
-        else logging.WARNING,
+        loglevel=logging.DEBUG if args.verbose else logging.INFO,
     )
     log.info("START")
 
@@ -149,10 +150,7 @@ def run() -> None:
         destination = cas.ContentAddressedStorage(
             args.destination, suffix=".eml", compress=args.compress
         )
-        try:
-            source.archive_to_cas(destination, move=args.move)
-        except Exception as exc:
-            log.error("Backup failed: %s", exc)
+        source.archive_to_cas(destination, move=args.move)
     elif args.subcommand == "compress":
         store = cas.ContentAddressedStorage(args.source, suffix=".eml")
         compressed, skipped = store.compress_all()
@@ -165,12 +163,17 @@ def run() -> None:
         jobs.update_db_from_archive(args.source, mailbox=args.mailbox)
 
 
-def main() -> None:
+def main() -> int:
     try:
         run()
     except KeyboardInterrupt:
         log.warning("Interrupted!")
+        return 130
+    except Exception as exc:
+        log.exception("Fatal error: %s", exc)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

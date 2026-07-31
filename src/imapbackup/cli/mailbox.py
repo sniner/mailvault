@@ -5,7 +5,7 @@ import logging
 import pathlib
 
 from imapbackup import conf, jobs
-from imapbackup.cli import setup_logger
+from imapbackup.cli import get_version, setup_logger
 
 log = logging.getLogger(__name__)
 
@@ -15,6 +15,11 @@ def parse_arguments() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter, description=__doc__
     )
 
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {get_version()}",
+    )
     parser.add_argument(
         "--logfile",
         type=pathlib.Path,
@@ -128,7 +133,7 @@ def run_job(job: conf.JobConfig, args: argparse.Namespace, config: conf.Config) 
         report_verify(job.name, results, repaired=args.repair)
 
 
-def main() -> None:
+def main() -> int:
     args = parse_arguments()
 
     setup_logger(
@@ -137,6 +142,7 @@ def main() -> None:
     )
     log.info("START")
 
+    exit_code = 0
     try:
         config = conf.load(args.config, allow_exec=args.allow_exec)
         selected = config.jobs
@@ -145,19 +151,25 @@ def main() -> None:
             unknown = set(args.job) - {j.name for j in selected}
             for name in unknown:
                 log.error("Unknown job: %s", name)
+                exit_code = 1
         for job in selected:
             try:
                 run_job(job, args, config)
             except Exception as exc:
-                # One broken job must not stop the remaining ones.
+                # One broken job must not stop the remaining ones, but the run
+                # as a whole reports failure so callers/cron can react.
                 log.exception("Job '%s' failed: %s", job.name, exc)
-    except Exception as exc:
-        log.exception("Fatal error: %s", exc)
+                exit_code = 1
     except KeyboardInterrupt:
         log.warning("Interrupted!")
+        exit_code = 130
+    except Exception as exc:
+        log.exception("Fatal error: %s", exc)
+        exit_code = 1
     finally:
         log.info("FINISHED")
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

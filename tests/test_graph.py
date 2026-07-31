@@ -57,6 +57,22 @@ class TestBackoff:
         resp = httpx.Response(429, headers={"Retry-After": "7"})
         assert graph._retry_delay(resp, 0) == 7.0
 
+
+class TestParseDatetime:
+    def test_parses_z_suffix(self):
+        # Graph reports UTC as `...Z`; the parser normalises it so a single code
+        # path handles the timestamp regardless of Python version quirks.
+        from datetime import timezone
+
+        dt = graph._parse_graph_datetime("2024-01-01T12:00:00Z")
+        assert dt is not None
+        assert dt.utcoffset() == timezone.utc.utcoffset(None)
+        assert (dt.year, dt.month, dt.day, dt.hour) == (2024, 1, 1, 12)
+
+    def test_none_and_empty(self):
+        assert graph._parse_graph_datetime(None) is None
+        assert graph._parse_graph_datetime("") is None
+
     def test_retry_after_is_capped(self):
         resp = httpx.Response(429, headers={"Retry-After": "9999"})
         assert graph._retry_delay(resp, 0) == graph.RETRY_MAX_DELAY

@@ -458,6 +458,61 @@ class TestFolderBackup:
         # A deliberate skip is not a failure: it must not block the snapshot.
         assert result.complete
 
+    def test_exchange_journal_delete_after_successful_export(self, tmp_path):
+        journal_eml = (
+            b"From: journal@exchange.local\r\n"
+            b"Subject: Journal\r\n"
+            b"Content-Type: multipart/mixed; boundary=\"boundary\"\r\n"
+            b"\r\n"
+            b"--boundary\r\n"
+            b"Content-Type: text/plain\r\n"
+            b"\r\n"
+            b"Journal envelope\r\n"
+            b"--boundary\r\n"
+            b"Content-Type: message/rfc822\r\n"
+            b"\r\n"
+            b"From: real@example.com\r\n"
+            b"Subject: Real Message\r\n"
+            b"Message-ID: <real@example.com>\r\n"
+            b"Date: Wed, 20 Feb 2026 12:00:00 +0100\r\n"
+            b"\r\n"
+            b"Real body\r\n"
+            b"--boundary--\r\n"
+        )
+        conn = _make_mock_conn()
+        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        conn.select_folder.return_value = {b"EXISTS": 1}
+        conn.search.return_value = [1]
+        conn.fetch.return_value = {
+            1: {b"RFC822": journal_eml, b"INTERNALDATE": msg_date},
+        }
+        client = _make_client(exchange_journal=True, delete_after_export=True, conn=conn)
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+
+        result = client.folder_backup("INBOX", store)
+        assert result.stored == 1
+        # An archived journal item is deleted from the server.
+        conn.delete_messages.assert_called_once_with(1)
+        conn.expunge.assert_called_once()
+
+    def test_exchange_journal_non_journal_not_deleted(self, tmp_path):
+        # Regression: a non-journal item under delete_after_export must NOT be
+        # deleted from the server while it is being skipped -- otherwise it is
+        # lost unarchived. No MOVE capability, so no error_folder is configured.
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1"])
+        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        conn.select_folder.return_value = {b"EXISTS": 1}
+        conn.search.return_value = [1]
+        conn.fetch.return_value = {
+            1: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
+        }
+        client = _make_client(exchange_journal=True, delete_after_export=True, conn=conn)
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+
+        result = client.folder_backup("INBOX", store)
+        assert result.stored == 0
+        conn.delete_messages.assert_not_called()
+
     def test_gmail_clears_trash(self, tmp_path):
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
         msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)

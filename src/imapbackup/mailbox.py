@@ -268,12 +268,17 @@ class ImapClient:
         folder_name: str,
         since: datetime | None = None,
         result: BackupResult | None = None,
+        auto_delete: bool = True,
     ) -> collections.abc.Generator[tuple[int, bytes, datetime | None], None, None]:
         """Select folder, search and yield messages, handle cleanup.
 
-        After each yielded message is processed by the caller, the message is
-        deleted if delete_after_export is configured. On successful completion,
-        deleted messages are expunged. The folder is always unselected on exit.
+        With `auto_delete` (the default) each yielded message is deleted right
+        after the caller processed it, if delete_after_export is configured.
+        Callers that must only delete messages they actually archived (e.g. the
+        exchange_journal path, which skips non-journal items) pass
+        `auto_delete=False` and delete successfully handled messages themselves.
+        On successful completion, deleted messages are expunged. The folder is
+        always unselected on exit.
         """
         with self.lock:
             folder_info = self.conn.select_folder(
@@ -308,7 +313,7 @@ class ImapClient:
                             "%s::%s: %s/%s messages processed",
                             self.job_name, folder_name, processed, items_found,
                         )
-                    if self.delete_after_export:
+                    if self.delete_after_export and auto_delete:
                         self.conn.delete_messages(msg_id)
             except Exception as exc:
                 log.error("%s::%s: %s", self.job_name, folder_name, exc)
@@ -327,11 +332,20 @@ class ImapClient:
         callback: collections.abc.Callable[[dict], None] | None = None,
     ) -> BackupResult:
         result = BackupResult()
-        for msg_id, msg, _ in self._iter_folder(folder_name, since, result=result):
+        # In journal mode the non-journal items are skipped, so deletion must be
+        # tied to a successful archive run instead of the generic per-message
+        # auto-delete -- otherwise a skipped item would be removed from the
+        # server unarchived.
+        auto_delete = not self.exchange_journal
+        for msg_id, msg, _ in self._iter_folder(
+            folder_name, since, result=result, auto_delete=auto_delete
+        ):
             if self.exchange_journal:
                 msg = mailutils.unwrap_exchange_journal_item(msg)
                 if msg is None:
                     if self.error_folder:
+                        # move_message uses MOVE (copy + delete), so the item is
+                        # safely relocated and gone from the source folder.
                         log.warning(
                             "%s::%s[%s]: not a journal item, moving to error folder",
                             self.job_name,
@@ -340,8 +354,12 @@ class ImapClient:
                         )
                         self.move_message(msg_id, self.error_folder)
                     else:
+                        # No error folder: deliberately skip. The item is left on
+                        # the server (auto_delete is off for the journal path), so
+                        # it is never deleted unarchived. A skip is not a failure,
+                        # so the snapshot may still advance.
                         log.warning(
-                            "%s::%s[%s]: not a journal item, skipping",
+                            "%s::%s[%s]: not a journal item, skipping (kept on server)",
                             self.job_name,
                             folder_name,
                             msg_id,
@@ -375,6 +393,10 @@ class ImapClient:
                     )
                     result.failed += 1
                     continue
+            if not auto_delete and self.delete_after_export:
+                # Journal path: delete only now that the item is archived. The
+                # generic auto-delete was disabled for this run.
+                self.conn.delete_messages(msg_id)
             result.stored += 1
         if self.gmail and self.trash_folder:
             self._clear_folder(self.trash_folder)

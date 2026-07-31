@@ -7,9 +7,8 @@
 *.egg-info/
 __pycache__/
 *.log
-*.job
 *.toml
-!example.job
 !example.toml
+!pyproject.toml
 
 /archive*
