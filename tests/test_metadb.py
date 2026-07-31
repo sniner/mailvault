@@ -1,13 +1,13 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
-from imapbackup import storedb
+from mailvault.store import metadb
 
 
 def test_store_db_setup(tmp_path):
     db_path = tmp_path / "test.db"
-    with storedb.StoreDatabase(db_path) as db:
+    with metadb.MetaDatabase(db_path) as db:
         res = db.dbconn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         tables = [r[0] for r in res]
         assert "mailbox" in tables
@@ -24,7 +24,7 @@ def test_store_db_setup(tmp_path):
 
 def test_store_db_setup_views(tmp_path):
     db_path = tmp_path / "test.db"
-    with storedb.StoreDatabase(db_path) as db:
+    with metadb.MetaDatabase(db_path) as db:
         res = db.dbconn.execute("SELECT name FROM sqlite_master WHERE type='view'").fetchall()
         views = [r[0] for r in res]
         assert "v_messages" in views
@@ -34,9 +34,10 @@ def test_store_db_setup_views(tmp_path):
 def test_store_db_setup_indexes(tmp_path):
     """Verify that message_recipient indexes are on the correct table (B1 fix)."""
     db_path = tmp_path / "test.db"
-    with storedb.StoreDatabase(db_path) as db:
+    with metadb.MetaDatabase(db_path) as db:
         indexes = db.dbconn.execute(
-            "SELECT name, tbl_name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_message_recipient%'"
+            "SELECT name, tbl_name FROM sqlite_master "
+            "WHERE type='index' AND name LIKE 'idx_message_recipient%'"
         ).fetchall()
         for name, tbl_name in indexes:
             assert tbl_name == "message_recipient", (
@@ -46,7 +47,7 @@ def test_store_db_setup_indexes(tmp_path):
 
 def test_store_db_add_mailbox(tmp_path):
     db_path = tmp_path / "test.db"
-    with storedb.StoreDatabase(db_path) as db:
+    with metadb.MetaDatabase(db_path) as db:
         mb_id = db.add_mailbox("INBOX")
         assert mb_id > 0
         # Adding same mailbox should return same id
@@ -56,11 +57,11 @@ def test_store_db_add_mailbox(tmp_path):
 
 def test_store_db_add_message_and_labels(tmp_path):
     db_path = tmp_path / "test.db"
-    with storedb.StoreDatabase(db_path) as db:
+    with metadb.MetaDatabase(db_path) as db:
         msg_id = db.add_message(
             store_id="hash123",
             email_id="<message-id@example.com>",
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             subject="Test Subject",
         )
         assert msg_id > 0
@@ -73,11 +74,11 @@ def test_store_db_add_message_and_labels(tmp_path):
 
 def test_store_db_update_message_labels(tmp_path):
     db_path = tmp_path / "test.db"
-    with storedb.StoreDatabase(db_path) as db:
+    with metadb.MetaDatabase(db_path) as db:
         msg_id = db.add_message(
             store_id="hash_upd",
             email_id="<upd@example.com>",
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             subject="Update Labels",
         )
         db.add_message_labels(msg_id, "Old1", "Old2", "Keep")
@@ -90,12 +91,12 @@ def test_store_db_update_message_labels(tmp_path):
 
 def test_store_db_add_message_with_mailbox(tmp_path):
     db_path = tmp_path / "test.db"
-    with storedb.StoreDatabase(db_path) as db:
+    with metadb.MetaDatabase(db_path) as db:
         mb_id = db.add_mailbox("TestMailbox")
         msg_id = db.add_message(
             store_id="hash_mb",
             email_id="<mb@example.com>",
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             subject="With Mailbox",
             mailbox_id=mb_id,
         )
@@ -108,12 +109,12 @@ def test_store_db_add_message_with_mailbox(tmp_path):
 
 def test_store_db_assign_message_to_mailbox(tmp_path):
     db_path = tmp_path / "test.db"
-    with storedb.StoreDatabase(db_path) as db:
+    with metadb.MetaDatabase(db_path) as db:
         mb_id = db.add_mailbox("Box1")
         msg_id = db.add_message(
             store_id="hash_assign",
             email_id="<assign@example.com>",
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             subject="Assign",
         )
         db.assign_message_to_mailbox(msg_id, mb_id)
@@ -129,24 +130,26 @@ def test_store_db_assign_message_to_mailbox(tmp_path):
 
 def test_store_db_sender_and_recipients(tmp_path):
     db_path = tmp_path / "test.db"
-    with storedb.StoreDatabase(db_path) as db:
+    with metadb.MetaDatabase(db_path) as db:
         msg_id = db.add_message(
             store_id="hash_addr",
             email_id="<addr@example.com>",
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             subject="Addresses",
         )
         db.add_message_sender(msg_id, "alice@example.com", "bob@example.com")
         db.add_message_recipients(msg_id, "carol@example.com", "dave@example.com")
 
         senders = db.execute(
-            "SELECT a.address FROM message_sender ms JOIN address a USING (address_id) WHERE ms.message_id=?",
+            "SELECT a.address FROM message_sender ms JOIN address a USING (address_id) "
+            "WHERE ms.message_id=?",
             (msg_id,),
         ).fetchall()
         assert set(r[0] for r in senders) == {"alice@example.com", "bob@example.com"}
 
         recipients = db.execute(
-            "SELECT a.address FROM message_recipient mr JOIN address a USING (address_id) WHERE mr.message_id=?",
+            "SELECT a.address FROM message_recipient mr JOIN address a USING (address_id) "
+            "WHERE mr.message_id=?",
             (msg_id,),
         ).fetchall()
         assert set(r[0] for r in recipients) == {"carol@example.com", "dave@example.com"}
@@ -154,7 +157,7 @@ def test_store_db_sender_and_recipients(tmp_path):
 
 def test_store_db_snapshot_lifecycle(tmp_path):
     db_path = tmp_path / "test.db"
-    with storedb.StoreDatabase(db_path) as db:
+    with metadb.MetaDatabase(db_path) as db:
         mb_id = db.add_mailbox("SnapMB")
         label_id = db.add_label("INBOX")
 
@@ -185,7 +188,7 @@ def test_store_db_snapshot_lifecycle(tmp_path):
 
 def test_store_db_delete_snapshot_all_labels(tmp_path):
     db_path = tmp_path / "test.db"
-    with storedb.StoreDatabase(db_path) as db:
+    with metadb.MetaDatabase(db_path) as db:
         mb_id = db.add_mailbox("SnapAll")
         l1 = db.add_label("Folder1")
         l2 = db.add_label("Folder2")
@@ -201,10 +204,10 @@ def test_store_db_delete_snapshot_all_labels(tmp_path):
 
 def test_store_db_transaction_rollback(tmp_path):
     db_path = tmp_path / "test.db"
-    with storedb.StoreDatabase(db_path) as db:
+    with metadb.MetaDatabase(db_path) as db:
         db.add_mailbox("BeforeRollback")
 
-        with pytest.raises(storedb.RollbackException):
+        with pytest.raises(metadb.RollbackException):
             with db.transaction():
                 db.execute("INSERT OR IGNORE INTO mailbox(name) VALUES (?)", ("RolledBack",))
                 db.rollback()
@@ -220,12 +223,12 @@ def test_store_db_transaction_rollback(tmp_path):
 
 def test_store_db_v_messages_view(tmp_path):
     db_path = tmp_path / "test.db"
-    with storedb.StoreDatabase(db_path) as db:
+    with metadb.MetaDatabase(db_path) as db:
         mb_id = db.add_mailbox("ViewTest")
         msg_id = db.add_message(
             store_id="hash_view",
             email_id="<view@example.com>",
-            date=datetime(2026, 3, 27, tzinfo=timezone.utc),
+            date=datetime(2026, 3, 27, tzinfo=UTC),
             subject="View Subject",
             mailbox_id=mb_id,
         )
@@ -243,8 +246,8 @@ def test_store_db_v_messages_view(tmp_path):
 
 def test_store_db_v_duplicates_view(tmp_path):
     db_path = tmp_path / "test.db"
-    with storedb.StoreDatabase(db_path) as db:
-        date = datetime(2026, 3, 27, tzinfo=timezone.utc)
+    with metadb.MetaDatabase(db_path) as db:
+        date = datetime(2026, 3, 27, tzinfo=UTC)
         # Two messages with same email_id and date but different store_id = duplicates
         db.add_message(
             store_id="hash_dup_1",
@@ -268,8 +271,8 @@ def test_store_db_v_duplicates_view(tmp_path):
 def test_store_db_add_message_idempotent(tmp_path):
     """Adding same store_id twice should not create duplicate (ON CONFLICT IGNORE)."""
     db_path = tmp_path / "test.db"
-    with storedb.StoreDatabase(db_path) as db:
-        date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with metadb.MetaDatabase(db_path) as db:
+        date = datetime(2026, 1, 1, tzinfo=UTC)
         id1 = db.add_message(store_id="same_hash", email_id="<a@b>", date=date, subject="First")
         id2 = db.add_message(store_id="same_hash", email_id="<a@b>", date=date, subject="First")
         assert id1 == id2
@@ -279,9 +282,10 @@ def test_store_db_add_message_idempotent(tmp_path):
 # get_known_message_ids
 # ---------------------------------------------------------------------------
 
+
 def test_get_known_message_ids(tmp_path):
-    with storedb.StoreDatabase(tmp_path / "test.db") as db:
-        date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with metadb.MetaDatabase(tmp_path / "test.db") as db:
+        date = datetime(2026, 1, 1, tzinfo=UTC)
         mb_id = db.add_mailbox("mbox")
         other_mb = db.add_mailbox("other-mbox")
         inbox = db.add_label("INBOX")
@@ -304,8 +308,8 @@ def test_get_known_message_ids(tmp_path):
 
 def test_get_known_message_ids_skips_unusable(tmp_path):
     """Messages without a Message-ID cannot be matched and must not be listed."""
-    with storedb.StoreDatabase(tmp_path / "test.db") as db:
-        date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with metadb.MetaDatabase(tmp_path / "test.db") as db:
+        date = datetime(2026, 1, 1, tzinfo=UTC)
         mb_id = db.add_mailbox("mbox")
         inbox = db.add_label("INBOX")
         for store_id, email_id in [("h1", ""), ("h2", "<>"), ("h3", "<ok@example.com>")]:

@@ -2,7 +2,7 @@ import sys
 
 import pytest
 
-from imapbackup import conf
+from mailvault import conf
 
 
 def test_find():
@@ -29,6 +29,7 @@ def test_find_tolerates_none_values():
 # ---------------------------------------------------------------------------
 # YAML loading
 # ---------------------------------------------------------------------------
+
 
 def test_load_yaml(tmp_path):
     yaml_file = tmp_path / "test.yaml"
@@ -139,15 +140,18 @@ def test_non_string_values_unchanged(tmp_path):
 
 
 def test_jobconfig_from_dict():
-    job = conf.JobConfig.from_dict("test", {
-        "server": "imap.example.com",
-        "port": 143,
-        "username": "user",
-        "password": "pass",
-        "tls": False,
-        "folders": ["INBOX", "Sent"],
-        "ignore_folder_flags": ["Junk", "Trash"],
-    })
+    job = conf.JobConfig.from_dict(
+        "test",
+        {
+            "server": "imap.example.com",
+            "port": 143,
+            "username": "user",
+            "password": "pass",
+            "tls": False,
+            "folders": ["INBOX", "Sent"],
+            "ignore_folder_flags": ["Junk", "Trash"],
+        },
+    )
     assert job.name == "test"
     assert job.server == "imap.example.com"
     assert job.port == 143
@@ -160,15 +164,16 @@ def test_jobconfig_from_dict():
 # TOML loading
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib requires Python 3.11+")
 class TestTomlConfig:
     def test_load_toml_basic(self, tmp_path):
         toml_file = tmp_path / "test.toml"
         toml_file.write_text(
-            '[global]\n'
-            'compress = true\n'
-            '\n'
-            '[[job]]\n'
+            "[global]\n"
+            "compress = true\n"
+            "\n"
+            "[[job]]\n"
             'name = "gmail"\n'
             'server = "imap.gmail.com"\n'
             'username = "user@gmail.com"\n'
@@ -184,11 +189,11 @@ class TestTomlConfig:
     def test_load_toml_multiple_jobs(self, tmp_path):
         toml_file = tmp_path / "test.toml"
         toml_file.write_text(
-            '[[job]]\n'
+            "[[job]]\n"
             'name = "gmail"\n'
             'server = "imap.gmail.com"\n'
-            '\n'
-            '[[job]]\n'
+            "\n"
+            "[[job]]\n"
             'name = "work"\n'
             'server = "imap.work.com"\n'
         )
@@ -199,10 +204,7 @@ class TestTomlConfig:
 
     def test_load_toml_defaults(self, tmp_path):
         toml_file = tmp_path / "test.toml"
-        toml_file.write_text(
-            '[[job]]\n'
-            'name = "test"\n'
-        )
+        toml_file.write_text('[[job]]\nname = "test"\n')
         config = conf.load(toml_file)
         assert config.compress is False
         job = config.jobs[0]
@@ -212,41 +214,31 @@ class TestTomlConfig:
 
     def test_load_toml_no_global(self, tmp_path):
         toml_file = tmp_path / "test.toml"
-        toml_file.write_text(
-            '[[job]]\n'
-            'name = "test"\n'
-            'server = "imap.example.com"\n'
-        )
+        toml_file.write_text('[[job]]\nname = "test"\nserver = "imap.example.com"\n')
         config = conf.load(toml_file)
         assert config.compress is False
         assert len(config.jobs) == 1
 
     def test_load_toml_unknown_global_fields(self, tmp_path):
         toml_file = tmp_path / "test.toml"
-        toml_file.write_text(
-            '[global]\n'
-            'unknown_thing = 42\n'
-            '\n'
-            '[[job]]\n'
-            'name = "test"\n'
-        )
+        toml_file.write_text('[global]\nunknown_thing = 42\n\n[[job]]\nname = "test"\n')
         config = conf.load(toml_file)
         assert not hasattr(config, "unknown_thing")
 
     def test_load_toml_job_fields(self, tmp_path):
         toml_file = tmp_path / "test.toml"
         toml_file.write_text(
-            '[[job]]\n'
+            "[[job]]\n"
             'name = "full"\n'
             'server = "imap.example.com"\n'
-            'port = 143\n'
+            "port = 143\n"
             'username = "user"\n'
             'password = "pass"\n'
-            'tls = false\n'
+            "tls = false\n"
             'folders = ["INBOX", "Sent"]\n'
             'ignore_folder_flags = ["Junk"]\n'
-            'with_db = false\n'
-            'incremental = false\n'
+            "with_db = false\n"
+            "incremental = false\n"
         )
         config = conf.load(toml_file)
         job = config.jobs[0]
@@ -261,33 +253,25 @@ class TestTomlConfig:
     def test_load_toml_env_expansion(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TEST_PASS", "s3cret")
         toml_file = tmp_path / "test.toml"
-        toml_file.write_text(
-            '[[job]]\n'
-            'name = "test"\n'
-            'password = "${TEST_PASS}"\n'
-        )
+        toml_file.write_text('[[job]]\nname = "test"\npassword = "${TEST_PASS}"\n')
         config = conf.load(toml_file)
         assert config.jobs[0].password == "s3cret"
 
     def test_load_toml_password_cmd(self, tmp_path):
         toml_file = tmp_path / "test.toml"
-        toml_file.write_text(
-            '[[job]]\n'
-            'name = "test"\n'
-            'password_cmd = "echo s3cret"\n'
-        )
+        toml_file.write_text('[[job]]\nname = "test"\npassword_cmd = "echo s3cret"\n')
         config = conf.load(toml_file, allow_exec=True)
         assert config.jobs[0].password == "s3cret"
 
     def test_load_toml_copy_roles(self, tmp_path):
         toml_file = tmp_path / "test.toml"
         toml_file.write_text(
-            '[[job]]\n'
+            "[[job]]\n"
             'name = "src"\n'
             'role = "source"\n'
             'server = "imap.src.com"\n'
-            '\n'
-            '[[job]]\n'
+            "\n"
+            "[[job]]\n"
             'name = "dst"\n'
             'role = "destination"\n'
             'server = "imap.dst.com"\n'
@@ -302,10 +286,7 @@ class TestTomlConfig:
 
     def test_load_toml_empty_jobs(self, tmp_path):
         toml_file = tmp_path / "test.toml"
-        toml_file.write_text(
-            '[global]\n'
-            'compress = true\n'
-        )
+        toml_file.write_text("[global]\ncompress = true\n")
         config = conf.load(toml_file)
         assert config.compress is True
         assert config.jobs == []

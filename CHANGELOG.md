@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.6.0 (2026-08-01)
+
+### Breaking changes
+
+- **The project was renamed from `imapbackup` to `mailvault`.** Same tool, new name -- the
+  PyPI name `imapbackup` was taken and the project now covers more than IMAP. The import
+  package is renamed `imapbackup` -> `mailvault`. To keep the old `ib-*` commands, pin to the
+  last pre-rename release, v0.5.0
+
+- **A single `mailvault` command replaces the three `ib-mailbox` / `ib-archive` / `ib-copy`
+  tools.** The subcommands map directly:
+  - `ib-mailbox folders|backup|verify` -> `mailvault folders|backup|verify`
+  - `ib-copy copy [--idle]` -> `mailvault copy [--idle]`; `ib-copy folders` -> `mailvault copy --list-folders`
+  - `ib-archive <sub>` -> `mailvault archive <sub>`, with `db-from-archive` renamed to `rebuild-db`
+
+  Global options are unified across all commands (`-v/--verbose`, `-q/--quiet`, `--log-file`,
+  `--config`, `--allow-exec`, `--job`) and must precede the command. The Windows build now
+  ships a single `mailvault.exe` instead of three `ib-*.exe`
+
+### Changed
+
+- **The Microsoft Graph backend is now a core dependency** (`msal`, `httpx`), no longer an
+  optional `graph` extra. Microsoft 365 is a first-class mailbox source, so `mailvault` always
+  ships with Graph support. The `mailvault[graph]` install variant no longer exists -- install
+  `mailvault` plainly
+
+- **Job configuration is validated up front:** an unknown `backend` value, or a `msgraph` job
+  missing `tenant_id` / `client_id` / `client_secret`, now fails immediately with a clear error
+  naming the job. Previously an unknown backend silently fell back to IMAP and missing Graph
+  credentials only surfaced deep in the backend
+
+- **`copy --idle`** now reports a clear error when the source mailbox is not an IMAP backend,
+  instead of failing later with an internal error. IDLE is an IMAP-only feature
+
+### Fixed
+
+- **Message-ID matching:** a malformed Message-ID such as `<>` no longer crashes a run on
+  Python 3.11/3.12, where CPython's email header parser raises `IndexError` on such values.
+  The value is now treated as unusable (empty key), consistent with the behaviour on 3.13+
+
 ## 0.5.0 (2026-07-31)
 
 ### Breaking changes

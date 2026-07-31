@@ -8,13 +8,14 @@ import re
 import time
 import urllib.parse
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from imapbackup import cas, conf, mailbox, mailutils
+import httpx
+import msal
 
-if TYPE_CHECKING:
-    import httpx
-    import msal
+from mailvault import conf, mailutils
+from mailvault.backend import base
+from mailvault.store import cas
 
 log = logging.getLogger(__name__)
 
@@ -33,15 +34,14 @@ INDEX_PAGE_SIZE = 500
 
 
 def _parse_graph_datetime(value: str | None) -> datetime | None:
-    """Parse a Graph `receivedDateTime` (e.g. `2024-01-01T12:00:00Z`).
+    """Parse a Graph `receivedDateTime` like `2024-01-01T12:00:00Z`.
 
-    Graph reports UTC with a trailing `Z`, which `datetime.fromisoformat` only
-    accepts from Python 3.11 on. Normalising it to `+00:00` keeps the 3.10
-    baseline working.
+    `datetime.fromisoformat` accepts the trailing `Z` on Python 3.11+, which is
+    the project's baseline.
     """
     if not value:
         return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return datetime.fromisoformat(value)
 
 
 def _backoff_delay(attempt: int) -> float:
@@ -69,10 +69,6 @@ class MSGraphClient:
     """
 
     def __init__(self, job: conf.JobConfig):
-        import httpx as _httpx
-        import msal as _msal
-
-        self._httpx = _httpx
         self.job = job
         self.job_name = job.name
         self.delete_after_export = job.delete_after_export
@@ -80,16 +76,14 @@ class MSGraphClient:
         self.max_retries = max(job.max_retries, 0)
 
         authority = f"https://login.microsoftonline.com/{job.tenant_id}"
-        self._msal_app: msal.ConfidentialClientApplication = (
-            _msal.ConfidentialClientApplication(
-                client_id=job.client_id,
-                authority=authority,
-                client_credential=job.client_secret,
-            )
+        self._msal_app: msal.ConfidentialClientApplication = msal.ConfidentialClientApplication(
+            client_id=job.client_id,
+            authority=authority,
+            client_credential=job.client_secret,
         )
         token = self._acquire_token()
 
-        self._http: httpx.Client = _httpx.Client(
+        self._http: httpx.Client = httpx.Client(
             headers={
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/json",
@@ -129,17 +123,19 @@ class MSGraphClient:
         while True:
             try:
                 resp = self._http.request(method, url, **kwargs)
-            except self._httpx.TransportError as exc:
+            except httpx.TransportError as exc:
                 if attempt >= self.max_retries:
-                    log.error(
-                        "%s: giving up after %s attempt(s): %s", url, attempt + 1, exc
-                    )
+                    log.error("%s: giving up after %s attempt(s): %s", url, attempt + 1, exc)
                     raise
                 delay = _backoff_delay(attempt)
                 attempt += 1
                 log.warning(
                     "%s: %s, retrying in %.0fs (attempt %s/%s)",
-                    url, exc, delay, attempt, self.max_retries,
+                    url,
+                    exc,
+                    delay,
+                    attempt,
+                    self.max_retries,
                 )
                 time.sleep(delay)
                 continue
@@ -155,7 +151,11 @@ class MSGraphClient:
                 attempt += 1
                 log.warning(
                     "%s: HTTP %s, retrying in %.0fs (attempt %s/%s)",
-                    url, resp.status_code, delay, attempt, self.max_retries,
+                    url,
+                    resp.status_code,
+                    delay,
+                    attempt,
+                    self.max_retries,
                 )
                 time.sleep(delay)
                 continue
@@ -267,7 +267,7 @@ class MSGraphClient:
         self,
         folder_name: str,
         since: datetime | None = None,
-    ) -> collections.abc.Generator[mailbox.MessageRef, None, None]:
+    ) -> collections.abc.Generator[base.MessageRef, None, None]:
         """List the folder's messages by Message-ID only, without downloading bodies."""
         folder_id = self._resolve_folder(folder_name)
         for item in self._iter_messages(
@@ -277,7 +277,7 @@ class MSGraphClient:
             select="id,internetMessageId,receivedDateTime",
             page_size=INDEX_PAGE_SIZE,
         ):
-            yield mailbox.MessageRef(
+            yield base.MessageRef(
                 msg_id=item["id"],
                 message_id=item.get("internetMessageId") or "",
                 date=_parse_graph_datetime(item.get("receivedDateTime")),
@@ -295,72 +295,43 @@ class MSGraphClient:
         folder_name: str,
         store: cas.ContentAddressedStorage,
         since: datetime | None = None,
-        callback: collections.abc.Callable[[dict], None] | None = None,
-    ) -> mailbox.BackupResult:
+        callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
+    ) -> base.BackupResult:
         folder_id = self._resolve_folder(folder_name)
         messages = list(self._iter_messages(folder_name, folder_id, since))
         log.info("%s::%s: found %s messages", self.job_name, folder_name, len(messages))
 
-        result = mailbox.BackupResult(total=len(messages))
+        result = base.BackupResult(total=len(messages))
         for idx, msg_info in enumerate(messages, 1):
             msg_id = msg_info["id"]
+            log_ctx = f"{self.job_name}::{folder_name}[{idx}]"
             try:
                 msg = self._download_mime(msg_id)
             except Exception as exc:
-                log.error(
-                    "%s::%s[%s]: download failed: %s",
-                    self.job_name,
-                    folder_name,
-                    idx,
-                    exc,
-                )
+                log.error("%s: download failed: %s", log_ctx, exc)
                 result.failed += 1
                 continue
 
             if self.exchange_journal:
                 unwrapped = mailutils.unwrap_exchange_journal_item(msg)
                 if unwrapped is None:
-                    log.warning(
-                        "%s::%s[%s]: not a journal item, skipping",
-                        self.job_name,
-                        folder_name,
-                        idx,
-                    )
+                    log.warning("%s: not a journal item, skipping", log_ctx)
                     continue
                 msg = unwrapped
 
-            status, store_id, _path = store.add(msg)
-            log.info(
-                "%s::%s[%s]: %s: id=%s",
-                self.job_name,
-                folder_name,
-                idx,
-                status,
-                store_id,
+            store_id = base.store_message(
+                store,
+                msg,
+                result=result,
+                log_ctx=log_ctx,
+                callback=callback,
+                metadata_fn=lambda sid, m=msg: mailutils.metadata(
+                    m, mailbox=self.job_name, folder=folder_name, store_id=sid
+                ),
             )
+            if store_id is None:
+                continue
 
-            if callback:
-                try:
-                    callback(
-                        mailutils.metadata(
-                            msg,
-                            mailbox=self.job_name,
-                            folder=folder_name,
-                            store_id=store_id,
-                        )
-                    )
-                except Exception as exc:
-                    log.exception(
-                        "%s::%s[%s]: Error in callback: %s",
-                        self.job_name,
-                        folder_name,
-                        idx,
-                        exc,
-                    )
-                    result.failed += 1
-                    continue
-
-            result.stored += 1
             if result.stored % 100 == 0:
                 log.info(
                     "%s::%s: %s/%s messages processed",
@@ -374,13 +345,7 @@ class MSGraphClient:
                 try:
                     self._graph_delete(msg_id)
                 except Exception as exc:
-                    log.error(
-                        "%s::%s[%s]: delete failed: %s",
-                        self.job_name,
-                        folder_name,
-                        idx,
-                        exc,
-                    )
+                    log.error("%s: delete failed: %s", log_ctx, exc)
 
         return result
 
@@ -388,13 +353,9 @@ class MSGraphClient:
         self,
         store: cas.ContentAddressedStorage,
         since: datetime | None = None,
-        callback: collections.abc.Callable[[dict], None] | None = None,
+        callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> None:
-        for folder in self.folders():
-            try:
-                self.folder_backup(folder, store, since=since, callback=callback)
-            except Exception as exc:
-                log.error("%s::%s: backup failed: %s", self.job_name, folder, exc)
+        base.run_full_backup(self, store, since=since, callback=callback)
 
     def get_messages(
         self,

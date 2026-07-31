@@ -1,23 +1,22 @@
 [project]
-name = "imapbackup"
-version = "0.5.0"
-description = "Export and backup tool for IMAP mailboxes"
+name = "mailvault"
+version = "0.6.0"
+description = "Back up and archive email from IMAP and Microsoft 365 (Graph) mailboxes"
 authors = [{ name = "Stefan Schönberger", email = "stefan@sniner.dev" }]
 requires-python = ">=3.11"
 dependencies = [
     "imapclient",
     "pyyaml",
     "zstandard",
+    "msal",
+    "httpx",
 ]
-
-[project.optional-dependencies]
-graph = ["msal", "httpx"]
 
 [dependency-groups]
 dev = [
     "pylint",
     "pytest",
-    "imapbackup[graph]",
+    "ruff",
     "basedpyright>=1.38.1",
 ]
 
@@ -32,22 +31,20 @@ venv = ".venv"
 
 [tool.ruff]
 line-length = 96
-ignore = ["E402"]
 
 [tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP"]
 per-file-ignores = { "__init__.py" = ["F401"] }
 
 [project.scripts]
-ib-mailbox = "imapbackup.cli.mailbox:main"
-ib-archive = "imapbackup.cli.archive:main"
-ib-copy    = "imapbackup.cli.copy:main"
+mailvault = "mailvault.cli:main"
 
 #[[tool.uv.index]]
 #name = "pypi"
 #url = "https://pypi.org/simple"
 
 #[tool.uv.sources]
-#imapbackup = { path = ".", editable = true }
+#mailvault = { path = ".", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

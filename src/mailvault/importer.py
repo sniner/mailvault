@@ -5,7 +5,8 @@ import logging
 import os
 import pathlib
 
-from imapbackup import cas, mailutils
+from mailvault import mailutils
+from mailvault.store import cas
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ def _read_eml(path: pathlib.Path) -> bytes:
     return path.read_bytes()
 
 
-class MailArchive:
+class ExternalMailArchive:
     def __init__(self, root_dir: pathlib.Path):
         self.root_dir = root_dir
 
@@ -51,7 +52,7 @@ class MailArchive:
                     log.debug("%s: file deleted", eml)
 
     def addresses(self) -> collections.abc.Generator[tuple[str, str], None, None]:
-        """Yield unique sender/recipient addresses from all emails in the archive."""
+        """Yield unique addresses from all emails, tagged "from" or "to"."""
         addrs = set()
         for eml in self.walk():
             from_addr, to_addr = mailutils.addresses(
@@ -60,11 +61,11 @@ class MailArchive:
             for addr in from_addr:
                 if addr not in addrs:
                     addrs.add(addr)
-                    yield "<", addr
+                    yield "from", addr
             for addr in to_addr:
                 if addr not in addrs:
                     addrs.add(addr)
-                    yield ">", addr
+                    yield "to", addr
 
     def stats(self) -> tuple[int, int]:
         """Return (count, total_size_in_bytes) for all emails in the archive."""
@@ -76,9 +77,13 @@ class MailArchive:
         return count, size
 
 
-class DocuwareMailArchive(MailArchive):
+class DocuwareMailArchive(ExternalMailArchive):
     def walk(self) -> collections.abc.Generator[pathlib.Path, None, None]:
-        """Yield paths to .eml files in a Docuware archive (one per directory, largest wins)."""
+        """Yield paths to .eml files in a Docuware archive (one per directory, largest wins).
+
+        Docuware exports are always plain `.eml` (never zstd-compressed), so --
+        unlike the base class -- the `.eml.zst` variant is deliberately ignored.
+        """
         for path, _, files in os.walk(self.root_dir):
             eml = [pathlib.Path(path, f) for f in files if f.endswith(".eml")]
             if len(eml) > 1:

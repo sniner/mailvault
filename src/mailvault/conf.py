@@ -12,6 +12,19 @@ import yaml
 
 log = logging.getLogger(__name__)
 
+VALID_BACKENDS = ("imap", "msgraph")
+
+# Fields each backend cannot work without. Validated per job so a misconfigured
+# mailbox fails early with a clear message instead of deep inside the backend.
+_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "imap": ("server", "username"),
+    "msgraph": ("tenant_id", "client_id", "client_secret", "username"),
+}
+
+
+class ConfigError(Exception):
+    pass
+
 
 def _expand_env(value: str) -> str:
     """Expand ${VAR} and ${VAR:-default} patterns in a string."""
@@ -45,10 +58,19 @@ def _resolve_values(data: dict, allow_exec: bool = False) -> dict:
             continue
         try:
             result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, timeout=10,
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if result.returncode != 0:
-                log.error("Command '%s' failed (exit %d): %s", cmd, result.returncode, result.stderr.strip())
+                log.error(
+                    "Command '%s' failed (exit %d): %s",
+                    cmd,
+                    result.returncode,
+                    result.stderr.strip(),
+                )
                 continue
             resolved[target_key] = result.stdout.strip()
         except subprocess.TimeoutExpired:
@@ -86,6 +108,24 @@ class JobConfig:
     client_id: str = ""
     client_secret: str = ""
 
+    def validate(self) -> None:
+        """Check that the backend is known and its required fields are present.
+
+        Raises ConfigError with a message naming the offending job, so a typo in
+        `backend` or a missing Graph credential fails early and clearly instead
+        of silently falling back to IMAP or crashing deep in the backend.
+        """
+        if self.backend not in VALID_BACKENDS:
+            raise ConfigError(
+                f"{self.name}: unknown backend {self.backend!r} "
+                f"(expected one of {', '.join(VALID_BACKENDS)})"
+            )
+        missing = [f for f in _REQUIRED_FIELDS[self.backend] if not getattr(self, f)]
+        if missing:
+            raise ConfigError(
+                f"{self.name}: backend {self.backend!r} requires: {', '.join(missing)}"
+            )
+
     @classmethod
     def from_dict(cls, name: str, data: dict, allow_exec: bool = False) -> JobConfig:
         resolved = _resolve_values(data, allow_exec=allow_exec)
@@ -114,15 +154,21 @@ class Config:
         jobs = []
         for job_data in data.get("job", []):
             name = job_data.get("name", ".")
-            jobs.append(JobConfig.from_dict(
-                name, {k: v for k, v in job_data.items() if k != "name"},
-                allow_exec=allow_exec,
-            ))
+            jobs.append(
+                JobConfig.from_dict(
+                    name,
+                    {k: v for k, v in job_data.items() if k != "name"},
+                    allow_exec=allow_exec,
+                )
+            )
 
         return cls(jobs=jobs, **known_global)
 
     @classmethod
     def from_yaml(cls, data: dict, allow_exec: bool = False) -> Config:
+        # The legacy YAML format is a flat mapping of job-name -> job-config; it
+        # has no `global` section, so global options like `compress` are only
+        # available via TOML (see from_toml). Kept for backwards compatibility.
         jobs = [
             JobConfig.from_dict(name, content, allow_exec=allow_exec)
             for name, content in data.items()

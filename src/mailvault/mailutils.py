@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import bisect
 import collections.abc
+import dataclasses
 import email.message
 import email.parser
 import email.policy
@@ -11,7 +12,7 @@ import logging
 import re
 from datetime import datetime
 
-from imapbackup import fixedpolicy
+from mailvault import fixedpolicy
 
 
 def _mail_reader(msg: io.IOBase | bytes) -> io.IOBase:
@@ -30,7 +31,7 @@ def decode_email(
     reader = _mail_reader(msg)
     return email.parser.BytesParser(policy=email.policy.default).parse(
         reader,  # type: ignore
-        headersonly=headersonly
+        headersonly=headersonly,
     )
 
 
@@ -91,7 +92,13 @@ def normalize_message_id(value: str | None) -> str:
     collapsed = " ".join(value.split())
     if not collapsed:
         return ""
-    parsed = str(email.policy.default.header_fetch_parse("Message-Id", collapsed))
+    try:
+        parsed = str(email.policy.default.header_fetch_parse("Message-Id", collapsed))
+    except Exception:
+        # CPython's email header parser raises HeaderParseError and, on some patch
+        # levels (e.g. 3.11/3.12), IndexError on malformed values such as "<>".
+        # Such a value cannot serve as a comparison key -- treat it as unusable.
+        return ""
     return parsed.strip().strip("<>").strip().casefold()
 
 
@@ -113,9 +120,7 @@ class MessageIdIndex:
 
     def __init__(self, message_ids: collections.abc.Iterable[str]):
         self._exact = {mid for mid in message_ids if mid}
-        self._long = sorted(
-            mid for mid in self._exact if len(mid) > self.TRUNCATION_THRESHOLD
-        )
+        self._long = sorted(mid for mid in self._exact if len(mid) > self.TRUNCATION_THRESHOLD)
 
     def __contains__(self, value: str) -> bool:
         if not value:
@@ -137,27 +142,51 @@ def subject(msg: email.message.EmailMessage) -> str:
     return msg.get("Subject") or ""
 
 
+@dataclasses.dataclass(frozen=True)
+class MessageMetadata:
+    """The metadata record extracted from a message and fed to the store database.
+
+    Produced by :func:`metadata` in the backends and consumed by the store
+    callback in ``jobs``. Being a dataclass rather than a bare dict, a mistyped
+    field name is caught statically instead of surfacing as a runtime KeyError in
+    the middle of a backup run.
+
+    ``labels`` may contain ``bytes`` as well as ``str`` because Gmail reports its
+    labels as raw bytes; hence it is deliberately not annotated ``list[str]``.
+    """
+
+    mailbox: str
+    folder: str
+    store_id: str
+    email_id: str
+    date: datetime | None
+    subject: str
+    labels: list
+    sender: set[str]
+    recipients: set[str]
+
+
 def metadata(
     msg: bytes,
     mailbox: str,
     folder: str,
     store_id: str,
-    labels: list[str] | None = None,
-) -> dict:
+    labels: list | None = None,
+) -> MessageMetadata:
     """Extract the metadata record that the storage database is fed with."""
     header = decode_email_header(msg)
     from_addrs, to_addrs = addresses(header)
-    return {
-        "mailbox": mailbox,
-        "folder": folder,
-        "email_id": message_id(header),
-        "store_id": store_id,
-        "labels": labels if labels is not None else [folder],
-        "sender": from_addrs,
-        "recipients": to_addrs,
-        "date": date(header),
-        "subject": subject(header),
-    }
+    return MessageMetadata(
+        mailbox=mailbox,
+        folder=folder,
+        store_id=store_id,
+        email_id=message_id(header),
+        date=date(header),
+        subject=subject(header),
+        labels=labels if labels is not None else [folder],
+        sender=from_addrs,
+        recipients=to_addrs,
+    )
 
 
 def unwrap_exchange_journal_item(msg: io.IOBase | bytes) -> bytes | None:

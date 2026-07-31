@@ -1,7 +1,6 @@
 import pytest
 
-from imapbackup import mailutils
-from .fixtures import dummy_eml_bytes
+from mailvault import mailutils
 
 
 def test_decode_email_header(dummy_eml_bytes):
@@ -41,7 +40,7 @@ Body.
 def test_addresses_with_received_for():
     eml = b"""From: sender@example.com
 To: list@example.com
-Received: from mx.example.com by server.example.com for <hidden@example.com>; Wed, 20 Feb 2026 12:00:00 +0100
+Received: from mx.test by srv.test for <hidden@example.com>; Wed, 20 Feb 2026 12:00:00 +0100
 Subject: Received For Test
 
 Body.
@@ -126,7 +125,7 @@ def test_unwrap_exchange_journal_item():
         b"From: journal@example.com\r\n"
         b"To: archive@example.com\r\n"
         b"Subject: Journal\r\n"
-        b"Content-Type: multipart/mixed; boundary=\"BOUNDARY\"\r\n"
+        b'Content-Type: multipart/mixed; boundary="BOUNDARY"\r\n'
         b"\r\n"
         b"--BOUNDARY\r\n"
         b"Content-Type: text/plain\r\n"
@@ -161,6 +160,7 @@ Just a plain email, no RFC822 attachments.
 # ---------------------------------------------------------------------------
 # normalize_message_id
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize(
     "value,expected",
@@ -197,24 +197,23 @@ def test_normalize_message_id_matches_across_sources():
 # metadata
 # ---------------------------------------------------------------------------
 
+
 def test_metadata_record(dummy_eml_bytes):
-    md = mailutils.metadata(
-        dummy_eml_bytes, mailbox="mb", folder="INBOX", store_id="deadbeef"
-    )
-    assert md["mailbox"] == "mb"
-    assert md["folder"] == "INBOX"
-    assert md["store_id"] == "deadbeef"
-    assert md["labels"] == ["INBOX"]
-    assert md["subject"] == "Test Email"
-    assert "test@example.com" in md["sender"]
-    assert "recipient@example.com" in md["recipients"]
+    md = mailutils.metadata(dummy_eml_bytes, mailbox="mb", folder="INBOX", store_id="deadbeef")
+    assert md.mailbox == "mb"
+    assert md.folder == "INBOX"
+    assert md.store_id == "deadbeef"
+    assert md.labels == ["INBOX"]
+    assert md.subject == "Test Email"
+    assert "test@example.com" in md.sender
+    assert "recipient@example.com" in md.recipients
 
 
 def test_metadata_explicit_labels(dummy_eml_bytes):
     md = mailutils.metadata(
         dummy_eml_bytes, mailbox="mb", folder="INBOX", store_id="x", labels=["A", "B"]
     )
-    assert md["labels"] == ["A", "B"]
+    assert md.labels == ["A", "B"]
 
 
 @pytest.mark.parametrize(
@@ -250,6 +249,7 @@ def test_normalize_message_id_is_idempotent(value):
 # ---------------------------------------------------------------------------
 # MessageIdIndex
 # ---------------------------------------------------------------------------
+
 
 def _long_id(tail: str = "spnotify") -> str:
     """A Message-ID long enough to be affected by server-side truncation."""

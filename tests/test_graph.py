@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import dataclasses
+from datetime import UTC
 from typing import Any
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
-httpx = pytest.importorskip("httpx")
-
-from imapbackup import graph
+from mailvault.backend import graph
 
 
 @dataclasses.dataclass
@@ -33,7 +33,6 @@ def _make_client(monkeypatch, responses: list, max_retries: int = 3) -> _Harness
     refresh = MagicMock()
     http = MagicMock()
     http.request = request
-    client._httpx = httpx
     client._http = http
     client.max_retries = max_retries
     client._refresh_auth = refresh
@@ -44,6 +43,7 @@ def _make_client(monkeypatch, responses: list, max_retries: int = 3) -> _Harness
 # ---------------------------------------------------------------------------
 # Backoff calculation
 # ---------------------------------------------------------------------------
+
 
 class TestBackoff:
     def test_delay_grows_exponentially(self):
@@ -60,13 +60,11 @@ class TestBackoff:
 
 class TestParseDatetime:
     def test_parses_z_suffix(self):
-        # Graph reports UTC as `...Z`; the parser normalises it so a single code
-        # path handles the timestamp regardless of Python version quirks.
-        from datetime import timezone
-
+        # Graph reports UTC with a trailing `Z`; fromisoformat parses it
+        # directly on Python 3.11+.
         dt = graph._parse_graph_datetime("2024-01-01T12:00:00Z")
         assert dt is not None
-        assert dt.utcoffset() == timezone.utc.utcoffset(None)
+        assert dt.utcoffset() == UTC.utcoffset(None)
         assert (dt.year, dt.month, dt.day, dt.hour) == (2024, 1, 1, 12)
 
     def test_none_and_empty(self):
@@ -89,6 +87,7 @@ class TestParseDatetime:
 # ---------------------------------------------------------------------------
 # _request
 # ---------------------------------------------------------------------------
+
 
 class TestRequestRetry:
     def test_gateway_timeout_is_retried(self, monkeypatch):
@@ -123,16 +122,12 @@ class TestRequestRetry:
         assert h.request.call_count == 1
 
     def test_transport_error_is_retried(self, monkeypatch):
-        h = _make_client(
-            monkeypatch, [httpx.ConnectTimeout("timed out"), httpx.Response(200)]
-        )
+        h = _make_client(monkeypatch, [httpx.ConnectTimeout("timed out"), httpx.Response(200)])
         assert h.client._request("GET", "https://example.invalid/msg").status_code == 200
         assert h.request.call_count == 2
 
     def test_transport_error_propagates_after_last_attempt(self, monkeypatch):
-        h = _make_client(
-            monkeypatch, [httpx.ConnectTimeout("timed out")] * 4, max_retries=2
-        )
+        h = _make_client(monkeypatch, [httpx.ConnectTimeout("timed out")] * 4, max_retries=2)
         with pytest.raises(httpx.ConnectTimeout):
             h.client._request("GET", "https://example.invalid/msg")
         assert h.request.call_count == 3
@@ -146,7 +141,12 @@ class TestRequestRetry:
         # 401 -> refresh, then two retryable failures still fit into max_retries=2.
         h = _make_client(
             monkeypatch,
-            [httpx.Response(401), httpx.Response(503), httpx.Response(504), httpx.Response(200)],
+            [
+                httpx.Response(401),
+                httpx.Response(503),
+                httpx.Response(504),
+                httpx.Response(200),
+            ],
             max_retries=2,
         )
         assert h.client._request("GET", "https://example.invalid/msg").status_code == 200

@@ -1,4 +1,4 @@
-from imapbackup import fixedpolicy
+from mailvault import fixedpolicy
 
 
 def test_fixed_message():

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import collections.abc
-import dataclasses
 import functools
 import imaplib
 import logging
@@ -11,7 +10,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timedelta
-from typing import Any, Protocol
+from typing import Any
 
 import imapclient
 
@@ -27,7 +26,10 @@ if sys.version_info >= (3, 14):
     except Exception:
         pass
 
-from imapbackup import cas, conf, mailutils, utils
+from mailvault import conf, mailutils, utils
+from mailvault.backend import base
+from mailvault.backend.base import BackupResult, MessageRef
+from mailvault.store import cas
 
 log = logging.getLogger(__name__)
 
@@ -40,99 +42,52 @@ class MailboxError(Exception):
 INDEX_CHUNK_SIZE = 500
 
 
-@dataclasses.dataclass
-class BackupResult:
-    """Outcome of a folder backup.
-
-    `failed` counts messages that were seen on the server but could not be
-    stored locally. A run with failures is incomplete, so the caller must not
-    advance the incremental snapshot — otherwise those messages would fall
-    outside the date filter of every future run and stay lost for good.
-    """
-
-    total: int = 0
-    stored: int = 0
-    failed: int = 0
-
-    @property
-    def complete(self) -> bool:
-        """True if every message seen on the server was accounted for."""
-        return self.failed == 0
-
-
-@dataclasses.dataclass(frozen=True)
-class MessageRef:
-    """Reference to a message on the server, without its content.
-
-    `msg_id` is backend-specific (IMAP UID, Graph message id) and only valid
-    together with the folder it was listed from.
-    """
-
-    msg_id: Any
-    message_id: str
-    date: datetime | None = None
-
-
-class MailboxClient(Protocol):
-    """Protocol defining the interface for mailbox backends.
-
-    Each backend (IMAP, MS Graph, ...) must implement these methods so that
-    the job runner in ``jobs.py`` can treat them interchangeably.
-    """
-
-    job_name: str
-
-    def folders(self) -> collections.abc.Generator[str, None, None]: ...
-
-    def folder_backup(
-        self,
-        folder_name: str,
-        store: cas.ContentAddressedStorage,
-        since: datetime | None = ...,
-        callback: collections.abc.Callable[[dict], None] | None = ...,
-    ) -> BackupResult: ...
-
-    def message_index(
-        self, folder_name: str, since: datetime | None = ...,
-    ) -> collections.abc.Generator[MessageRef, None, None]: ...
-
-    def fetch_message(self, msg_id: Any, folder_name: str) -> bytes: ...
-
-    def full_backup(
-        self,
-        store: cas.ContentAddressedStorage,
-        since: datetime | None = ...,
-        callback: collections.abc.Callable[[dict], None] | None = ...,
-    ) -> None: ...
-
-    def get_messages(
-        self, folder_name: str, since: datetime | None = ...,
-    ) -> collections.abc.Generator[tuple[Any, datetime | None, bytes], None, None]: ...
-
-    def save_message(
-        self, msg: bytes, folder_name: str, date: datetime | None = ...,
-    ) -> None: ...
-
-    def move_message(self, msg_id: Any, folder_name: str) -> None: ...
-
-    def delete_message(self, msg_id: Any, expunge: bool = ...) -> None: ...
-
-
 class ImapClient:
-    def __init__(self, mailbox: Mailbox):
-        self.mbox = mailbox
-        self.conn: imapclient.IMAPClient = mailbox._conn  # type: ignore
-        self.job_name = mailbox.job_name
+    def __init__(self, conn: imapclient.IMAPClient, job: conf.JobConfig):
+        self.job = job
+        self.conn = conn
+        self.job_name = job.name
         self.lock = threading.RLock()
         self.capabilities = self.conn.capabilities()
-        self.delete_after_export = self.mbox.job.delete_after_export
-        self.exchange_journal = self.mbox.job.exchange_journal
+        self.delete_after_export = job.delete_after_export
+        self.exchange_journal = job.exchange_journal
         self.gmail = functools.reduce(
             lambda acc, c: acc or c.startswith(b"X-GM-"), self.capabilities, False
         )
         self.move_cap = b"MOVE" in self.capabilities
-        self.trash_folder = self.mbox.job.trash_folder
-        self.error_folder = self.mbox.job.error_folder if self.move_cap else None
+        self.trash_folder = job.trash_folder
+        self.error_folder = job.error_folder if self.move_cap else None
+
+    @classmethod
+    def connect(cls, job: conf.JobConfig) -> ImapClient:
+        """Open a TLS IMAP connection for `job`, log in, and wrap it in a client."""
+        if job.tls:
+            tls_context = ssl.create_default_context()
+            if not job.tls_check_hostname:
+                log.warning("%s: TLS hostname check disabled", job.name)
+                tls_context.check_hostname = False
+            if not job.tls_verify_cert:
+                log.warning("%s: TLS certificate verification disabled", job.name)
+                tls_context.verify_mode = ssl.CERT_NONE
+        else:
+            log.warning("%s: TLS disabled, connection is unencrypted", job.name)
+            tls_context = None
+
+        conn = imapclient.IMAPClient(
+            host=job.server,
+            port=job.port,
+            ssl=job.tls,
+            ssl_context=tls_context,
+        )
+        conn.login(job.username, job.password)
+        return cls(conn, job)
+
+    def close(self) -> None:
+        """Log out and close the underlying connection."""
+        try:
+            self.conn.logout()
+        except Exception as exc:
+            log.debug("%s: logout failed: %s", self.job_name, exc)
 
     @staticmethod
     def _isfoldertype(folder: tuple, *flags: str) -> str | None:
@@ -154,9 +109,9 @@ class ImapClient:
     def folders(self) -> collections.abc.Generator[str, None, None]:
         with self.lock:
             for folder in self.conn.list_folders():
-                if self._isfoldertype(folder, *self.mbox.job.ignore_folder_flags):
+                if self._isfoldertype(folder, *self.job.ignore_folder_flags):
                     continue
-                if self._isfoldername(folder, *self.mbox.job.ignore_folder_names):
+                if self._isfoldername(folder, *self.job.ignore_folder_names):
                     continue
                 yield folder[2]
 
@@ -166,7 +121,10 @@ class ImapClient:
         self.conn.select_folder(folder_name, readonly=readonly)
 
     def watch_folder(
-        self, folder_name: str, timeout: int = 20, break_out: int = 3600,
+        self,
+        folder_name: str,
+        timeout: int = 20,
+        break_out: int = 3600,
     ) -> collections.abc.Generator[tuple[str, list], None, None]:
         with self.lock:
             start_time = time.monotonic()
@@ -212,7 +170,9 @@ class ImapClient:
                 ).items():
                     yield msg_id, msg_data[b"RFC822"], msg_data[b"INTERNALDATE"]  # type: ignore
             except (OSError, imaplib.IMAP4.error) as exc:
-                log.exception("%s::%s[%s]: fetch failed: %s", self.job_name, folder_name, msg_id, exc)
+                log.exception(
+                    "%s::%s[%s]: fetch failed: %s", self.job_name, folder_name, msg_id, exc
+                )
                 if result is not None:
                     # fetch() returns the whole chunk at once, so nothing of it
                     # was yielded before the failure.
@@ -222,7 +182,9 @@ class ImapClient:
                     log.debug("%s::%s: deleting %s", self.job_name, folder_name, msg_ids_str)
                     self.conn.delete_messages(msg_ids)
 
-    def _collect_metadata(self, folder_name: str, msg_id: Any, store_id: str, msg: bytes) -> dict:
+    def _collect_metadata(
+        self, folder_name: str, msg_id: Any, store_id: str, msg: bytes
+    ) -> mailutils.MessageMetadata:
         if self.gmail:
             labels = self.conn.get_gmail_labels(msg_id)
             labels = labels.get(msg_id, [])
@@ -232,7 +194,7 @@ class ImapClient:
             labels = [folder_name]
         return mailutils.metadata(
             msg,
-            mailbox=self.mbox.job_name,
+            mailbox=self.job_name,
             folder=folder_name,
             store_id=store_id,
             labels=labels,
@@ -311,7 +273,10 @@ class ImapClient:
                     if processed % 100 == 0:
                         log.info(
                             "%s::%s: %s/%s messages processed",
-                            self.job_name, folder_name, processed, items_found,
+                            self.job_name,
+                            folder_name,
+                            processed,
+                            items_found,
                         )
                     if self.delete_after_export and auto_delete:
                         self.conn.delete_messages(msg_id)
@@ -324,12 +289,36 @@ class ImapClient:
             finally:
                 self.conn.unselect_folder()
 
+    def _handle_non_journal_item(self, folder_name: str, msg_id: int) -> None:
+        """Deal with a message that turned out not to be an Exchange journal item.
+
+        With an error folder the item is relocated there (MOVE = copy + delete,
+        so it is safely off the source folder); without one it is deliberately
+        left on the server. Either way it is never deleted unarchived, and a
+        skip is not a failure -- the snapshot may still advance.
+        """
+        if self.error_folder:
+            log.warning(
+                "%s::%s[%s]: not a journal item, moving to error folder",
+                self.job_name,
+                folder_name,
+                msg_id,
+            )
+            self.move_message(msg_id, self.error_folder)
+        else:
+            log.warning(
+                "%s::%s[%s]: not a journal item, skipping (kept on server)",
+                self.job_name,
+                folder_name,
+                msg_id,
+            )
+
     def folder_backup(
         self,
         folder_name: str,
         store: cas.ContentAddressedStorage,
         since: datetime | None = None,
-        callback: collections.abc.Callable[[dict], None] | None = None,
+        callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> BackupResult:
         result = BackupResult()
         # In journal mode the non-journal items are skipped, so deletion must be
@@ -343,61 +332,24 @@ class ImapClient:
             if self.exchange_journal:
                 msg = mailutils.unwrap_exchange_journal_item(msg)
                 if msg is None:
-                    if self.error_folder:
-                        # move_message uses MOVE (copy + delete), so the item is
-                        # safely relocated and gone from the source folder.
-                        log.warning(
-                            "%s::%s[%s]: not a journal item, moving to error folder",
-                            self.job_name,
-                            folder_name,
-                            msg_id,
-                        )
-                        self.move_message(msg_id, self.error_folder)
-                    else:
-                        # No error folder: deliberately skip. The item is left on
-                        # the server (auto_delete is off for the journal path), so
-                        # it is never deleted unarchived. A skip is not a failure,
-                        # so the snapshot may still advance.
-                        log.warning(
-                            "%s::%s[%s]: not a journal item, skipping (kept on server)",
-                            self.job_name,
-                            folder_name,
-                            msg_id,
-                        )
+                    self._handle_non_journal_item(folder_name, msg_id)
                     continue
-            status, store_id, _path = store.add(msg)
-            log.info(
-                "%s::%s[%s]: %s: id=%s",
-                self.job_name,
-                folder_name,
-                msg_id,
-                status,
-                store_id,
+            store_id = base.store_message(
+                store,
+                msg,
+                result=result,
+                log_ctx=f"{self.job_name}::{folder_name}[{msg_id}]",
+                callback=callback,
+                metadata_fn=lambda sid, mid=msg_id, m=msg: self._collect_metadata(
+                    folder_name=folder_name, msg_id=mid, store_id=sid, msg=m
+                ),
             )
-            if callback:
-                try:
-                    md = self._collect_metadata(
-                        folder_name=folder_name,
-                        msg_id=msg_id,
-                        store_id=store_id,
-                        msg=msg,
-                    )
-                    callback(md)
-                except Exception as exc:
-                    log.exception(
-                        "%s::%s[%s]: Error in callback: %s",
-                        self.job_name,
-                        folder_name,
-                        msg_id,
-                        exc,
-                    )
-                    result.failed += 1
-                    continue
+            if store_id is None:
+                continue
             if not auto_delete and self.delete_after_export:
                 # Journal path: delete only now that the item is archived. The
                 # generic auto-delete was disabled for this run.
                 self.conn.delete_messages(msg_id)
-            result.stored += 1
         if self.gmail and self.trash_folder:
             self._clear_folder(self.trash_folder)
         return result
@@ -406,15 +358,9 @@ class ImapClient:
         self,
         store: cas.ContentAddressedStorage,
         since: datetime | None = None,
-        callback: collections.abc.Callable[[dict], None] | None = None,
+        callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> None:
-        for folder in self.folders():
-            try:
-                self.folder_backup(
-                    folder_name=folder, store=store, since=since, callback=callback
-                )
-            except Exception as exc:
-                log.error("%s::%s: backup failed: %s", self.job_name, folder, exc)
+        base.run_full_backup(self, store, since=since, callback=callback)
 
     def get_messages(
         self, folder_name: str, since: datetime | None = None
@@ -433,15 +379,15 @@ class ImapClient:
                 message_ids = self._search_folder(since)
                 log.info(
                     "%s::%s: indexing %s messages",
-                    self.job_name, folder_name, len(message_ids),
+                    self.job_name,
+                    folder_name,
+                    len(message_ids),
                 )
                 for chunk in utils.chunks(message_ids, INDEX_CHUNK_SIZE):
                     try:
                         fetched = self.conn.fetch(chunk, ["ENVELOPE"])
                     except (OSError, imaplib.IMAP4.error) as exc:
-                        raise MailboxError(
-                            f"{folder_name}: indexing failed: {exc}"
-                        ) from exc
+                        raise MailboxError(f"{folder_name}: indexing failed: {exc}") from exc
                     for msg_id, msg_data in fetched.items():
                         envelope = msg_data[b"ENVELOPE"]
                         raw_id = getattr(envelope, "message_id", None)
@@ -487,54 +433,3 @@ class ImapClient:
             self.conn.delete_messages(msg_id)
             if expunge:
                 self.conn.expunge(msg_id)
-
-
-class Mailbox:
-    def __init__(self, job: conf.JobConfig):
-        self.job = job
-        self.job_name = self.job.name
-        self._client: MailboxClient | None = None
-        self._conn: imapclient.IMAPClient | None = None
-
-    def __enter__(self) -> MailboxClient:
-        if self.job.backend == "msgraph":
-            from imapbackup.graph import MSGraphClient
-
-            self._client = MSGraphClient(self.job)
-            return self._client
-
-        if self.job.tls:
-            tls_context = ssl.create_default_context()
-            if not self.job.tls_check_hostname:
-                log.warning("%s: TLS hostname check disabled", self.job_name)
-                tls_context.check_hostname = False
-            if not self.job.tls_verify_cert:
-                log.warning("%s: TLS certificate verification disabled", self.job_name)
-                tls_context.verify_mode = ssl.CERT_NONE
-        else:
-            log.warning("%s: TLS disabled, connection is unencrypted", self.job_name)
-            tls_context = None
-
-        self._conn = imapclient.IMAPClient(
-            host=self.job.server,
-            port=self.job.port,
-            ssl=self.job.tls,
-            ssl_context=tls_context,
-        )
-        self._conn.login(self.job.username, self.job.password)
-        self._client = ImapClient(self)
-        return self._client
-
-    def __exit__(self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any) -> None:
-        if self._conn:
-            self._conn.logout()
-            self._conn = None
-        if self._client:
-            close = getattr(self._client, "close", None)
-            if close:
-                close()
-        self._client = None
-
-    @property
-    def client(self) -> MailboxClient | None:
-        return self._client

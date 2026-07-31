@@ -1,16 +1,17 @@
-"""Tests for imapbackup.mailbox with mocked IMAPClient."""
+"""Tests for mailvault.backend.imap with mocked IMAPClient."""
 
 from __future__ import annotations
 
 import imaplib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from imapbackup import cas, conf, mailbox
-
+from mailvault import conf
+from mailvault.backend import imap
+from mailvault.store import cas
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -59,69 +60,71 @@ def _make_client(job=None, conn=None, **job_overrides):
         job = _make_job(**job_overrides)
     if conn is None:
         conn = _make_mock_conn()
-    mb = mailbox.Mailbox(job=job)
-    mb._conn = conn
-    client = mailbox.ImapClient(mb)
-    return client
+    return imap.ImapClient(conn, job)
 
 
 # ---------------------------------------------------------------------------
-# Mailbox context manager
+# ImapClient.connect / close
 # ---------------------------------------------------------------------------
 
-class TestMailboxContextManager:
-    @patch("imapbackup.mailbox.imapclient.IMAPClient")
-    def test_enter_creates_connection_with_tls(self, mock_imap_cls):
+
+class TestConnect:
+    @patch("mailvault.backend.imap.imapclient.IMAPClient")
+    def test_creates_connection_with_tls(self, mock_imap_cls):
         mock_conn = _make_mock_conn()
         mock_imap_cls.return_value = mock_conn
         job = _make_job()
 
-        with mailbox.Mailbox(job=job) as client:
-            assert client is not None
-            mock_imap_cls.assert_called_once()
-            kwargs = mock_imap_cls.call_args
-            assert kwargs.kwargs["host"] == "imap.example.com"
-            assert kwargs.kwargs["port"] == 993
-            assert kwargs.kwargs["ssl"] is True
-            assert kwargs.kwargs["ssl_context"] is not None
-            mock_conn.login.assert_called_once_with("user", "pass")
+        client = imap.ImapClient.connect(job)
 
-    @patch("imapbackup.mailbox.imapclient.IMAPClient")
-    def test_exit_calls_logout(self, mock_imap_cls):
+        assert client is not None
+        mock_imap_cls.assert_called_once()
+        kwargs = mock_imap_cls.call_args
+        assert kwargs.kwargs["host"] == "imap.example.com"
+        assert kwargs.kwargs["port"] == 993
+        assert kwargs.kwargs["ssl"] is True
+        assert kwargs.kwargs["ssl_context"] is not None
+        mock_conn.login.assert_called_once_with("user", "pass")
+
+    @patch("mailvault.backend.imap.imapclient.IMAPClient")
+    def test_close_calls_logout(self, mock_imap_cls):
         mock_conn = _make_mock_conn()
         mock_imap_cls.return_value = mock_conn
-        job = _make_job()
 
-        with mailbox.Mailbox(job=job):
-            pass
+        client = imap.ImapClient.connect(_make_job())
+        client.close()
+
         mock_conn.logout.assert_called_once()
 
-    @patch("imapbackup.mailbox.imapclient.IMAPClient")
+    @patch("mailvault.backend.imap.imapclient.IMAPClient")
     def test_no_tls(self, mock_imap_cls):
         mock_conn = _make_mock_conn()
         mock_imap_cls.return_value = mock_conn
         job = _make_job(tls=False)
 
-        with mailbox.Mailbox(job=job):
-            kwargs = mock_imap_cls.call_args
-            assert kwargs.kwargs["ssl"] is False
-            assert kwargs.kwargs["ssl_context"] is None
+        imap.ImapClient.connect(job)
 
-    @patch("imapbackup.mailbox.imapclient.IMAPClient")
+        kwargs = mock_imap_cls.call_args
+        assert kwargs.kwargs["ssl"] is False
+        assert kwargs.kwargs["ssl_context"] is None
+
+    @patch("mailvault.backend.imap.imapclient.IMAPClient")
     def test_tls_no_hostname_check(self, mock_imap_cls):
         mock_conn = _make_mock_conn()
         mock_imap_cls.return_value = mock_conn
         job = _make_job(tls_check_hostname=False, tls_verify_cert=True)
 
-        with mailbox.Mailbox(job=job):
-            ssl_ctx = mock_imap_cls.call_args.kwargs["ssl_context"]
-            assert ssl_ctx is not None
-            assert ssl_ctx.check_hostname is False
+        imap.ImapClient.connect(job)
+
+        ssl_ctx = mock_imap_cls.call_args.kwargs["ssl_context"]
+        assert ssl_ctx is not None
+        assert ssl_ctx.check_hostname is False
 
 
 # ---------------------------------------------------------------------------
 # folders()
 # ---------------------------------------------------------------------------
+
 
 class TestFolders:
     def test_yields_folder_names(self):
@@ -167,37 +170,39 @@ class TestFolders:
 # _isfoldertype / _isfoldername (static methods)
 # ---------------------------------------------------------------------------
 
+
 class TestFolderHelpers:
     def test_isfoldertype_match(self):
         folder = ([b"\\Junk", b"\\HasNoChildren"], b"/", "Spam")
-        assert mailbox.ImapClient._isfoldertype(folder, "Junk") == "Junk"
+        assert imap.ImapClient._isfoldertype(folder, "Junk") == "Junk"
 
     def test_isfoldertype_no_match(self):
         folder = ([b"\\HasNoChildren"], b"/", "INBOX")
-        assert mailbox.ImapClient._isfoldertype(folder, "Junk", "Trash") is None
+        assert imap.ImapClient._isfoldertype(folder, "Junk", "Trash") is None
 
     def test_isfoldertype_case(self):
         # capitalize() is applied, so "junk" becomes "Junk" -> b"\\Junk"
         folder = ([b"\\Junk"], b"/", "Spam")
-        assert mailbox.ImapClient._isfoldertype(folder, "junk") == "Junk"
+        assert imap.ImapClient._isfoldertype(folder, "junk") == "Junk"
 
     def test_isfoldername_match(self):
         folder = ([b"\\HasNoChildren"], b"/", "Notes")
-        assert mailbox.ImapClient._isfoldername(folder, "Not.*") == "Not.*"
+        assert imap.ImapClient._isfoldername(folder, "Not.*") == "Not.*"
 
     def test_isfoldername_no_match(self):
         folder = ([b"\\HasNoChildren"], b"/", "INBOX")
-        assert mailbox.ImapClient._isfoldername(folder, "Notes") is None
+        assert imap.ImapClient._isfoldername(folder, "Notes") is None
 
 
 # ---------------------------------------------------------------------------
 # _walk_folder
 # ---------------------------------------------------------------------------
 
+
 class TestWalkFolder:
     def test_yields_messages_in_chunks(self):
         conn = _make_mock_conn()
-        msg_date = datetime(2026, 2, 20, 12, 0, 0, tzinfo=timezone.utc)
+        msg_date = datetime(2026, 2, 20, 12, 0, 0, tzinfo=UTC)
         conn.fetch.return_value = {
             1: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
             2: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
@@ -212,7 +217,7 @@ class TestWalkFolder:
 
     def test_chunked_fetching(self):
         conn = _make_mock_conn()
-        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
 
         def fake_fetch(ids, _fields):
             return {i: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date} for i in ids}
@@ -235,7 +240,7 @@ class TestWalkFolder:
 
     def test_delete_on_success(self):
         conn = _make_mock_conn()
-        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         conn.fetch.return_value = {
             1: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
         }
@@ -257,10 +262,11 @@ class TestWalkFolder:
 # _iter_folder
 # ---------------------------------------------------------------------------
 
+
 class TestIterFolder:
     def test_basic_iteration(self):
         conn = _make_mock_conn()
-        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
@@ -279,7 +285,7 @@ class TestIterFolder:
         conn.search.return_value = []
         client = _make_client(conn=conn)
 
-        since = datetime(2026, 2, 15, tzinfo=timezone.utc)
+        since = datetime(2026, 2, 15, tzinfo=UTC)
         list(client._iter_folder("INBOX", since=since))
 
         search_query = conn.search.call_args[0][0]
@@ -299,7 +305,7 @@ class TestIterFolder:
 
     def test_delete_after_export(self):
         conn = _make_mock_conn()
-        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
@@ -335,10 +341,11 @@ class TestIterFolder:
 # folder_backup
 # ---------------------------------------------------------------------------
 
+
 class TestFolderBackup:
     def test_stores_to_cas(self, tmp_path):
         conn = _make_mock_conn()
-        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
@@ -355,7 +362,7 @@ class TestFolderBackup:
 
     def test_callback_receives_metadata(self, tmp_path):
         conn = _make_mock_conn()
-        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
@@ -369,15 +376,15 @@ class TestFolderBackup:
 
         assert len(collected) == 1
         md = collected[0]
-        assert md["folder"] == "INBOX"
-        assert md["email_id"] == "<abc123@example.com>"
-        assert "sender@example.com" in md["sender"]
-        assert "recipient@example.com" in md["recipients"]
-        assert md["subject"] == "Hello World"
+        assert md.folder == "INBOX"
+        assert md.email_id == "<abc123@example.com>"
+        assert "sender@example.com" in md.sender
+        assert "recipient@example.com" in md.recipients
+        assert md.subject == "Hello World"
 
     def test_callback_error_continues(self, tmp_path):
         conn = _make_mock_conn()
-        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         conn.select_folder.return_value = {b"EXISTS": 2}
         conn.search.return_value = [1, 2]
         conn.fetch.return_value = {
@@ -403,7 +410,7 @@ class TestFolderBackup:
             b"From: journal@exchange.local\r\n"
             b"To: archive@exchange.local\r\n"
             b"Subject: Journal\r\n"
-            b"Content-Type: multipart/mixed; boundary=\"boundary\"\r\n"
+            b'Content-Type: multipart/mixed; boundary="boundary"\r\n'
             b"\r\n"
             b"--boundary\r\n"
             b"Content-Type: text/plain\r\n"
@@ -422,7 +429,7 @@ class TestFolderBackup:
             b"--boundary--\r\n"
         )
         conn = _make_mock_conn()
-        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
@@ -437,7 +444,7 @@ class TestFolderBackup:
 
     def test_exchange_journal_skip_non_journal(self, tmp_path):
         conn = _make_mock_conn()
-        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
@@ -462,7 +469,7 @@ class TestFolderBackup:
         journal_eml = (
             b"From: journal@exchange.local\r\n"
             b"Subject: Journal\r\n"
-            b"Content-Type: multipart/mixed; boundary=\"boundary\"\r\n"
+            b'Content-Type: multipart/mixed; boundary="boundary"\r\n'
             b"\r\n"
             b"--boundary\r\n"
             b"Content-Type: text/plain\r\n"
@@ -480,7 +487,7 @@ class TestFolderBackup:
             b"--boundary--\r\n"
         )
         conn = _make_mock_conn()
-        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
@@ -500,7 +507,7 @@ class TestFolderBackup:
         # deleted from the server while it is being skipped -- otherwise it is
         # lost unarchived. No MOVE capability, so no error_folder is configured.
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1"])
-        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
@@ -515,7 +522,6 @@ class TestFolderBackup:
 
     def test_gmail_clears_trash(self, tmp_path):
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
-        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
         conn.select_folder.return_value = {b"EXISTS": 0}
         conn.search.return_value = []
         conn.get_gmail_labels.return_value = {}
@@ -537,6 +543,7 @@ class TestFolderBackup:
 # ---------------------------------------------------------------------------
 # full_backup
 # ---------------------------------------------------------------------------
+
 
 class TestFullBackup:
     def test_iterates_all_folders(self, tmp_path):
@@ -585,10 +592,11 @@ class TestFullBackup:
 # get_messages
 # ---------------------------------------------------------------------------
 
+
 class TestGetMessages:
     def test_yields_messages(self):
         conn = _make_mock_conn()
-        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
@@ -608,11 +616,12 @@ class TestGetMessages:
 # save_message / move_message / delete_message
 # ---------------------------------------------------------------------------
 
+
 class TestMessageOperations:
     def test_save_message(self):
         conn = _make_mock_conn()
         client = _make_client(conn=conn)
-        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
 
         client.save_message(DUMMY_EML, "Archive", date=msg_date)
         conn.append.assert_called_once_with("Archive", DUMMY_EML, msg_time=msg_date)
@@ -645,7 +654,7 @@ class TestMessageOperations:
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1"])
         client = _make_client(conn=conn)
 
-        with pytest.raises(mailbox.MailboxError, match="MOVE"):
+        with pytest.raises(imap.MailboxError, match="MOVE"):
             client.move_message(42, "Archive")
 
     def test_delete_message(self):
@@ -669,20 +678,21 @@ class TestMessageOperations:
 # _collect_metadata
 # ---------------------------------------------------------------------------
 
+
 class TestCollectMetadata:
     def test_standard_metadata(self):
         conn = _make_mock_conn()
         client = _make_client(conn=conn)
 
         md = client._collect_metadata("INBOX", 1, "hash123", DUMMY_EML)
-        assert md["mailbox"] == "test-mailbox"
-        assert md["folder"] == "INBOX"
-        assert md["store_id"] == "hash123"
-        assert md["email_id"] == "<abc123@example.com>"
-        assert md["labels"] == ["INBOX"]
-        assert "sender@example.com" in md["sender"]
-        assert "recipient@example.com" in md["recipients"]
-        assert md["subject"] == "Hello World"
+        assert md.mailbox == "test-mailbox"
+        assert md.folder == "INBOX"
+        assert md.store_id == "hash123"
+        assert md.email_id == "<abc123@example.com>"
+        assert md.labels == ["INBOX"]
+        assert "sender@example.com" in md.sender
+        assert "recipient@example.com" in md.recipients
+        assert md.subject == "Hello World"
 
     def test_gmail_labels(self):
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
@@ -690,9 +700,9 @@ class TestCollectMetadata:
         client = _make_client(conn=conn)
 
         md = client._collect_metadata("INBOX", 1, "hash123", DUMMY_EML)
-        assert "INBOX" in md["labels"]
-        assert b"\\Important" in md["labels"]
-        assert b"Work" in md["labels"]
+        assert "INBOX" in md.labels
+        assert b"\\Important" in md.labels
+        assert b"Work" in md.labels
 
     def test_gmail_labels_google_mail_prefix(self):
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
@@ -701,13 +711,14 @@ class TestCollectMetadata:
 
         md = client._collect_metadata("[Google Mail]/Sent", 1, "hash123", DUMMY_EML)
         # folder_name starting with [Google Mail] should not be prepended
-        assert "[Google Mail]/Sent" not in md["labels"]
-        assert md["labels"] == [b"\\Sent"]
+        assert "[Google Mail]/Sent" not in md.labels
+        assert md.labels == [b"\\Sent"]
 
 
 # ---------------------------------------------------------------------------
 # select_folder
 # ---------------------------------------------------------------------------
+
 
 class TestSelectFolder:
     def test_creates_missing_folder(self):
@@ -733,6 +744,7 @@ class TestSelectFolder:
 # _clear_folder
 # ---------------------------------------------------------------------------
 
+
 class TestClearFolder:
     def test_clears_all_messages(self):
         conn = _make_mock_conn()
@@ -757,6 +769,7 @@ class TestClearFolder:
 # ---------------------------------------------------------------------------
 # Gmail detection
 # ---------------------------------------------------------------------------
+
 
 class TestCapabilityDetection:
     def test_gmail_detected(self):
@@ -785,6 +798,7 @@ class TestCapabilityDetection:
 # message_index / fetch_message
 # ---------------------------------------------------------------------------
 
+
 class _Envelope:
     """Stand-in for imapclient's Envelope namedtuple."""
 
@@ -796,7 +810,7 @@ class _Envelope:
 class TestMessageIndex:
     def test_yields_refs_without_bodies(self):
         conn = _make_mock_conn()
-        msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
+        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         conn.search.return_value = [1, 2]
         conn.fetch.return_value = {
             1: {b"ENVELOPE": _Envelope(b"<a@example.com>", msg_date)},
@@ -836,7 +850,7 @@ class TestMessageIndex:
         conn.search.return_value = []
         client = _make_client(conn=conn)
 
-        list(client.message_index("INBOX", since=datetime(2026, 2, 20, tzinfo=timezone.utc)))
+        list(client.message_index("INBOX", since=datetime(2026, 2, 20, tzinfo=UTC)))
 
         query = conn.search.call_args[0][0]
         assert "SINCE" in query
@@ -847,7 +861,7 @@ class TestMessageIndex:
         conn.fetch.side_effect = imaplib.IMAP4.error("connection lost")
         client = _make_client(conn=conn)
 
-        with pytest.raises(mailbox.MailboxError):
+        with pytest.raises(imap.MailboxError):
             list(client.message_index("INBOX"))
         conn.unselect_folder.assert_called_once()
 
@@ -867,5 +881,5 @@ class TestFetchMessage:
         conn.fetch.return_value = {}
         client = _make_client(conn=conn)
 
-        with pytest.raises(mailbox.MailboxError):
+        with pytest.raises(imap.MailboxError):
             client.fetch_message(7, "INBOX")
