@@ -9,7 +9,7 @@ import time
 from datetime import UTC, datetime
 from typing import cast
 
-from mailvault import cas, conf, mailbox, mailutils, storedb
+from mailvault import backend, cas, conf, mailbox, mailutils, storedb
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ def backup(job: conf.JobConfig, store_path: pathlib.Path, compress: bool = False
 
 
 def _verify_folder(
-    mb: mailbox.MailboxClient,
+    mb: backend.MailboxClient,
     db: storedb.StoreDatabaseConnection,
     store: cas.ContentAddressedStorage,
     mailbox_id: int,
@@ -107,7 +107,7 @@ def _verify_folder(
     log.info("%s::%s: %s message(s) in archive", job_name, folder, len(known))
 
     result = VerifyResult(folder=folder)
-    missing: list[mailbox.MessageRef] = []
+    missing: list[backend.MessageRef] = []
     for ref in mb.message_index(folder):
         result.on_server += 1
         if mailutils.normalize_message_id(ref.message_id) not in known:
@@ -221,8 +221,8 @@ def _format_archive_folder(template: str) -> str:
 
 
 def _copy_folder(
-    mb_from: mailbox.MailboxClient,
-    mb_to: mailbox.MailboxClient,
+    mb_from: backend.MailboxClient,
+    mb_to: backend.MailboxClient,
     folder: str,
     archive_folder: str | None = None,
 ) -> None:
@@ -260,7 +260,7 @@ def _idle_copy(
     destination: conf.JobConfig,
     archive_folder: str | None = None,
 ) -> None:
-    def _copy_to_dest(mb_from: mailbox.MailboxClient):
+    def _copy_to_dest(mb_from: backend.MailboxClient):
         with mailbox.Mailbox(job=destination) as mb_to:
             _copy_folder(mb_from, mb_to, folder_name, archive_folder=archive_folder)
 
