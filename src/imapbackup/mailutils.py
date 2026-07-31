@@ -91,7 +91,13 @@ def normalize_message_id(value: str | None) -> str:
     collapsed = " ".join(value.split())
     if not collapsed:
         return ""
-    parsed = str(email.policy.default.header_fetch_parse("Message-Id", collapsed))
+    try:
+        parsed = str(email.policy.default.header_fetch_parse("Message-Id", collapsed))
+    except Exception:
+        # CPython's email header parser raises HeaderParseError and, on some patch
+        # levels (e.g. 3.11/3.12), IndexError on malformed values such as "<>".
+        # Such a value cannot serve as a comparison key -- treat it as unusable.
+        return ""
     return parsed.strip().strip("<>").strip().casefold()
 
 

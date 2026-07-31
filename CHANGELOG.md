@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 (unreleased)
+
+### Fixed
+
+- **Message-ID matching:** a malformed Message-ID such as `<>` no longer crashes a run on
+  Python 3.11/3.12, where CPython's email header parser raises `IndexError` on such values.
+  The value is now treated as unusable (empty key), consistent with the behaviour on 3.13+
+
 ## 0.5.0 (2026-07-31)
 
 ### Breaking changes
