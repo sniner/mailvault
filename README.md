@@ -1,9 +1,13 @@
-# imapbackup - A toolkit for email backup and archiving
+# mailvault -- Back up and archive email from IMAP and Microsoft 365 mailboxes
 
-> [!CAUTION]
-> **Version 0.3.0 contains several breaking changes** (configuration format,
-> renamed subcommands, changed defaults). If you are upgrading from a previous
-> version, please read the [CHANGELOG](CHANGELOG.md) before updating.
+> [!IMPORTANT]
+> **`mailvault` was formerly named `imapbackup`.** This is the same project,
+> renamed and polished: a single `mailvault` command replaces the old
+> `ib-mailbox` / `ib-archive` / `ib-copy` tools, Microsoft 365 (Graph) support
+> is now built in, and the minimum Python is 3.11. If you depend on the old
+> `ib-*` commands, stay on the last pre-rename release,
+> [v0.5.0](https://github.com/sniner/mailvault/releases/tag/v0.5.0). See
+> [Migrating from ib-*](#migrating-from-ib-) and the [CHANGELOG](CHANGELOG.md).
 
 
 ## Installation
@@ -11,56 +15,58 @@
 After years of Python packaging being an adventure in its own right --
 virtualenvs, pip, pipx, setup.py, setuptools, poetry, and whatever else came
 and went -- [uv](https://docs.astral.sh/uv/) has finally brought sanity to the
-table. The recommended way to install `imapbackup` is straight from the
+table. The recommended way to install `mailvault` is straight from the
 repository:
 
 ```console
-$ uv tool install git+https://github.com/sniner/imapbackup
+$ uv tool install git+https://github.com/sniner/mailvault
 ```
 
-This installs the three CLI tools (`ib-mailbox`, `ib-archive`, `ib-copy`)
-into an isolated environment and makes them available on your `PATH` -- no
-manual virtualenv juggling required.
+This installs the `mailvault` command into an isolated environment and makes it
+available on your `PATH` -- no manual virtualenv juggling required. Support for
+Microsoft 365 mailboxes via MS Graph is built in; no extra is needed.
 
-To include support for Microsoft 365 mailboxes via MS Graph:
+Add `@v0.6.0` to the URL to pin a specific release:
 
 ```console
-$ uv tool install "imapbackup[graph] @ git+https://github.com/sniner/imapbackup"
+$ uv tool install "git+https://github.com/sniner/mailvault@v0.6.0"
 ```
 
-Add `@v0.4.0` to the URL to pin a specific release.
-
-> **Note:** this project is not published on PyPI -- the name `imapbackup`
-> there belongs to an unrelated project. Install from this repository or from
-> the release artifacts, not from PyPI.
+> **Note:** this project is not published on PyPI. Install from this repository
+> or from the release artifacts, not from PyPI.
 
 Wheels and pre-compiled Windows executables are also available on the
-[GitHub Releases](https://github.com/sniner/imapbackup/releases) page.
+[GitHub Releases](https://github.com/sniner/mailvault/releases) page.
 
 
 ## Overview
 
-`imapbackup` provides three command line tools:
+`mailvault` is a single command with several subcommands:
 
-* `ib-mailbox` backs up emails from IMAP mailboxes to a local archive and verifies the result
-* `ib-archive` manages the local email archive (import, compress, statistics, etc.)
-* `ib-copy` copies emails between IMAP mailboxes (experimental)
+* `mailvault folders | backup | verify` -- back up IMAP or Microsoft 365
+  mailboxes to a local archive and verify the result
+* `mailvault archive ...` -- manage the local email archive (import, compress,
+  statistics, rebuild the metadata database, etc.)
+* `mailvault copy` -- copy emails between IMAP mailboxes (experimental)
+
+Global options (`--config`, `-v/--verbose`, `-q/--quiet`, `--log-file`,
+`--allow-exec`, `--job`) are given **before** the command.
 
 
-## `ib-mailbox`
+## Backing up mailboxes
 
-`ib-mailbox` downloads emails from one or more IMAP mailboxes and stores them
+`mailvault backup` downloads emails from one or more mailboxes and stores them
 in a local content-addressed archive. The backup can be repeated at regular
 intervals without creating duplicates, as long as you always export from the
 same mailbox.
 
-A configuration file defines the IMAP accounts and options for the backup job
+A configuration file defines the accounts and options for the backup job
 (see [Configuration file](#configuration-file) below).
 
 First, you may want to get an overview of all available folders:
 
 ```console
-$ ib-mailbox --config example.toml folders
+$ mailvault --config example.toml folders
 example.org::Trash
 example.org::Archive
 example.org::Archive/2022
@@ -72,7 +78,7 @@ example.org::INBOX
 Then run the backup:
 
 ```console
-$ ib-mailbox --config example.toml backup ./backup
+$ mailvault --config example.toml backup ./backup
 2024-08-15 10:05:52,275 INFO -- START
 2024-08-15 10:05:52,276 INFO -- Processing mailbox: example.org
 2024-08-15 10:05:52,527 INFO -- example.org::INBOX: found 3 messages
@@ -84,7 +90,7 @@ $ ib-mailbox --config example.toml backup ./backup
 On subsequent runs, already archived messages are recognized and skipped:
 
 ```console
-$ ib-mailbox --config example.toml backup ./backup
+$ mailvault --config example.toml backup ./backup
 2024-08-15 10:09:28,248 INFO -- START
 2024-08-15 10:09:28,250 INFO -- Processing mailbox: example.org
 2024-08-15 10:09:28,531 INFO -- example.org::INBOX: found 3 messages
@@ -106,7 +112,7 @@ because the message is older than the snapshot date and thus filtered out.
 `verify` compares the mailbox against the archive and reports what is missing:
 
 ```console
-$ ib-mailbox --config example.toml verify ./backup
+$ mailvault --config example.toml verify ./backup
 example.org::INBOX: 77,592 on server, 43 not archived
 example.org: 43 message(s) missing, run again with --repair
 ```
@@ -117,7 +123,7 @@ takes minutes, not hours. With `--repair` the missing messages are downloaded
 and added to the archive:
 
 ```console
-$ ib-mailbox --config example.toml verify --repair ./backup
+$ mailvault --config example.toml verify --repair ./backup
 example.org::INBOX: 77,592 on server, 43 not archived, 43 restored
 example.org: 43 of 43 message(s) restored
 ```
@@ -130,9 +136,10 @@ it. `verify` requires a job with `with_db = true` and does not support
 journal envelope carry different `Message-ID`s.
 
 
-## `ib-archive`
+## Managing the archive
 
-`ib-archive` provides several subcommands for working with the local archive.
+`mailvault archive` provides several subcommands for working with the local
+archive.
 
 ### Import emails
 
@@ -140,7 +147,7 @@ Import existing `.eml` files into the archive. For example, to consolidate
 emails from `./my_mails` into `./backup`:
 
 ```console
-$ ib-archive --verbose import ./my_mails ./backup
+$ mailvault --verbose archive import ./my_mails ./backup
 ```
 
 Use `--move` to remove source files after import, `--compress` to store them
@@ -151,7 +158,7 @@ compressed, and `--docuware` if the source is a Docuware email archive.
 Show the number of emails and total size of an archive:
 
 ```console
-$ ib-archive stats ./backup
+$ mailvault archive stats ./backup
 ./backup: 1,234 emails, 567.8 MiB total
 ```
 
@@ -161,10 +168,10 @@ Retroactively compress all uncompressed files in an archive with zstd, or
 revert compressed files back to plain `.eml`:
 
 ```console
-$ ib-archive compress ./backup
+$ mailvault archive compress ./backup
 ./backup: 1,234 files compressed, 0 already compressed
 
-$ ib-archive decompress ./backup
+$ mailvault archive decompress ./backup
 ./backup: 1,234 files decompressed, 0 already plain
 ```
 
@@ -173,17 +180,17 @@ $ ib-archive decompress ./backup
 List all sender and recipient addresses found in the archive:
 
 ```console
-$ ib-archive addresses ./backup
+$ mailvault archive addresses ./backup
 ```
 
-### Build metadata database
+### Rebuild metadata database
 
 If the metadata database is missing (e.g. because `with_db` was not enabled
 initially) or has become corrupt, you can create or rebuild it from the
 archive files:
 
 ```console
-$ ib-archive db-from-archive --mailbox example.org ./backup
+$ mailvault archive rebuild-db --mailbox example.org ./backup
 ```
 
 Since the `.eml` files in the archive do not contain any information about
@@ -192,16 +199,16 @@ which backup job they originated from, all emails are assigned to the single
 configuration file.
 
 
-## `ib-copy`
+## Copying between mailboxes
 
 > [!WARNING]
 > **Experimental / Proof of Concept**
-> This tool is in an early experimental stage and may have hardcoded
+> This subcommand is in an early experimental stage and may have hardcoded
 > limitations (e.g., `--idle` mode only watches the `INBOX`). Use with
 > caution and test with non-critical data first.
 
-`ib-copy` transfers emails from one IMAP mailbox to another. It requires a
-TOML configuration file with two accounts, one with `role = "source"` and the
+`mailvault copy` transfers emails from one IMAP mailbox to another. It requires
+a TOML configuration file with two accounts, one with `role = "source"` and the
 other with `role = "destination"`:
 
 ```toml
@@ -226,12 +233,33 @@ role = "destination"
 Copy all matching emails:
 
 ```console
-$ ib-copy --config copy.toml copy
+$ mailvault --config copy.toml copy
 ```
 
 Use `--idle` to keep the connection open and continuously transfer new incoming
 emails. If `move_to_archive` is enabled on the source, copied emails are moved
-into the `archive_folder` instead of remaining in the inbox.
+into the `archive_folder` instead of remaining in the inbox. Use
+`--list-folders` to list the source mailbox folders instead of copying.
+
+
+## Migrating from ib-*
+
+The three former commands are now subcommands of a single `mailvault` command.
+Global options are given **before** the command.
+
+| Previously | Now |
+|------------|-----|
+| `ib-mailbox --config c.toml folders` | `mailvault --config c.toml folders` |
+| `ib-mailbox --config c.toml backup <dest>` | `mailvault --config c.toml backup <dest>` |
+| `ib-mailbox --config c.toml verify [--repair] <dest>` | `mailvault --config c.toml verify [--repair] <dest>` |
+| `ib-archive stats\|import\|addresses\|compress\|decompress <dir>` | `mailvault archive stats\|import\|addresses\|compress\|decompress <dir>` |
+| `ib-archive db-from-archive --mailbox NAME <dir>` | `mailvault archive rebuild-db --mailbox NAME <dir>` |
+| `ib-copy --config c.toml copy [--idle]` | `mailvault --config c.toml copy [--idle]` |
+| `ib-copy --config c.toml folders` | `mailvault --config c.toml copy --list-folders` |
+
+To keep using the old `ib-*` commands, pin to
+[v0.5.0](https://github.com/sniner/mailvault/releases/tag/v0.5.0), the last
+release before the rename.
 
 
 ## Mail archive structure
@@ -266,8 +294,8 @@ replaced MIME multipart delimiters.
 
 ## Configuration file
 
-`ib-mailbox` and `ib-archive` accept configuration files in TOML or YAML
-format. TOML is recommended for new configurations. `ib-copy` requires TOML.
+`mailvault` accepts configuration files in TOML or YAML format. TOML is
+recommended for new configurations. The `copy` subcommand requires TOML.
 
 ### TOML format
 
@@ -313,16 +341,14 @@ folders = ["INBOX"]
 
 ### MS Graph backend
 
-As an alternative to IMAP, `ib-mailbox` can access Microsoft 365 mailboxes
-via the MS Graph API. This avoids the quirks of Microsoft's IMAP
-implementation and uses OAuth2 client credentials for authentication, which
-is well suited for unattended backup scenarios.
+As an alternative to IMAP, `mailvault` can access Microsoft 365 mailboxes via
+the MS Graph API. This avoids the quirks of Microsoft's IMAP implementation and
+uses OAuth2 client credentials for authentication, which is well suited for
+unattended backup scenarios.
 
-To use this backend, install the `graph` extra (see
-[Installation](#installation)) and set `backend = "msgraph"` in the job
-configuration. Authentication requires an Azure AD app registration with
-`Mail.Read` (or `Mail.ReadWrite` if using `delete_after_export`)
-application permissions.
+To use this backend, set `backend = "msgraph"` in the job configuration.
+Authentication requires an Azure AD app registration with `Mail.Read` (or
+`Mail.ReadWrite` if using `delete_after_export`) application permissions.
 
 ```toml
 [[job]]
@@ -435,12 +461,11 @@ the archive containing header fields such as date, Message-ID, sender,
 recipient, and subject.
 
 For an archive without a database, you can create one retroactively with
-`ib-archive db-from-archive`.
+`mailvault archive rebuild-db`.
 
 
 ## MS Windows
 
-Pre-compiled `.exe` files for Windows are provided as assets in the
-[GitHub Releases](https://github.com/sniner/imapbackup/releases) page.
-You can download `ib-mailbox.exe`, `ib-archive.exe`, and `ib-copy.exe`
-directly without needing Python or any dependencies.
+A pre-compiled `mailvault.exe` for Windows is provided as an asset on the
+[GitHub Releases](https://github.com/sniner/mailvault/releases) page. You can
+download it directly without needing Python or any dependencies.

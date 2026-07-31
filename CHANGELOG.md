@@ -4,6 +4,11 @@
 
 ### Breaking changes
 
+- **The project was renamed from `imapbackup` to `mailvault`.** Same tool, new name -- the
+  PyPI name `imapbackup` was taken and the project now covers more than IMAP. The import
+  package is renamed `imapbackup` -> `mailvault`. To keep the old `ib-*` commands, pin to the
+  last pre-rename release, v0.5.0
+
 - **A single `mailvault` command replaces the three `ib-mailbox` / `ib-archive` / `ib-copy`
   tools.** The subcommands map directly:
   - `ib-mailbox folders|backup|verify` -> `mailvault folders|backup|verify`
