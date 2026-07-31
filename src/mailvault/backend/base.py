@@ -12,7 +12,7 @@ import dataclasses
 from datetime import datetime
 from typing import Any, Protocol
 
-from mailvault import cas
+from mailvault.store import cas
 
 
 @dataclasses.dataclass

@@ -5,7 +5,8 @@ import logging
 import os
 import pathlib
 
-from mailvault import cas, mailutils
+from mailvault import mailutils
+from mailvault.store import cas
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ def _read_eml(path: pathlib.Path) -> bytes:
     return path.read_bytes()
 
 
-class MailArchive:
+class ExternalMailArchive:
     def __init__(self, root_dir: pathlib.Path):
         self.root_dir = root_dir
 
@@ -76,7 +77,7 @@ class MailArchive:
         return count, size
 
 
-class DocuwareMailArchive(MailArchive):
+class DocuwareMailArchive(ExternalMailArchive):
     def walk(self) -> collections.abc.Generator[pathlib.Path, None, None]:
         """Yield paths to .eml files in a Docuware archive (one per directory, largest wins)."""
         for path, _, files in os.walk(self.root_dir):

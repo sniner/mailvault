@@ -26,9 +26,10 @@ if sys.version_info >= (3, 14):
     except Exception:
         pass
 
-from mailvault import cas, conf, mailutils, utils
+from mailvault import conf, mailutils, utils
 from mailvault.backend.base import BackupResult, MailboxClient, MessageRef
 from mailvault.backend.graph import MSGraphClient
+from mailvault.store import cas
 
 log = logging.getLogger(__name__)
 

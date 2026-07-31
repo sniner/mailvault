@@ -1,4 +1,5 @@
-from mailvault import archive, cas
+from mailvault import importer
+from mailvault.store import cas
 
 
 def test_mail_archive_walk(tmp_path, dummy_eml_bytes):
@@ -10,7 +11,7 @@ def test_mail_archive_walk(tmp_path, dummy_eml_bytes):
     dummy_file = tmp_path / "test.txt"
     dummy_file.write_text("Hello")
 
-    arch = archive.MailArchive(root_dir=tmp_path)
+    arch = importer.ExternalMailArchive(root_dir=tmp_path)
     files = list(arch.walk())
 
     assert len(files) == 1
@@ -21,7 +22,7 @@ def test_mail_archive_stats(tmp_path, dummy_eml_bytes):
     eml_file = tmp_path / "test.eml"
     eml_file.write_bytes(dummy_eml_bytes)
 
-    arch = archive.MailArchive(root_dir=tmp_path)
+    arch = importer.ExternalMailArchive(root_dir=tmp_path)
     count, size = arch.stats()
 
     assert count == 1
@@ -34,7 +35,7 @@ def test_mail_archive_sees_compressed(tmp_path, dummy_eml_bytes):
     store = cas.ContentAddressedStorage(root_dir=tmp_path, suffix=".eml", compress=True)
     store.add(dummy_eml_bytes)
 
-    arch = archive.MailArchive(root_dir=tmp_path)
+    arch = importer.ExternalMailArchive(root_dir=tmp_path)
     files = list(arch.walk())
     assert len(files) == 1
     assert files[0].name.endswith(".eml.zst")
@@ -56,7 +57,7 @@ def test_mail_archive_import_compressed_roundtrip(tmp_path, dummy_eml_bytes):
 
     dst_dir = tmp_path / "dst"
     dst = cas.ContentAddressedStorage(root_dir=dst_dir, suffix=".eml")
-    archive.MailArchive(root_dir=src).archive_to_cas(dst, move=False)
+    importer.ExternalMailArchive(root_dir=src).archive_to_cas(dst, move=False)
 
     imported = list(dst.walk())
     assert len(imported) == 1
@@ -70,7 +71,7 @@ def test_mail_archive_to_cas(tmp_path, dummy_eml_bytes):
     cas_dir = tmp_path / "cas"
     store = cas.ContentAddressedStorage(root_dir=cas_dir)
 
-    arch = archive.MailArchive(root_dir=tmp_path)
+    arch = importer.ExternalMailArchive(root_dir=tmp_path)
     arch.archive_to_cas(store, move=False)
 
     assert list(store.walk())  # Should have one file
@@ -91,7 +92,7 @@ def test_docuware_archive_walk(tmp_path, dummy_eml_bytes):
     eml2 = arch_dir / "large.eml"
     eml2.write_bytes(dummy_eml_bytes)
 
-    arch = archive.DocuwareMailArchive(root_dir=arch_dir)
+    arch = importer.DocuwareMailArchive(root_dir=arch_dir)
     files = list(arch.walk())
 
     # DocuwareArchive returns the largest .eml file in the directory
