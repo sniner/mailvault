@@ -69,11 +69,9 @@ jobs:
           uv venv
           uv pip install . pyinstaller
 
-      - name: Build EXEs with PyInstaller
+      - name: Build EXE with PyInstaller
         run: |
-          uv run pyinstaller --onefile --name ib-mailbox src/mailvault/cli/mailbox.py
-          uv run pyinstaller --onefile --name ib-archive src/mailvault/cli/archive.py
-          uv run pyinstaller --onefile --name ib-copy src/mailvault/cli/copy.py
+          uv run pyinstaller --onefile --name mailvault src/mailvault/__main__.py
 
       - name: Upload Error Logs (if failed to build)
         if: failure()
@@ -82,10 +80,8 @@ jobs:
           name: pyinstaller-logs
           path: build/*/warn-*.txt
 
-      - name: Upload EXEs to Release
+      - name: Upload EXE to Release
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            dist/ib-mailbox.exe
-            dist/ib-archive.exe
-            dist/ib-copy.exe
+            dist/mailvault.exe

@@ -2,6 +2,18 @@
 
 ## 0.6.0 (unreleased)
 
+### Breaking changes
+
+- **A single `mailvault` command replaces the three `ib-mailbox` / `ib-archive` / `ib-copy`
+  tools.** The subcommands map directly:
+  - `ib-mailbox folders|backup|verify` -> `mailvault folders|backup|verify`
+  - `ib-copy copy [--idle]` -> `mailvault copy [--idle]`; `ib-copy folders` -> `mailvault copy --list-folders`
+  - `ib-archive <sub>` -> `mailvault archive <sub>`, with `db-from-archive` renamed to `rebuild-db`
+
+  Global options are unified across all commands (`-v/--verbose`, `-q/--quiet`, `--log-file`,
+  `--config`, `--allow-exec`, `--job`) and must precede the command. The Windows build now
+  ships a single `mailvault.exe` instead of three `ib-*.exe`
+
 ### Changed
 
 - **The Microsoft Graph backend is now a core dependency** (`msal`, `httpx`), no longer an
