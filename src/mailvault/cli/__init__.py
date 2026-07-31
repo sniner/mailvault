@@ -15,7 +15,7 @@ import logging
 import pathlib
 import sys
 
-from mailvault.cli import archive, copy, mailbox
+from mailvault.cli import commands
 
 log = logging.getLogger(__name__)
 
@@ -225,11 +225,11 @@ def main() -> int:
     exit_code = 0
     try:
         if args.command in {"folders", "backup", "verify"}:
-            exit_code = mailbox.run(args)
+            exit_code = commands.run_mailbox(args)
         elif args.command == "copy":
-            exit_code = copy.run(args)
+            exit_code = commands.run_copy(args)
         elif args.command == "archive":
-            exit_code = archive.run(args)
+            exit_code = commands.run_archive(args)
     except KeyboardInterrupt:
         log.warning("Interrupted!")
         exit_code = 130
