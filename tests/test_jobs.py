@@ -510,7 +510,7 @@ class TestCopy:
 
 
 # ---------------------------------------------------------------------------
-# update_db_from_archive
+# rebuild_metadb
 # ---------------------------------------------------------------------------
 
 
@@ -520,7 +520,7 @@ class TestUpdateDbFromArchive:
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
         store.add(DUMMY_EML)
 
-        jobs.update_db_from_archive(tmp_path, mailbox="test")
+        jobs.rebuild_metadb(tmp_path, mailbox="test")
 
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
             rows = db.execute("SELECT * FROM message").fetchall()
@@ -530,7 +530,7 @@ class TestUpdateDbFromArchive:
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
         store.add(DUMMY_EML)
 
-        jobs.update_db_from_archive(tmp_path)
+        jobs.rebuild_metadb(tmp_path)
 
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
             rows = db.execute("SELECT * FROM message").fetchall()

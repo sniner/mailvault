@@ -148,6 +148,6 @@ def run_archive(args: argparse.Namespace) -> int:
         decompressed, skipped = store.decompress_all()
         print(f"{args.source}: {decompressed:,} files decompressed, {skipped:,} already plain")
     elif cmd == "rebuild-db":
-        jobs.update_db_from_archive(args.source, mailbox=args.mailbox)
+        jobs.rebuild_metadb(args.source, mailbox=args.mailbox)
 
     return 0
