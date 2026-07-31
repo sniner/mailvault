@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from mailvault import graph
+from mailvault.backend import graph
 
 
 @dataclasses.dataclass

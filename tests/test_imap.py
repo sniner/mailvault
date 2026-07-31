@@ -1,4 +1,4 @@
-"""Tests for mailvault.mailbox with mocked IMAPClient."""
+"""Tests for mailvault.backend.imap with mocked IMAPClient."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from mailvault import cas, conf, mailbox
+from mailvault import cas, conf
+from mailvault.backend import imap
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -58,9 +59,9 @@ def _make_client(job=None, conn=None, **job_overrides):
         job = _make_job(**job_overrides)
     if conn is None:
         conn = _make_mock_conn()
-    mb = mailbox.Mailbox(job=job)
+    mb = imap.Mailbox(job=job)
     mb._conn = conn
-    client = mailbox.ImapClient(mb)
+    client = imap.ImapClient(mb)
     return client
 
 
@@ -70,13 +71,13 @@ def _make_client(job=None, conn=None, **job_overrides):
 
 
 class TestMailboxContextManager:
-    @patch("mailvault.mailbox.imapclient.IMAPClient")
+    @patch("mailvault.backend.imap.imapclient.IMAPClient")
     def test_enter_creates_connection_with_tls(self, mock_imap_cls):
         mock_conn = _make_mock_conn()
         mock_imap_cls.return_value = mock_conn
         job = _make_job()
 
-        with mailbox.Mailbox(job=job) as client:
+        with imap.Mailbox(job=job) as client:
             assert client is not None
             mock_imap_cls.assert_called_once()
             kwargs = mock_imap_cls.call_args
@@ -86,34 +87,34 @@ class TestMailboxContextManager:
             assert kwargs.kwargs["ssl_context"] is not None
             mock_conn.login.assert_called_once_with("user", "pass")
 
-    @patch("mailvault.mailbox.imapclient.IMAPClient")
+    @patch("mailvault.backend.imap.imapclient.IMAPClient")
     def test_exit_calls_logout(self, mock_imap_cls):
         mock_conn = _make_mock_conn()
         mock_imap_cls.return_value = mock_conn
         job = _make_job()
 
-        with mailbox.Mailbox(job=job):
+        with imap.Mailbox(job=job):
             pass
         mock_conn.logout.assert_called_once()
 
-    @patch("mailvault.mailbox.imapclient.IMAPClient")
+    @patch("mailvault.backend.imap.imapclient.IMAPClient")
     def test_no_tls(self, mock_imap_cls):
         mock_conn = _make_mock_conn()
         mock_imap_cls.return_value = mock_conn
         job = _make_job(tls=False)
 
-        with mailbox.Mailbox(job=job):
+        with imap.Mailbox(job=job):
             kwargs = mock_imap_cls.call_args
             assert kwargs.kwargs["ssl"] is False
             assert kwargs.kwargs["ssl_context"] is None
 
-    @patch("mailvault.mailbox.imapclient.IMAPClient")
+    @patch("mailvault.backend.imap.imapclient.IMAPClient")
     def test_tls_no_hostname_check(self, mock_imap_cls):
         mock_conn = _make_mock_conn()
         mock_imap_cls.return_value = mock_conn
         job = _make_job(tls_check_hostname=False, tls_verify_cert=True)
 
-        with mailbox.Mailbox(job=job):
+        with imap.Mailbox(job=job):
             ssl_ctx = mock_imap_cls.call_args.kwargs["ssl_context"]
             assert ssl_ctx is not None
             assert ssl_ctx.check_hostname is False
@@ -172,24 +173,24 @@ class TestFolders:
 class TestFolderHelpers:
     def test_isfoldertype_match(self):
         folder = ([b"\\Junk", b"\\HasNoChildren"], b"/", "Spam")
-        assert mailbox.ImapClient._isfoldertype(folder, "Junk") == "Junk"
+        assert imap.ImapClient._isfoldertype(folder, "Junk") == "Junk"
 
     def test_isfoldertype_no_match(self):
         folder = ([b"\\HasNoChildren"], b"/", "INBOX")
-        assert mailbox.ImapClient._isfoldertype(folder, "Junk", "Trash") is None
+        assert imap.ImapClient._isfoldertype(folder, "Junk", "Trash") is None
 
     def test_isfoldertype_case(self):
         # capitalize() is applied, so "junk" becomes "Junk" -> b"\\Junk"
         folder = ([b"\\Junk"], b"/", "Spam")
-        assert mailbox.ImapClient._isfoldertype(folder, "junk") == "Junk"
+        assert imap.ImapClient._isfoldertype(folder, "junk") == "Junk"
 
     def test_isfoldername_match(self):
         folder = ([b"\\HasNoChildren"], b"/", "Notes")
-        assert mailbox.ImapClient._isfoldername(folder, "Not.*") == "Not.*"
+        assert imap.ImapClient._isfoldername(folder, "Not.*") == "Not.*"
 
     def test_isfoldername_no_match(self):
         folder = ([b"\\HasNoChildren"], b"/", "INBOX")
-        assert mailbox.ImapClient._isfoldername(folder, "Notes") is None
+        assert imap.ImapClient._isfoldername(folder, "Notes") is None
 
 
 # ---------------------------------------------------------------------------
@@ -652,7 +653,7 @@ class TestMessageOperations:
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1"])
         client = _make_client(conn=conn)
 
-        with pytest.raises(mailbox.MailboxError, match="MOVE"):
+        with pytest.raises(imap.MailboxError, match="MOVE"):
             client.move_message(42, "Archive")
 
     def test_delete_message(self):
@@ -859,7 +860,7 @@ class TestMessageIndex:
         conn.fetch.side_effect = imaplib.IMAP4.error("connection lost")
         client = _make_client(conn=conn)
 
-        with pytest.raises(mailbox.MailboxError):
+        with pytest.raises(imap.MailboxError):
             list(client.message_index("INBOX"))
         conn.unselect_folder.assert_called_once()
 
@@ -879,5 +880,5 @@ class TestFetchMessage:
         conn.fetch.return_value = {}
         client = _make_client(conn=conn)
 
-        with pytest.raises(mailbox.MailboxError):
+        with pytest.raises(imap.MailboxError):
             client.fetch_message(7, "INBOX")
