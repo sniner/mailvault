@@ -19,16 +19,16 @@ class RollbackException(Exception):
     pass
 
 
-class StoreDatabase:
+class MetaDatabase:
     def __init__(self, path: pathlib.Path | str):
         self.dbconn = None
         self.client = None
         self.path = path or "metadata.db"
 
-    def __enter__(self) -> StoreDatabaseConnection:
+    def __enter__(self) -> MetaDatabaseConnection:
         self.dbconn = sqlite3.connect(self.path, check_same_thread=False)
         self.dbconn.row_factory = sqlite3.Row
-        self.client = StoreDatabaseConnection(self.dbconn)
+        self.client = MetaDatabaseConnection(self.dbconn)
         self.client.setup()
         return self.client
 
@@ -80,7 +80,7 @@ class DatabaseConnection:
         pass
 
 
-class StoreDatabaseConnection(DatabaseConnection):
+class MetaDatabaseConnection(DatabaseConnection):
     def setup(self) -> None:
         with self.transaction():
             self.execute("""
@@ -428,7 +428,7 @@ class StoreDatabaseConnection(DatabaseConnection):
 
 
 if __name__ == "__main__":
-    with StoreDatabase("./test.db") as db:
+    with MetaDatabase("./test.db") as db:
         mb = db.add_mailbox("Schlumpf")
         msg = db.add_message(
             "12345678901234567890",
