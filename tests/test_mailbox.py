@@ -1,4 +1,4 @@
-"""Tests for imapbackup.mailbox with mocked IMAPClient."""
+"""Tests for mailvault.mailbox with mocked IMAPClient."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-from imapbackup import cas, conf, mailbox
+from mailvault import cas, conf, mailbox
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +70,7 @@ def _make_client(job=None, conn=None, **job_overrides):
 # ---------------------------------------------------------------------------
 
 class TestMailboxContextManager:
-    @patch("imapbackup.mailbox.imapclient.IMAPClient")
+    @patch("mailvault.mailbox.imapclient.IMAPClient")
     def test_enter_creates_connection_with_tls(self, mock_imap_cls):
         mock_conn = _make_mock_conn()
         mock_imap_cls.return_value = mock_conn
@@ -86,7 +86,7 @@ class TestMailboxContextManager:
             assert kwargs.kwargs["ssl_context"] is not None
             mock_conn.login.assert_called_once_with("user", "pass")
 
-    @patch("imapbackup.mailbox.imapclient.IMAPClient")
+    @patch("mailvault.mailbox.imapclient.IMAPClient")
     def test_exit_calls_logout(self, mock_imap_cls):
         mock_conn = _make_mock_conn()
         mock_imap_cls.return_value = mock_conn
@@ -96,7 +96,7 @@ class TestMailboxContextManager:
             pass
         mock_conn.logout.assert_called_once()
 
-    @patch("imapbackup.mailbox.imapclient.IMAPClient")
+    @patch("mailvault.mailbox.imapclient.IMAPClient")
     def test_no_tls(self, mock_imap_cls):
         mock_conn = _make_mock_conn()
         mock_imap_cls.return_value = mock_conn
@@ -107,7 +107,7 @@ class TestMailboxContextManager:
             assert kwargs.kwargs["ssl"] is False
             assert kwargs.kwargs["ssl_context"] is None
 
-    @patch("imapbackup.mailbox.imapclient.IMAPClient")
+    @patch("mailvault.mailbox.imapclient.IMAPClient")
     def test_tls_no_hostname_check(self, mock_imap_cls):
         mock_conn = _make_mock_conn()
         mock_imap_cls.return_value = mock_conn

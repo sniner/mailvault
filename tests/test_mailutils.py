@@ -1,6 +1,6 @@
 import pytest
 
-from imapbackup import mailutils
+from mailvault import mailutils
 from .fixtures import dummy_eml_bytes
 
 

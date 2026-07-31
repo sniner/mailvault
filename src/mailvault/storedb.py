@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-from imapbackup import mailutils
+from mailvault import mailutils
 
 log = logging.getLogger(__name__)
 

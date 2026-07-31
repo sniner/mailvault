@@ -10,7 +10,7 @@ import pytest
 
 httpx = pytest.importorskip("httpx")
 
-from imapbackup import graph
+from mailvault import graph
 
 
 @dataclasses.dataclass

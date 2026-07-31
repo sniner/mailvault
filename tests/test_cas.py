@@ -2,7 +2,7 @@ import io
 
 import pytest
 
-from imapbackup import cas
+from mailvault import cas
 
 
 def test_cas_init_directory(tmp_path):

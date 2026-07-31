@@ -9,7 +9,7 @@ import sys
 def get_version() -> str:
     """Return the installed package version, or 'unknown' when not packaged."""
     try:
-        return importlib.metadata.version("imapbackup")
+        return importlib.metadata.version("mailvault")
     except importlib.metadata.PackageNotFoundError:
         return "unknown"
 
