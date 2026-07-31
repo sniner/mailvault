@@ -27,8 +27,8 @@ if sys.version_info >= (3, 14):
         pass
 
 from mailvault import cas, conf, mailutils, utils
-from mailvault.backend import BackupResult, MailboxClient, MessageRef
-from mailvault.graph import MSGraphClient
+from mailvault.backend.base import BackupResult, MailboxClient, MessageRef
+from mailvault.backend.graph import MSGraphClient
 
 log = logging.getLogger(__name__)
 
