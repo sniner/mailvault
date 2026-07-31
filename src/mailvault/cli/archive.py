@@ -6,8 +6,8 @@ import argparse
 import logging
 import pathlib
 
-from imapbackup import archive, cas, jobs
-from imapbackup.cli import get_version, setup_logger
+from mailvault import archive, cas, jobs
+from mailvault.cli import get_version, setup_logger
 
 log = logging.getLogger(__name__)
 

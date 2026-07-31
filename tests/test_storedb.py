@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from imapbackup import storedb
+from mailvault import storedb
 
 
 def test_store_db_setup(tmp_path):

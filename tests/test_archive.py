@@ -1,4 +1,4 @@
-from imapbackup import archive, cas
+from mailvault import archive, cas
 from .fixtures import dummy_eml_bytes
 
 

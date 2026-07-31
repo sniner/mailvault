@@ -1,4 +1,4 @@
-"""Tests for imapbackup.jobs with mocked Mailbox and CAS."""
+"""Tests for mailvault.jobs with mocked Mailbox and CAS."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-from imapbackup import cas, conf, jobs, mailbox, mailutils, storedb
+from mailvault import cas, conf, jobs, mailbox, mailutils, storedb
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ class TestBackup:
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = mailbox.BackupResult(total=5, stored=5)
 
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -72,7 +72,7 @@ class TestBackup:
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = mailbox.BackupResult()
 
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -86,7 +86,7 @@ class TestBackup:
         mock_client = _make_mock_client()
         mock_client.full_backup.return_value = None
 
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -106,7 +106,7 @@ class TestBackup:
             snapshot_date = datetime(2026, 2, 1, tzinfo=timezone.utc)
             db.set_snapshot(mb_id, label_id, date=snapshot_date)
 
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -121,7 +121,7 @@ class TestBackup:
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = mailbox.BackupResult()
 
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -150,7 +150,7 @@ class TestBackup:
 
         mock_client.folder_backup.side_effect = fake_folder_backup
 
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -166,7 +166,7 @@ class TestBackup:
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = mailbox.BackupResult(total=3, stored=3)
 
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -189,7 +189,7 @@ class TestBackup:
         with storedb.StoreDatabase(tmp_path / "store.db") as db:
             db.set_snapshot(db.add_mailbox("test-job"), db.add_label("INBOX"), date=old_snapshot)
 
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -249,7 +249,7 @@ class TestVerify:
             ],
             {},
         )
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -275,7 +275,7 @@ class TestVerify:
             ],
             {"id-b": lost},
         )
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -300,7 +300,7 @@ class TestVerify:
         lost = _eml("<b@example.com>", "Lost")
         index = [mailbox.MessageRef(msg_id="id-b", message_id="<b@example.com>")]
 
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(
                 return_value=_verify_client(list(index), {"id-b": lost})
             )
@@ -321,7 +321,7 @@ class TestVerify:
         client = _verify_client(
             [mailbox.MessageRef(msg_id="id-a", message_id="mixed@example.com")], {}
         )
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -337,7 +337,7 @@ class TestVerify:
         )
         client.fetch_message.side_effect = OSError("connection reset")
 
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -354,7 +354,7 @@ class TestVerify:
             db.set_snapshot(db.add_mailbox("test-job"), db.add_label("INBOX"), date=old_snapshot)
 
         client = _verify_client([], {})
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -385,7 +385,7 @@ class TestVerify:
 
         client.message_index.side_effect = index
 
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -405,7 +405,7 @@ class TestFolderList:
         mock_client = _make_mock_client()
         mock_client.folders.return_value = iter(["INBOX", "Sent", "Archive"])
 
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -435,7 +435,7 @@ class TestCopy:
         msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
         mock_src_client.get_messages.return_value = iter([(1, msg_date, DUMMY_EML)])
 
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             clients = iter([mock_src_client, mock_dst_client])
             mock_mb_cls.return_value.__enter__ = MagicMock(side_effect=lambda: next(clients))
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
@@ -457,7 +457,7 @@ class TestCopy:
         msg_date = datetime(2026, 2, 20, tzinfo=timezone.utc)
         mock_src_client.get_messages.return_value = iter([(1, msg_date, DUMMY_EML)])
 
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             clients = iter([mock_src_client, mock_dst_client])
             mock_mb_cls.return_value.__enter__ = MagicMock(side_effect=lambda: next(clients))
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
@@ -485,7 +485,7 @@ class TestCopy:
         mock_dst_client = _make_mock_client()
         mock_src_client.get_messages.return_value = iter([])
 
-        with patch("imapbackup.jobs.mailbox.Mailbox") as mock_mb_cls:
+        with patch("mailvault.jobs.mailbox.Mailbox") as mock_mb_cls:
             clients = iter([mock_src_client, mock_dst_client])
             mock_mb_cls.return_value.__enter__ = MagicMock(side_effect=lambda: next(clients))
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)

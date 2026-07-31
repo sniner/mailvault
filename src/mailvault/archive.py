@@ -5,7 +5,7 @@ import logging
 import os
 import pathlib
 
-from imapbackup import cas, mailutils
+from mailvault import cas, mailutils
 
 log = logging.getLogger(__name__)
 

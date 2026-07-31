@@ -2,7 +2,7 @@ import sys
 
 import pytest
 
-from imapbackup import conf
+from mailvault import conf
 
 
 def test_find():

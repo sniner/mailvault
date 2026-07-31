@@ -5,8 +5,8 @@ import logging
 import pathlib
 import sys
 
-from imapbackup import conf, jobs
-from imapbackup.cli import get_version, setup_logger
+from mailvault import conf, jobs
+from mailvault.cli import get_version, setup_logger
 
 log = logging.getLogger(__name__)
 

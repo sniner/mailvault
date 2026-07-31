@@ -71,9 +71,9 @@ jobs:
 
       - name: Build EXEs with PyInstaller
         run: |
-          uv run pyinstaller --onefile --name ib-mailbox src/imapbackup/cli/mailbox.py
-          uv run pyinstaller --onefile --name ib-archive src/imapbackup/cli/archive.py
-          uv run pyinstaller --onefile --name ib-copy src/imapbackup/cli/copy.py
+          uv run pyinstaller --onefile --name ib-mailbox src/mailvault/cli/mailbox.py
+          uv run pyinstaller --onefile --name ib-archive src/mailvault/cli/archive.py
+          uv run pyinstaller --onefile --name ib-copy src/mailvault/cli/copy.py
 
       - name: Upload Error Logs (if failed to build)
         if: failure()

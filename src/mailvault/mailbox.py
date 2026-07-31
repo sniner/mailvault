@@ -27,7 +27,7 @@ if sys.version_info >= (3, 14):
     except Exception:
         pass
 
-from imapbackup import cas, conf, mailutils, utils
+from mailvault import cas, conf, mailutils, utils
 
 log = logging.getLogger(__name__)
 
@@ -498,7 +498,7 @@ class Mailbox:
 
     def __enter__(self) -> MailboxClient:
         if self.job.backend == "msgraph":
-            from imapbackup.graph import MSGraphClient
+            from mailvault.graph import MSGraphClient
 
             self._client = MSGraphClient(self.job)
             return self._client

@@ -11,7 +11,7 @@ import logging
 import re
 from datetime import datetime
 
-from imapbackup import fixedpolicy
+from mailvault import fixedpolicy
 
 
 def _mail_reader(msg: io.IOBase | bytes) -> io.IOBase:

@@ -10,7 +10,7 @@ import urllib.parse
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from imapbackup import cas, conf, mailbox, mailutils
+from mailvault import cas, conf, mailbox, mailutils
 
 if TYPE_CHECKING:
     import httpx
