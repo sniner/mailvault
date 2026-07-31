@@ -2,7 +2,7 @@ import io
 
 import pytest
 
-from mailvault import cas
+from mailvault.store import cas
 
 
 def test_cas_init_directory(tmp_path):

@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from mailvault import storedb
+from mailvault.store import storedb
 
 
 def test_store_db_setup(tmp_path):

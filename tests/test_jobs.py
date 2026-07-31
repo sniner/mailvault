@@ -8,8 +8,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mailvault import cas, conf, jobs, mailutils, storedb
+from mailvault import conf, jobs, mailutils
 from mailvault.backend import base
+from mailvault.store import cas, storedb
 
 # ---------------------------------------------------------------------------
 # Helpers

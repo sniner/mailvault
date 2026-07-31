@@ -13,8 +13,9 @@ from typing import Any
 import httpx
 import msal
 
-from mailvault import cas, conf, mailutils
+from mailvault import conf, mailutils
 from mailvault.backend import base
+from mailvault.store import cas
 
 log = logging.getLogger(__name__)
 

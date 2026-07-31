@@ -9,8 +9,9 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from mailvault import cas, conf
+from mailvault import conf
 from mailvault.backend import imap
+from mailvault.store import cas
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -9,8 +9,9 @@ import time
 from datetime import UTC, datetime
 from typing import cast
 
-from mailvault import cas, conf, mailutils, storedb
+from mailvault import conf, mailutils
 from mailvault.backend import base, imap
+from mailvault.store import cas, storedb
 
 log = logging.getLogger(__name__)
 

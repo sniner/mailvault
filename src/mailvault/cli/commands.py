@@ -2,7 +2,7 @@
 
 Each `run_*` function is the dispatch target for one command group in
 `mailvault.cli.main`; the argument parsing lives there, the actual work in
-`mailvault.jobs` and `mailvault.archive`.
+`mailvault.jobs` and `mailvault.importer`.
 """
 
 from __future__ import annotations
@@ -11,7 +11,8 @@ import argparse
 import logging
 import sys
 
-from mailvault import archive, cas, conf, jobs
+from mailvault import conf, importer, jobs
+from mailvault.store import cas
 
 log = logging.getLogger(__name__)
 
@@ -105,9 +106,9 @@ def run_copy(args: argparse.Namespace) -> int:
 # --- archive -------------------------------------------------------------------
 
 
-def _archive(args: argparse.Namespace) -> archive.MailArchive:
+def _archive(args: argparse.Namespace) -> importer.ExternalMailArchive:
     docuware = getattr(args, "docuware", False)
-    cls = archive.DocuwareMailArchive if docuware else archive.MailArchive
+    cls = importer.DocuwareMailArchive if docuware else importer.ExternalMailArchive
     return cls(args.source)
 
 
