@@ -6,14 +6,9 @@ import os
 import pathlib
 import re
 import subprocess
-import sys
+import tomllib
 
 import yaml
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    tomllib = None
 
 log = logging.getLogger(__name__)
 
@@ -140,8 +135,6 @@ def load(path: pathlib.Path | str, allow_exec: bool = False) -> Config:
     suffix = path.suffix.lower()
 
     if suffix == ".toml":
-        if tomllib is None:
-            raise RuntimeError("TOML config requires Python 3.11+ (tomllib)")
         with open(path, "rb") as f:
             data = tomllib.load(f)
         return Config.from_toml(data, allow_exec=allow_exec)
@@ -154,6 +147,6 @@ def load(path: pathlib.Path | str, allow_exec: bool = False) -> Config:
 def find(configs: list[JobConfig], key: str, value: str) -> JobConfig | None:
     _value = value.casefold()
     return next(
-        (c for c in configs if getattr(c, key, "").casefold() == _value),  # type: ignore[union-attr]
+        (c for c in configs if (getattr(c, key, "") or "").casefold() == _value),
         None,
     )

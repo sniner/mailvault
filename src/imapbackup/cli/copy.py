@@ -6,7 +6,7 @@ import pathlib
 import sys
 
 from imapbackup import conf, jobs
-from imapbackup.cli import setup_logger
+from imapbackup.cli import get_version, setup_logger
 
 log = logging.getLogger(__name__)
 
@@ -16,6 +16,11 @@ def parse_arguments() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter, description=__doc__
     )
 
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {get_version()}",
+    )
     parser.add_argument(
         "--logfile",
         type=pathlib.Path,
@@ -63,7 +68,7 @@ def parse_arguments() -> argparse.Namespace:
     return args
 
 
-def main() -> None:
+def main() -> int:
     args = parse_arguments()
 
     setup_logger(
@@ -74,8 +79,9 @@ def main() -> None:
 
     if args.config.suffix.lower() != ".toml":
         print(f"Error: configuration file must be TOML format (.toml), got: {args.config}", file=sys.stderr)
-        sys.exit(1)
+        return 1
 
+    exit_code = 0
     try:
         config = conf.load(args.config, allow_exec=args.allow_exec)
         source = conf.find(config.jobs, "role", "source")
@@ -83,20 +89,23 @@ def main() -> None:
 
         if source is None or destination is None:
             log.error("Job missing source or destination role")
-            return
+            return 1
 
         if args.subcommand == "folders":
             jobs.folder_list(source)
         elif args.subcommand == "copy":
             log.info(f"Copy job: {source.name} -> {destination.name}")
             jobs.copy(source, destination, idle=args.idle)
-    except Exception as exc:
-        log.error("Fatal error: %s", exc)
     except KeyboardInterrupt:
         log.warning("Interrupted!")
+        exit_code = 130
+    except Exception as exc:
+        log.error("Fatal error: %s", exc)
+        exit_code = 1
     finally:
         log.info("FINISHED")
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

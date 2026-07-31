@@ -15,6 +15,17 @@ def test_find():
     assert conf.find(configs, "role", "other") is None
 
 
+def test_find_tolerates_none_values():
+    # Regression: a job without a role has role=None; find() must not crash
+    # while scanning past it (None has no .casefold()).
+    configs = [
+        conf.JobConfig(name="NoRole"),  # role defaults to None
+        conf.JobConfig(name="Source", role="source"),
+    ]
+    assert conf.find(configs, "role", "source") == configs[1]
+    assert conf.find(configs, "role", "missing") is None
+
+
 # ---------------------------------------------------------------------------
 # YAML loading
 # ---------------------------------------------------------------------------

@@ -1,9 +1,9 @@
 [project]
 name = "imapbackup"
-version = "0.4.0"
+version = "0.5.0"
 description = "Export and backup tool for IMAP mailboxes"
 authors = [{ name = "Stefan Schönberger", email = "stefan@sniner.dev" }]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "imapclient",
     "pyyaml",
