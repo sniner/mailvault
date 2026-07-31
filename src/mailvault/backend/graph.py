@@ -295,7 +295,7 @@ class MSGraphClient:
         folder_name: str,
         store: cas.ContentAddressedStorage,
         since: datetime | None = None,
-        callback: collections.abc.Callable[[dict], None] | None = None,
+        callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> base.BackupResult:
         folder_id = self._resolve_folder(folder_name)
         messages = list(self._iter_messages(folder_name, folder_id, since))
@@ -304,63 +304,34 @@ class MSGraphClient:
         result = base.BackupResult(total=len(messages))
         for idx, msg_info in enumerate(messages, 1):
             msg_id = msg_info["id"]
+            log_ctx = f"{self.job_name}::{folder_name}[{idx}]"
             try:
                 msg = self._download_mime(msg_id)
             except Exception as exc:
-                log.error(
-                    "%s::%s[%s]: download failed: %s",
-                    self.job_name,
-                    folder_name,
-                    idx,
-                    exc,
-                )
+                log.error("%s: download failed: %s", log_ctx, exc)
                 result.failed += 1
                 continue
 
             if self.exchange_journal:
                 unwrapped = mailutils.unwrap_exchange_journal_item(msg)
                 if unwrapped is None:
-                    log.warning(
-                        "%s::%s[%s]: not a journal item, skipping",
-                        self.job_name,
-                        folder_name,
-                        idx,
-                    )
+                    log.warning("%s: not a journal item, skipping", log_ctx)
                     continue
                 msg = unwrapped
 
-            status, store_id, _path = store.add(msg)
-            log.info(
-                "%s::%s[%s]: %s: id=%s",
-                self.job_name,
-                folder_name,
-                idx,
-                status,
-                store_id,
+            store_id = base.store_message(
+                store,
+                msg,
+                result=result,
+                log_ctx=log_ctx,
+                callback=callback,
+                metadata_fn=lambda sid, m=msg: mailutils.metadata(
+                    m, mailbox=self.job_name, folder=folder_name, store_id=sid
+                ),
             )
+            if store_id is None:
+                continue
 
-            if callback:
-                try:
-                    callback(
-                        mailutils.metadata(
-                            msg,
-                            mailbox=self.job_name,
-                            folder=folder_name,
-                            store_id=store_id,
-                        )
-                    )
-                except Exception as exc:
-                    log.exception(
-                        "%s::%s[%s]: Error in callback: %s",
-                        self.job_name,
-                        folder_name,
-                        idx,
-                        exc,
-                    )
-                    result.failed += 1
-                    continue
-
-            result.stored += 1
             if result.stored % 100 == 0:
                 log.info(
                     "%s::%s: %s/%s messages processed",
@@ -374,13 +345,7 @@ class MSGraphClient:
                 try:
                     self._graph_delete(msg_id)
                 except Exception as exc:
-                    log.error(
-                        "%s::%s[%s]: delete failed: %s",
-                        self.job_name,
-                        folder_name,
-                        idx,
-                        exc,
-                    )
+                    log.error("%s: delete failed: %s", log_ctx, exc)
 
         return result
 
@@ -388,13 +353,9 @@ class MSGraphClient:
         self,
         store: cas.ContentAddressedStorage,
         since: datetime | None = None,
-        callback: collections.abc.Callable[[dict], None] | None = None,
+        callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> None:
-        for folder in self.folders():
-            try:
-                self.folder_backup(folder, store, since=since, callback=callback)
-            except Exception as exc:
-                log.error("%s::%s: backup failed: %s", self.job_name, folder, exc)
+        base.run_full_backup(self, store, since=since, callback=callback)
 
     def get_messages(
         self,

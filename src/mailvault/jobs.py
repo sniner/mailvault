@@ -7,10 +7,9 @@ import logging
 import pathlib
 import time
 from datetime import UTC, datetime
-from typing import cast
 
 from mailvault import conf, mailutils
-from mailvault.backend import base, imap
+from mailvault.backend import base, imap, session
 from mailvault.store import cas, metadb
 
 log = logging.getLogger(__name__)
@@ -33,26 +32,24 @@ class VerifyResult:
 
 def _metadata_writer(
     db: metadb.MetaDatabaseConnection, mailbox_id: int
-) -> collections.abc.Callable[[dict], None]:
+) -> collections.abc.Callable[[mailutils.MessageMetadata], None]:
     """Build the callback that records a message's metadata in the store database."""
 
-    def _store_metadata(email: dict) -> None:
-        msg = db.add_message(
-            email["store_id"], email["email_id"], email["date"], email["subject"]
-        )
+    def _store_metadata(email: mailutils.MessageMetadata) -> None:
+        msg = db.add_message(email.store_id, email.email_id, email.date, email.subject)
         db.assign_message_to_mailbox(msg, mailbox_id)
-        db.add_message_labels(msg, *email["labels"])
-        db.add_message_sender(msg, *email["sender"])
-        db.add_message_recipients(msg, *email["recipients"])
+        db.add_message_labels(msg, *email.labels)
+        db.add_message_sender(msg, *email.sender)
+        db.add_message_recipients(msg, *email.recipients)
 
     return _store_metadata
 
 
 def backup(job: conf.JobConfig, store_path: pathlib.Path, compress: bool = False) -> None:
-    with imap.Mailbox(job=job) as mb:
+    with session.open_mailbox(job) as mb:
         store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
         if job.with_db:
-            with metadb.MetaDatabase(path=store_path / "store.db") as db:
+            with metadb.MetaDatabase(path=store_path / metadb.DEFAULT_DB_NAME) as db:
                 mb_id = db.add_mailbox(job.name)
                 _store_metadata = _metadata_writer(db, mb_id)
                 folders = job.folders if job.folders else mb.folders()
@@ -175,9 +172,9 @@ def verify(
         )
 
     results: list[VerifyResult] = []
-    with imap.Mailbox(job=job) as mb:
+    with session.open_mailbox(job) as mb:
         store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
-        with metadb.MetaDatabase(path=store_path / "store.db") as db:
+        with metadb.MetaDatabase(path=store_path / metadb.DEFAULT_DB_NAME) as db:
             mb_id = db.add_mailbox(job.name)
             folders = job.folders if job.folders else list(mb.folders())
             for folder in folders:
@@ -191,14 +188,14 @@ def verify(
 
 
 def folder_list(job: conf.JobConfig) -> None:
-    with imap.Mailbox(job=job) as mb:
+    with session.open_mailbox(job) as mb:
         for folder in mb.folders():
             print(f"{job.name}::{folder}")
 
 
 def rebuild_metadb(store_path: pathlib.Path, mailbox: str | None = None) -> None:
     store = cas.ContentAddressedStorage(store_path, suffix=".eml")
-    with metadb.MetaDatabase(path=store_path / "store.db") as db:
+    with metadb.MetaDatabase(path=store_path / metadb.DEFAULT_DB_NAME) as db:
         mb_id = db.add_mailbox(mailbox) if mailbox else None
         for path in store.walk():
             msg = store.read(path)
@@ -249,8 +246,8 @@ def _copy_folder(
 def _copy(
     source: conf.JobConfig, destination: conf.JobConfig, archive_folder: str | None = None
 ) -> None:
-    with imap.Mailbox(job=source) as mb_from:
-        with imap.Mailbox(job=destination) as mb_to:
+    with session.open_mailbox(source) as mb_from:
+        with session.open_mailbox(destination) as mb_to:
             folders = source.folders if source.folders else ["INBOX"]
             for folder in folders:
                 _copy_folder(mb_from, mb_to, folder, archive_folder=archive_folder)
@@ -263,19 +260,22 @@ def _idle_copy(
     archive_folder: str | None = None,
 ) -> None:
     def _copy_to_dest(mb_from: base.MailboxClient):
-        with imap.Mailbox(job=destination) as mb_to:
+        with session.open_mailbox(destination) as mb_to:
             _copy_folder(mb_from, mb_to, folder_name, archive_folder=archive_folder)
 
     backoff = 1
     while True:
         try:
-            with imap.Mailbox(job=source) as mb_from:
-                imap_client = cast(imap.ImapClient, mb_from)
+            with session.open_mailbox(source) as mb_from:
+                # IDLE is IMAP-specific; the caller guarantees an IMAP source, but
+                # assert it so a misuse fails loudly instead of as an AttributeError.
+                if not isinstance(mb_from, imap.ImapClient):
+                    raise JobError(f"{source.name}: --idle requires an IMAP source")
                 backoff = 1
-                _copy_to_dest(imap_client)
+                _copy_to_dest(mb_from)
                 while True:
-                    for _, _ in imap_client.watch_folder("INBOX"):
-                        _copy_to_dest(imap_client)
+                    for _, _ in mb_from.watch_folder("INBOX"):
+                        _copy_to_dest(mb_from)
         except (OSError, imaplib.IMAP4.abort):
             log.warning(
                 "%s::%s: Connection lost, reconnecting in %ds",
@@ -297,6 +297,11 @@ def copy(source: conf.JobConfig, destination: conf.JobConfig, idle: bool = False
         archive_folder = None
 
     if idle:
+        if source.backend != "imap":
+            raise JobError(
+                f"{source.name}: --idle is only supported for IMAP sources, "
+                f"not backend {source.backend!r}"
+            )
         # FIXME: currently only INBOX
         _idle_copy(source, "INBOX", destination, archive_folder=archive_folder)
     else:

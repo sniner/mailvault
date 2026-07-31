@@ -26,6 +26,14 @@
   ships with Graph support. The `mailvault[graph]` install variant no longer exists -- install
   `mailvault` plainly
 
+- **Job configuration is validated up front:** an unknown `backend` value, or a `msgraph` job
+  missing `tenant_id` / `client_id` / `client_secret`, now fails immediately with a clear error
+  naming the job. Previously an unknown backend silently fell back to IMAP and missing Graph
+  credentials only surfaced deep in the backend
+
+- **`copy --idle`** now reports a clear error when the source mailbox is not an IMAP backend,
+  instead of failing later with an internal error. IDLE is an IMAP-only feature
+
 ### Fixed
 
 - **Message-ID matching:** a malformed Message-ID such as `<>` no longer crashes a run on
