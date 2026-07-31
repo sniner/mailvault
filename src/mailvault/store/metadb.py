@@ -23,7 +23,7 @@ class MetaDatabase:
     def __init__(self, path: pathlib.Path | str):
         self.dbconn = None
         self.client = None
-        self.path = path or "metadata.db"
+        self.path = path or "store.db"
 
     def __enter__(self) -> MetaDatabaseConnection:
         self.dbconn = sqlite3.connect(self.path, check_same_thread=False)

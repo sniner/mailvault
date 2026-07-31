@@ -196,7 +196,7 @@ def folder_list(job: conf.JobConfig) -> None:
             print(f"{job.name}::{folder}")
 
 
-def update_db_from_archive(store_path: pathlib.Path, mailbox: str | None = None) -> None:
+def rebuild_metadb(store_path: pathlib.Path, mailbox: str | None = None) -> None:
     store = cas.ContentAddressedStorage(store_path, suffix=".eml")
     with metadb.MetaDatabase(path=store_path / "store.db") as db:
         mb_id = db.add_mailbox(mailbox) if mailbox else None
