@@ -60,9 +60,8 @@ class TestBackoff:
 
 class TestParseDatetime:
     def test_parses_z_suffix(self):
-        # Graph reports UTC as `...Z`; the parser normalises it so a single code
-        # path handles the timestamp regardless of Python version quirks.
-
+        # Graph reports UTC with a trailing `Z`; fromisoformat parses it
+        # directly on Python 3.11+.
         dt = graph._parse_graph_datetime("2024-01-01T12:00:00Z")
         assert dt is not None
         assert dt.utcoffset() == UTC.utcoffset(None)

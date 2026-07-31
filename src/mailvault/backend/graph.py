@@ -33,15 +33,14 @@ INDEX_PAGE_SIZE = 500
 
 
 def _parse_graph_datetime(value: str | None) -> datetime | None:
-    """Parse a Graph `receivedDateTime` (e.g. `2024-01-01T12:00:00Z`).
+    """Parse a Graph `receivedDateTime` like `2024-01-01T12:00:00Z`.
 
-    Graph reports UTC with a trailing `Z`, which `datetime.fromisoformat` only
-    accepts from Python 3.11 on. Normalising it to `+00:00` keeps the 3.10
-    baseline working.
+    `datetime.fromisoformat` accepts the trailing `Z` on Python 3.11+, which is
+    the project's baseline.
     """
     if not value:
         return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return datetime.fromisoformat(value)
 
 
 def _backoff_delay(attempt: int) -> float:
