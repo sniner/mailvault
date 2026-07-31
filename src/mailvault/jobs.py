@@ -11,7 +11,7 @@ from typing import cast
 
 from mailvault import conf, mailutils
 from mailvault.backend import base, imap
-from mailvault.store import cas, storedb
+from mailvault.store import cas, metadb
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class VerifyResult:
 
 
 def _metadata_writer(
-    db: storedb.StoreDatabaseConnection, mailbox_id: int
+    db: metadb.MetaDatabaseConnection, mailbox_id: int
 ) -> collections.abc.Callable[[dict], None]:
     """Build the callback that records a message's metadata in the store database."""
 
@@ -52,7 +52,7 @@ def backup(job: conf.JobConfig, store_path: pathlib.Path, compress: bool = False
     with imap.Mailbox(job=job) as mb:
         store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
         if job.with_db:
-            with storedb.StoreDatabase(path=store_path / "store.db") as db:
+            with metadb.MetaDatabase(path=store_path / "store.db") as db:
                 mb_id = db.add_mailbox(job.name)
                 _store_metadata = _metadata_writer(db, mb_id)
                 folders = job.folders if job.folders else mb.folders()
@@ -87,7 +87,7 @@ def backup(job: conf.JobConfig, store_path: pathlib.Path, compress: bool = False
 
 def _verify_folder(
     mb: base.MailboxClient,
-    db: storedb.StoreDatabaseConnection,
+    db: metadb.MetaDatabaseConnection,
     store: cas.ContentAddressedStorage,
     mailbox_id: int,
     job_name: str,
@@ -177,7 +177,7 @@ def verify(
     results: list[VerifyResult] = []
     with imap.Mailbox(job=job) as mb:
         store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
-        with storedb.StoreDatabase(path=store_path / "store.db") as db:
+        with metadb.MetaDatabase(path=store_path / "store.db") as db:
             mb_id = db.add_mailbox(job.name)
             folders = job.folders if job.folders else list(mb.folders())
             for folder in folders:
@@ -198,7 +198,7 @@ def folder_list(job: conf.JobConfig) -> None:
 
 def update_db_from_archive(store_path: pathlib.Path, mailbox: str | None = None) -> None:
     store = cas.ContentAddressedStorage(store_path, suffix=".eml")
-    with storedb.StoreDatabase(path=store_path / "store.db") as db:
+    with metadb.MetaDatabase(path=store_path / "store.db") as db:
         mb_id = db.add_mailbox(mailbox) if mailbox else None
         for path in store.walk():
             msg = store.read(path)

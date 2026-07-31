@@ -10,7 +10,7 @@ import pytest
 
 from mailvault import conf, jobs, mailutils
 from mailvault.backend import base
-from mailvault.store import cas, storedb
+from mailvault.store import cas, metadb
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -105,7 +105,7 @@ class TestBackup:
         mock_client.folder_backup.return_value = base.BackupResult()
 
         # Pre-populate a snapshot
-        with storedb.StoreDatabase(tmp_path / "store.db") as db:
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
             mb_id = db.add_mailbox("test-job")
             label_id = db.add_label("INBOX")
             snapshot_date = datetime(2026, 2, 1, tzinfo=UTC)
@@ -164,7 +164,7 @@ class TestBackup:
             jobs.backup(job, tmp_path)
 
         # Verify metadata was stored
-        with storedb.StoreDatabase(tmp_path / "store.db") as db:
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
             row = db.execute("SELECT * FROM message WHERE store_id='abc123'").fetchone()
             assert row is not None
 
@@ -179,7 +179,7 @@ class TestBackup:
 
             jobs.backup(job, tmp_path)
 
-        with storedb.StoreDatabase(tmp_path / "store.db") as db:
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
             mb_id = db.add_mailbox("test-job")
             label_id = db.add_label("INBOX")
             assert db.get_snapshot_date(mb_id, label_id) is not None
@@ -191,7 +191,7 @@ class TestBackup:
         mock_client.folder_backup.return_value = base.BackupResult(total=3, stored=2, failed=1)
         old_snapshot = datetime(2026, 2, 1, tzinfo=UTC)
 
-        with storedb.StoreDatabase(tmp_path / "store.db") as db:
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
             db.set_snapshot(
                 db.add_mailbox("test-job"), db.add_label("INBOX"), date=old_snapshot
             )
@@ -202,7 +202,7 @@ class TestBackup:
 
             jobs.backup(job, tmp_path)
 
-        with storedb.StoreDatabase(tmp_path / "store.db") as db:
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
             mb_id = db.add_mailbox("test-job")
             label_id = db.add_label("INBOX")
             assert db.get_snapshot_date(mb_id, label_id) == old_snapshot
@@ -228,7 +228,7 @@ def _archive_message(store_path, job_name: str, folder: str, msg: bytes) -> None
     """Put a message into the archive the way a successful backup would."""
     store = cas.ContentAddressedStorage(store_path, suffix=".eml")
     _status, store_id, _path = store.add(msg)
-    with storedb.StoreDatabase(store_path / "store.db") as db:
+    with metadb.MetaDatabase(store_path / "store.db") as db:
         mb_id = db.add_mailbox(job_name)
         writer = jobs._metadata_writer(db, mb_id)
         writer(mailutils.metadata(msg, mailbox=job_name, folder=folder, store_id=store_id))
@@ -294,7 +294,7 @@ class TestVerify:
 
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
         assert len(list(store.walk())) == 2
-        with storedb.StoreDatabase(tmp_path / "store.db") as db:
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
             mb_id = db.add_mailbox("test-job")
             known = db.get_known_message_ids(mb_id, db.add_label("INBOX"))
             assert known == {"a@example.com", "b@example.com"}
@@ -355,7 +355,7 @@ class TestVerify:
     def test_verify_leaves_snapshot_untouched(self, tmp_path):
         job = _make_job(with_db=True, folders=["INBOX"])
         old_snapshot = datetime(2026, 2, 1, tzinfo=UTC)
-        with storedb.StoreDatabase(tmp_path / "store.db") as db:
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
             db.set_snapshot(
                 db.add_mailbox("test-job"), db.add_label("INBOX"), date=old_snapshot
             )
@@ -367,7 +367,7 @@ class TestVerify:
 
             jobs.verify(job, tmp_path)
 
-        with storedb.StoreDatabase(tmp_path / "store.db") as db:
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
             mb_id = db.add_mailbox("test-job")
             assert db.get_snapshot_date(mb_id, db.add_label("INBOX")) == old_snapshot
 
@@ -522,7 +522,7 @@ class TestUpdateDbFromArchive:
 
         jobs.update_db_from_archive(tmp_path, mailbox="test")
 
-        with storedb.StoreDatabase(tmp_path / "store.db") as db:
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
             rows = db.execute("SELECT * FROM message").fetchall()
             assert len(rows) == 1
 
@@ -532,7 +532,7 @@ class TestUpdateDbFromArchive:
 
         jobs.update_db_from_archive(tmp_path)
 
-        with storedb.StoreDatabase(tmp_path / "store.db") as db:
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
             rows = db.execute("SELECT * FROM message").fetchall()
             assert len(rows) == 1
             # No mailbox assignment
