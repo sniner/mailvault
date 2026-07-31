@@ -36,9 +36,7 @@ ignore = ["E402"]
 per-file-ignores = { "__init__.py" = ["F401"] }
 
 [project.scripts]
-ib-mailbox = "mailvault.cli.mailbox:main"
-ib-archive = "mailvault.cli.archive:main"
-ib-copy    = "mailvault.cli.copy:main"
+mailvault = "mailvault.cli:main"
 
 #[[tool.uv.index]]
 #name = "pypi"

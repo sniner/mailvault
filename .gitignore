@@ -11,4 +11,10 @@ __pycache__/
 !example.toml
 !pyproject.toml
 
+# Editor swap/backup files -- must never be committed (a .swp of a secrets
+# file leaks the secret). Note: these are dotfiles, so /archive* and *.toml
+# above do NOT catch them.
+*.sw[a-p]
+*~
+
 /archive*
