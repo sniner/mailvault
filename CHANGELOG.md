@@ -2,6 +2,13 @@
 
 ## 0.6.0 (unreleased)
 
+### Changed
+
+- **The Microsoft Graph backend is now a core dependency** (`msal`, `httpx`), no longer an
+  optional `graph` extra. Microsoft 365 is a first-class mailbox source, so `mailvault` always
+  ships with Graph support. The `mailvault[graph]` install variant no longer exists -- install
+  `mailvault` plainly
+
 ### Fixed
 
 - **Message-ID matching:** a malformed Message-ID such as `<>` no longer crashes a run on
