@@ -131,9 +131,23 @@ def store_message(
     log.info("%s: %s: id=%s", log_ctx, status, store_id)
     if callback is not None and metadata_fn is not None:
         try:
-            callback(metadata_fn(store_id))
+            metadata = metadata_fn(store_id)
         except Exception as exc:
-            log.exception("%s: error in callback: %s", log_ctx, exc)
+            # Reading a field out of a message is not the same as failing to
+            # archive it -- by this point the message is stored. Counting it as
+            # a failure would freeze the folder's snapshot over a header that no
+            # retry will parse any better, and drop the message out of the
+            # metadata entirely. That is how 110 messages of the reference
+            # archive came to sit in the storage with no record anywhere.
+            log.warning("%s: metadata could not be extracted: %s", log_ctx, exc)
+            result.stored += 1
+            return store_id
+        try:
+            callback(metadata)
+        except Exception as exc:
+            # Recording is a different matter: the message is archived but its
+            # location was not written down, and a rerun does fix that.
+            log.exception("%s: recording the metadata failed: %s", log_ctx, exc)
             result.failed += 1
             return None
     result.stored += 1

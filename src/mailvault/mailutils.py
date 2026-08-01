@@ -40,8 +40,48 @@ def decode_email_header(msg: io.IOBase | bytes) -> email.message.EmailMessage:
     return decode_email(msg, headersonly=True)
 
 
+def address_field(msg: email.message.EmailMessage, label: str) -> set[str]:
+    """Collect the addresses of one header, tolerating what it may contain.
+
+    Read through the policy's own parsing rather than `email.utils.getaddresses`.
+    The difference shows on group addresses -- `To: Undisclosed recipients:;` is
+    perfectly legal RFC 5322 -- where `getaddresses` reports the group as the
+    address pair `('', '')`. That empty string used to reach the archive as a
+    recipient: 532 of 130,997 messages in the reference archive carried one, with
+    no error anywhere to show for it. The policy reports the group as a group and
+    the address list as empty, which is the truth.
+
+    Anything the parser refuses costs this one header, not the message. Five
+    messages in the same archive made `getaddresses` raise from inside CPython,
+    and the handler that caught it was far enough away to have forgotten it was
+    only reading a field.
+    """
+    try:
+        headers = msg.get_all(label, [])
+    except Exception as exc:
+        logging.warning("Unreadable %s header: %s", label, exc)
+        return set()
+
+    found: set[str] = set()
+    for header in headers:
+        try:
+            parsed = getattr(header, "addresses", None)
+            if parsed is not None:
+                found.update(a.addr_spec.lower() for a in parsed if a.addr_spec)
+            else:
+                # A plain string: no policy parsing to lean on, so fall back.
+                found.update(
+                    addr.lower()
+                    for _name, addr in email.utils.getaddresses([str(header)])
+                    if addr
+                )
+        except Exception as exc:
+            logging.warning("Unusable address in %s: %s", label, exc)
+    return found
+
+
 def addresses(msg: email.message.EmailMessage) -> tuple[set[str], set[str]]:
-    """Extract from/to addresses from message. Returns tuple of lists (from, to)."""
+    """Extract from/to addresses from message. Returns tuple of sets (from, to)."""
 
     def received_for() -> collections.abc.Generator[str, None, None]:
         for field in msg.get_all("Received", []):
@@ -51,54 +91,96 @@ def addresses(msg: email.message.EmailMessage) -> tuple[set[str], set[str]]:
             if m:
                 yield m[1].lower()
 
-    def addr_field(label: str) -> set[str]:
-        try:
-            addrs = email.utils.getaddresses(msg.get_all(label, []))
-        except Exception as exc:
-            logging.warning("Failed to parse addresses for %s: %s", label, exc)
-            addrs = []
-        return {a[1].lower() for a in addrs}
-
-    to_addrs = addr_field("To").union(received_for())
-    from_addrs = addr_field("From")
-    cc_addrs = addr_field("CC")
+    to_addrs = address_field(msg, "To").union(received_for())
+    from_addrs = address_field(msg, "From")
+    cc_addrs = address_field(msg, "CC")
     return from_addrs, to_addrs.union(cc_addrs)
+
+
+def header_text(msg: email.message.EmailMessage, name: str) -> str:
+    """Return one header as text, or "" when it cannot be read.
+
+    `msg.get` parses the header on access, so a malformed encoded word or a
+    broken address raises here rather than where the value is used. One
+    unreadable field must not cost the message every other field.
+    """
+    try:
+        value = msg.get(name)
+    except Exception as exc:
+        logging.warning("Unreadable %s header: %s", name, exc)
+        return ""
+    return str(value) if value else ""
+
+
+# A timezone abbreviation stuck to the time with no space: "06:41:03EST".
+_GLUED_ZONE = re.compile(r"(\d:\d{2}(?::\d{2})?)([A-Za-z]{2,5})\b")
+# A numeric UTC offset, so an impossible one can be told from a valid one.
+_UTC_OFFSET = re.compile(r"\s*([+-])(\d{2})(\d{2})\b")
+
+
+def _repair_date(value: str) -> str:
+    """Apply the mechanical repairs to a Date header, language-independently.
+
+    Deliberately only what cannot produce a *wrong* date. Separating a timezone
+    that is glued to the time changes nothing about the value, and an offset of
+    more than 24 hours (`+9752` occurs) is not a timezone by any reading, so
+    dropping it leaves the local time it was attached to.
+
+    Everything else that turns up -- German month names, `27.11.2002`, a weekday
+    spelled `Thur`, a date with no time at all -- needs either a table for one
+    language or a value the message never carried. Both are refused: a wrong date
+    is worse than a missing one, because a missing one is visible.
+    """
+    repaired = _GLUED_ZONE.sub(r"\1 \2", value)
+    return _UTC_OFFSET.sub(lambda m: "" if int(m.group(2)) >= 24 else m.group(0), repaired)
+
+
+def _date_candidates(value: str) -> collections.abc.Iterator[str]:
+    """Yield the readings of a Date header worth trying, plainest first."""
+    seen = {value}
+    yield value
+    try:
+        decoded = str(email.header.make_header(email.header.decode_header(value)))
+    except (ValueError, LookupError, UnicodeDecodeError):
+        decoded = value
+    for candidate in (decoded, _repair_date(value), _repair_date(decoded)):
+        if candidate not in seen:
+            seen.add(candidate)
+            yield candidate
 
 
 def date(msg: email.message.EmailMessage) -> datetime | None:
     """Return the message's Date, or None when the header cannot be read at all.
 
-    Nineties mail sometimes RFC 2047-encodes the whole Date header, comment and
-    all, which the date parser refuses outright:
+    Old mail carries dates the parser refuses outright. Nineties mail sometimes
+    RFC 2047-encodes the whole header, comment and all:
 
         =?iso-8859-1?Q?Thu=2C_18_Dec_1997_22=3A03=3A34_+0100_=28=28ME?=
         =?iso-8859-1?Q?Z=29_Mitteleurop=E4ische_Zeit=29?=
 
-    Decoding the encoded words first turns that back into a perfectly ordinary
-    `Thu, 18 Dec 1997 22:03:34 +0100 ((MEZ) Mitteleuropäische Zeit)`, so it is
-    worth a second attempt before giving up.
+    which decodes to an entirely ordinary `Thu, 18 Dec 1997 22:03:34 +0100
+    ((MEZ) Mitteleuropäische Zeit)`. Others glue the timezone to the time or
+    carry an offset of `+9752`. Each reading is tried in turn, plainest first.
 
-    What still cannot be read yields None rather than an exception. Walking an
-    archive must not stop at one bad header: the date is one field of one
-    message, and losing it costs less than losing the run that found it.
+    What still cannot be read yields None, never an exception. Walking an archive
+    must not stop at one bad header -- and None means "unknown", which is a
+    truthful thing to store. An epoch date instead would sort these messages in
+    among real ones from the seventies and hide them from `WHERE date IS NULL`.
     """
-    value = msg.get("Date")
+    value = header_text(msg, "Date")
     if not value:
         return None
-    try:
-        return email.utils.parsedate_to_datetime(value)
-    except (ValueError, TypeError):
-        pass
-    try:
-        decoded = str(email.header.make_header(email.header.decode_header(value)))
-        return email.utils.parsedate_to_datetime(decoded)
-    except (ValueError, TypeError, LookupError, UnicodeDecodeError) as exc:
-        logging.warning("Unreadable Date header %r: %s", value, exc)
-        return None
+    for candidate in _date_candidates(value):
+        try:
+            return email.utils.parsedate_to_datetime(candidate)
+        except (ValueError, TypeError):
+            continue
+    logging.warning("Unreadable Date header %r", value)
+    return None
 
 
 def message_id(msg: email.message.EmailMessage) -> str:
-    return msg.get("Message-Id") or ""
+    return header_text(msg, "Message-Id")
 
 
 def normalize_message_id(value: str | None) -> str:
@@ -165,7 +247,7 @@ class MessageIdIndex:
 
 
 def subject(msg: email.message.EmailMessage) -> str:
-    return msg.get("Subject") or ""
+    return header_text(msg, "Subject")
 
 
 @dataclasses.dataclass(frozen=True)

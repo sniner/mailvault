@@ -317,3 +317,53 @@ def test_date_returns_none_for_a_header_beyond_repair(caplog):
 
     assert mailutils.date(header) is None
     assert "Unreadable Date header" in caplog.text
+
+
+def test_group_address_yields_no_empty_recipient():
+    """'Undisclosed recipients:;' is legal RFC 5322 and names nobody."""
+    raw = b"From: a@example.com\r\nTo: Undisclosed recipients:;\r\n\r\n"
+    header = mailutils.decode_email_header(raw)
+
+    _from_addrs, to_addrs = mailutils.addresses(header)
+
+    assert to_addrs == set()
+
+
+def test_group_members_are_collected():
+    raw = b"From: a@example.com\r\nTo: Team: b@example.com, c@example.com;\r\n\r\n"
+    header = mailutils.decode_email_header(raw)
+
+    _from_addrs, to_addrs = mailutils.addresses(header)
+
+    assert to_addrs == {"b@example.com", "c@example.com"}
+
+
+def test_date_separates_a_timezone_glued_to_the_time():
+    raw = b"From: a@example.com\r\nDate: Tue, 04 Apr 00 06:41:03EST\r\n\r\n"
+    header = mailutils.decode_email_header(raw)
+
+    parsed = mailutils.date(header)
+
+    assert parsed is not None
+    assert (parsed.year, parsed.month, parsed.day) == (2000, 4, 4)
+
+
+def test_date_drops_an_impossible_utc_offset():
+    """+9752 is not a timezone by any reading; the local time still is one."""
+    raw = b"From: a@example.com\r\nDate: Fri, 8 Aug 7048 10:02:45 +9752\r\n\r\n"
+    header = mailutils.decode_email_header(raw)
+
+    parsed = mailutils.date(header)
+
+    assert parsed is not None
+    assert (parsed.year, parsed.hour) == (7048, 10)
+
+
+def test_date_keeps_a_valid_offset_untouched():
+    raw = b"From: a@example.com\r\nDate: Wed, 20 Feb 2026 12:00:00 -0500\r\n\r\n"
+    header = mailutils.decode_email_header(raw)
+
+    parsed = mailutils.date(header)
+
+    assert parsed is not None
+    assert parsed.utcoffset().total_seconds() == -5 * 3600
