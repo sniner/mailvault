@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 (2026-08-02)
 
 ### Breaking changes
 
@@ -39,6 +39,11 @@
 - **`archive migrate <archive>`** moves an older archive off its database, as described above
 
 ### Changed
+
+- **The job option `with_db` is now `with_metadata`.** There is no database to
+  have, and the option decides whether a backup records anything about its messages
+  at all. The old name keeps working with a warning, so an existing configuration
+  keeps meaning what it said rather than quietly reverting to the default
 
 - **`verify` no longer needs a database.** It reads which messages are archived for a folder
   from the log and their Message-IDs from the messages themselves

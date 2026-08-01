@@ -78,6 +78,11 @@ def _resolve_values(data: dict, allow_exec: bool = False) -> dict:
     return resolved
 
 
+# Fields that were renamed. Kept mapped so an existing configuration keeps
+# meaning what it said, rather than quietly reverting to a default.
+RETIRED_FIELDS = {"with_db": "with_metadata"}
+
+
 @dataclasses.dataclass
 class JobConfig:
     name: str = "."
@@ -95,7 +100,7 @@ class JobConfig:
     exchange_journal: bool = False
     trash_folder: str | None = None
     error_folder: str | None = None
-    with_db: bool = True
+    with_metadata: bool = True
     incremental: bool = True
     role: str | None = None
     move_to_archive: bool = False
@@ -127,12 +132,37 @@ class JobConfig:
     @classmethod
     def from_dict(cls, name: str, data: dict, allow_exec: bool = False) -> JobConfig:
         resolved = _resolve_values(data, allow_exec=allow_exec)
+        resolved = cls._rename_retired_fields(name, resolved)
         fields = {f.name for f in dataclasses.fields(cls)}
         known = {k: v for k, v in resolved.items() if k in fields}
         unknown = set(resolved.keys()) - fields
         if unknown:
             log.warning("Unknown config fields in '%s': %s", name, ", ".join(sorted(unknown)))
         return cls(name=name, **known)
+
+    @staticmethod
+    def _rename_retired_fields(name: str, data: dict) -> dict:
+        """Map fields that were renamed, so an old config does not change meaning.
+
+        An unknown field is only warned about and dropped, which for a boolean
+        would silently restore its default -- someone who deliberately turned
+        something off would find it back on. Renamed fields are therefore carried
+        over explicitly, with a warning that says what to write instead.
+        """
+        renamed = dict(data)
+        for old, new in RETIRED_FIELDS.items():
+            if old not in renamed:
+                continue
+            value = renamed.pop(old)
+            log.warning(
+                "%s: '%s' has been renamed to '%s'; using it for now, please update "
+                "the configuration",
+                name,
+                old,
+                new,
+            )
+            renamed.setdefault(new, value)
+        return renamed
 
 
 @dataclasses.dataclass

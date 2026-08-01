@@ -1,13 +1,46 @@
 # mailvault -- Back up and archive email from IMAP and Microsoft 365 mailboxes
 
 > [!IMPORTANT]
-> **`mailvault` was formerly named `imapbackup`.** This is the same project,
-> renamed and polished: a single `mailvault` command replaces the old
-> `ib-mailbox` / `ib-archive` / `ib-copy` tools, Microsoft 365 (Graph) support
-> is now built in, and the minimum Python is 3.11. If you depend on the old
-> `ib-*` commands, stay on the last pre-rename release,
-> [v0.5.0](https://github.com/sniner/mailvault/releases/tag/v0.5.0). See
-> [Migrating from ib-*](#migrating-from-ib-) and the [CHANGELOG](CHANGELOG.md).
+> **0.8.0 changes how an archive stores its metadata.** The SQLite database that
+> used to live inside the archive is gone; what it knew is now kept in files that
+> are only ever written once or replaced atomically.
+>
+> **Your existing archive keeps working and needs nothing from you.** The next
+> backup migrates it automatically, and nothing is deleted — the old database is
+> renamed to `store.db.migrated` and left where it is, so you can go back to it
+> until you are satisfied and remove it yourself.
+>
+> **If you queried that database with SQL, read this.** There is no longer a
+> database inside the archive to point your tools at. You now build one wherever
+> you want it, from the archive, whenever you need it — see
+> [Querying an archive with SQL](#querying-an-archive-with-sql). What you get is
+> a snapshot of the moment you built it.
+>
+> See the [CHANGELOG](CHANGELOG.md) for the full list.
+
+
+## Why an archive holds no database
+
+The archive is often the only copy of your mail — that is the point of the tool:
+it takes mail *out* of a mailbox. So the interesting question is not what happens
+in the good case, but what happens when a write goes wrong.
+
+Message files are safe by construction. They are named after the hash of their
+content, never modified, and never written twice; a half-written one is
+recognizable and can be thrown away without touching anything else.
+
+An SQLite database is the opposite. It rewrites pages **in place** and relies on
+`fsync` behaving. Over SMB or NFS `fsync` is not reliably honoured, so a torn
+write does not cost you the last change — it can cost you the file. And that file
+held the one thing the messages themselves cannot tell you: which mailbox and
+which folder each message was seen in. Subject, sender, recipients and date are
+all in the message; that single fact was not, and losing it meant losing it for
+good.
+
+So a backup no longer writes anything that is modified in place. Everything it
+records is either immutable or replaced atomically, and the database became what
+it should have been all along: a tool you build when you want to run a query, not
+part of the archive.
 
 
 ## Installation
@@ -32,7 +65,7 @@ To pin a specific release, or to install the current development state straight
 from the repository:
 
 ```console
-$ uv tool install mailvault==0.7.0
+$ uv tool install mailvault==0.8.0
 $ uv tool install git+https://github.com/sniner/mailvault
 ```
 
@@ -47,7 +80,7 @@ Wheels and pre-compiled Windows executables are also available on the
 * `mailvault folders | backup | verify` -- back up IMAP or Microsoft 365
   mailboxes to a local archive and verify the result
 * `mailvault archive ...` -- manage the local email archive (import, compress,
-  statistics, rebuild the metadata database, etc.)
+  statistics, build a database for querying, etc.)
 * `mailvault copy` -- copy emails between IMAP mailboxes (experimental)
 
 Global options (`--config`, `-v/--verbose`, `-q/--quiet`, `--log-file`,
@@ -132,9 +165,15 @@ example.org: 43 of 43 message(s) restored
 Messages are matched by their `Message-ID`. A message whose `Message-ID` is
 missing or ambiguous is treated as not archived and fetched again, which is
 harmless: the content-addressed storage recognizes the duplicate and discards
-it. `verify` requires a job with `with_db = true` and does not support
+it. `verify` requires a job with `with_metadata = true` and does not support
 `exchange_journal` jobs, because there the archived message and the server's
 journal envelope carry different `Message-ID`s.
+
+`verify` is a last resort, not routine. A folder whose downloads partly failed
+does not advance its snapshot, so the next ordinary backup fetches it again by
+itself. What is left for `verify` are archives from older versions, jobs that
+keep no metadata, and mail moved into a folder with an internal date older than
+the snapshot.
 
 
 ## Managing the archive
@@ -184,20 +223,59 @@ List all sender and recipient addresses found in the archive:
 $ mailvault archive addresses ./backup
 ```
 
-### Rebuild metadata database
+### Querying an archive with SQL
 
-If the metadata database is missing (e.g. because `with_db` was not enabled
-initially) or has become corrupt, you can create or rebuild it from the
-archive files:
+The archive itself holds no database. To run SQL against it, build one:
 
 ```console
-$ mailvault archive rebuild-db --mailbox example.org ./backup
+$ mailvault archive create-db ./backup ./backup.db
+./backup: 130,997 message(s) read from the archive
+./backup: metadata log: 60 file(s), 219,690 of 219,690 location(s) applied
+./backup.db: written -- a snapshot, stale from the next backup onwards
 ```
 
-Since the `.eml` files in the archive do not contain any information about
-which backup job they originated from, all emails are assigned to the single
-`--mailbox` identifier you specify. It should match the job name from your
-configuration file.
+It is assembled from the messages -- which carry their own subject, sender,
+recipients and date -- and from the archive's record of where each message was
+seen. It goes wherever you say; it is not part of the archive, and nothing keeps
+it up to date. **It is a snapshot:** correct for the moment it was built, out of
+date from the next backup onwards. Build it again when that matters.
+
+An existing file is refused unless you pass `--force`, which replaces it rather
+than adding to it -- merging two runs into one file would give you neither
+snapshot:
+
+```console
+$ mailvault archive create-db ./backup ./backup.db
+./backup.db: already exists, use --force to replace it
+```
+
+Two views are there for convenience, `v_messages` and `v_duplicates`:
+
+```console
+$ sqlite3 ./backup.db "SELECT date, sender, subject FROM v_messages LIMIT 5"
+```
+
+Use `--mailbox NAME` for archives that predate the location record, where nothing
+says which job a message came from; every message is then attributed to that one
+name.
+
+### Migrating an older archive
+
+Archives written before 0.8.0 keep their metadata in `store.db` inside the
+archive. The next backup moves it out by itself, but you can also do it
+deliberately:
+
+```console
+$ mailvault archive migrate ./backup
+./backup: 130,887 message(s) moved into 59 mailbox/folder place(s)
+./backup: 46 resume timestamp(s) moved into state.json
+./backup: the database is now store.db.migrated and is no longer used
+./backup: delete it once you are satisfied with the archive
+```
+
+Nothing is deleted. The database is renamed and left alone, so you keep a way
+back until you remove it yourself. Running the command again on a migrated
+archive does nothing, and an interrupted migration is simply repeated.
 
 
 ## Copying between mailboxes
@@ -254,7 +332,7 @@ Global options are given **before** the command.
 | `ib-mailbox --config c.toml backup <dest>` | `mailvault --config c.toml backup <dest>` |
 | `ib-mailbox --config c.toml verify [--repair] <dest>` | `mailvault --config c.toml verify [--repair] <dest>` |
 | `ib-archive stats\|import\|addresses\|compress\|decompress <dir>` | `mailvault archive stats\|import\|addresses\|compress\|decompress <dir>` |
-| `ib-archive db-from-archive --mailbox NAME <dir>` | `mailvault archive rebuild-db --mailbox NAME <dir>` |
+| `ib-archive db-from-archive --mailbox NAME <dir>` | `mailvault archive create-db <dir> <database>` |
 | `ib-copy --config c.toml copy [--idle]` | `mailvault --config c.toml copy [--idle]` |
 | `ib-copy --config c.toml folders` | `mailvault --config c.toml copy --list-folders` |
 
@@ -284,6 +362,35 @@ structure:
 The filename is the SHA-384 hash of the file content and serves as the key to
 the archive. This makes it easy to verify file integrity by comparing the hash
 with the filename.
+
+Two more things live beside the messages:
+
+```
+./archive
+├── 00/ … ff/            the messages
+├── meta/                where each message was seen
+│   └── a1/
+│       └── a1b2c3….jsonl
+└── state.json           where the next incremental run picks up
+```
+
+`meta/` answers the one question the messages cannot: which mailbox and which
+folder each was seen in. **One file is one place** -- its first line names a
+mailbox and a folder, the rest name the messages seen there. A message that
+belongs to several places simply appears in several files, so nothing is
+ambiguous. These files are content-addressed exactly like the messages, so each
+one carries its own integrity check:
+
+```console
+$ sha384sum meta/a1/a1b2c3….jsonl     # matches the filename, or the file is damaged
+```
+
+They are written once and never modified. `state.json` holds the timestamps that
+decide where the next incremental run resumes; it is small and always replaced
+atomically, never edited in place.
+
+Both are plain text. If you ever want to know what an archive thinks it contains,
+you can read it without `mailvault` and without SQL.
 
 Emails with the same Message-ID are considered identical from a user
 perspective, but if their RFC 822 representation differs, they are stored
@@ -436,20 +543,26 @@ with a warning.
 | `tls_verify_cert` | `true` | Verify the TLS certificate |
 | `exchange_journal` | `false` | Extract original emails from MS Exchange journal messages |
 | `delete_after_export` | `false` | Delete emails from the server after export (use with caution) |
-| `with_db` | `true` | Maintain a metadata SQLite database in the archive |
-| `incremental` | `true` | Only download messages added since the last backup run (requires `with_db`) |
+| `with_metadata` | `true` | Record where each message was seen, and where the next run resumes |
+| `incremental` | `true` | Only download messages added since the last backup run (requires `with_metadata`) |
 | `max_retries` | `5` | Retries for failed MS Graph requests (throttling, gateway and connection errors) |
 | `compress` | `false` | Compress stored emails with zstd (global option) |
 
 
-## Metadata database
+## Metadata
 
-When `with_db` is enabled (the default), an SQLite database is created inside
-the archive containing header fields such as date, Message-ID, sender,
-recipient, and subject.
+When `with_metadata` is enabled (the default), a backup records where each
+message was seen, into `meta/`, and where the next run should resume, into
+`state.json`. That is all it writes besides the messages themselves -- there is
+no database in the archive, and nothing is modified in place. See
+[Why an archive holds no database](#why-an-archive-holds-no-database).
 
-For an archive without a database, you can create one retroactively with
-`mailvault archive rebuild-db`.
+Turning it off stores the messages and nothing else. Such a job cannot run
+incrementally and cannot be checked with `verify`, since both need to know what
+was already fetched.
+
+To query an archive with SQL, build a database from it when you need one: see
+[Querying an archive with SQL](#querying-an-archive-with-sql).
 
 
 ## MS Windows

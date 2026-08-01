@@ -393,7 +393,7 @@ def _backup_to_log(
 def backup(job: conf.JobConfig, store_path: pathlib.Path, compress: bool = False) -> None:
     with session.open_mailbox(job) as mb:
         store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
-        if job.with_db:
+        if job.with_metadata:
             _backup_to_log(mb, store, job, store_path)
         elif job.folders:
             for folder in job.folders:
@@ -526,8 +526,8 @@ def verify(
     not part of the routine -- which is why it can afford to read the archive
     itself rather than keep an index alongside it.
     """
-    if not job.with_db:
-        raise JobError(f"{job.name}: verify requires a job with 'with_db' enabled")
+    if not job.with_metadata:
+        raise JobError(f"{job.name}: verify requires a job with 'with_metadata' enabled")
     if job.exchange_journal:
         raise JobError(
             f"{job.name}: verify does not support 'exchange_journal' jobs, because the"
