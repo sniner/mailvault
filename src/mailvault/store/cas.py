@@ -18,6 +18,7 @@ class ContentAddressedStorage:
         depth: int = 2,
         compress: bool = False,
         hashfactory: collections.abc.Callable[..., hashlib._Hash] | None = None,
+        fsync: bool = False,
     ):
         self.root_dir = pathlib.Path(root_dir)
         pathlib.Path.mkdir(self.root_dir, parents=True, exist_ok=True)
@@ -25,6 +26,12 @@ class ContentAddressedStorage:
         self.hashfactory = hashfactory if hashfactory else hashlib.sha384
         self.depth = depth if depth >= 0 else 2
         self.suffix = suffix
+        # Flush each entry to the device before it is renamed into place. Off by
+        # default: for mail a lost entry is re-fetched on the next run, and one
+        # fsync per message is a real cost over a large archive. Callers whose
+        # entries are not re-fetchable that cheaply -- the metadata log -- turn
+        # it on.
+        self.fsync = fsync
         self.blocksize = 16384
         if self.compress:
             import zstandard  # noqa: F401 — fail fast if not installed
@@ -124,6 +131,9 @@ class ContentAddressedStorage:
                         if block is None or len(block) == 0:
                             break
                         f.write(block)
+                    if self.fsync:
+                        f.flush()
+                        os.fsync(f.fileno())
         except Exception as exc:
             log.error(f"{file}: error while writing file: {exc}")
             if tmp_file.exists():

@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-import re
 from datetime import UTC, datetime
 
 from mailvault.store import metalog
 
 WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
 STORE_ID = "df3823f1cd1638d0f374745bb0e200e3"
-
-# 2026-08-01T18-02-21.758307Z.jsonl
-NAME_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{6}Z\.jsonl$")
 
 
 def _write(root, mailbox="job", folder="INBOX", store_ids=(STORE_ID,)):
@@ -30,10 +27,26 @@ class TestWriting:
         assert writer.seal(WHEN) == []
         assert not (tmp_path / "meta").exists()
 
-    def test_filename_is_sortable_and_free_of_path_characters(self, tmp_path):
+    def test_name_is_the_hash_of_the_content(self, tmp_path):
         (path,) = _write(tmp_path / "meta")
 
-        assert NAME_PATTERN.match(path.name), path.name
+        assert path.name == hashlib.sha384(path.read_bytes()).hexdigest() + ".jsonl"
+        assert path.parent.name == path.name[:2]
+
+    def test_corrupted_content_is_reported_but_still_read(self, tmp_path, caplog):
+        """What syntax alone can never catch: a flipped bit in a valid line.
+
+        The file is not discarded: a log never claims to be exhaustive, so what
+        still parses is a subset of the truth, which is what it always was.
+        """
+        (path,) = _write(tmp_path / "meta", store_ids=["aaaa", "bbbb"])
+        body = path.read_text(encoding="utf-8")
+        path.write_text(body.replace("bbbb", "cccc"), encoding="utf-8")
+
+        logfile = metalog.read_log(path)
+
+        assert "damaged" in caplog.text
+        assert logfile.store_ids == ["aaaa", "cccc"]
 
     def test_each_place_becomes_its_own_file(self, tmp_path):
         """One file is one (mailbox, folder) -- that is what makes it unambiguous."""
@@ -56,12 +69,14 @@ class TestWriting:
 
         assert len({p.name for p in paths}) == 5
 
-    def test_names_sort_chronologically(self, tmp_path):
+    def test_identical_content_is_stored_once(self, tmp_path):
+        """Content addressing, applied to the log: the same seal is one file."""
         root = tmp_path / "meta"
-        first = _write(root, folder="first")[0]
-        second = _write(root, folder="second")[0]
+        first = _write(root)
+        second = _write(root)
 
-        assert sorted([second.name, first.name]) == [first.name, second.name]
+        assert first == second
+        assert len(metalog.log_files(root)) == 1
 
     def test_folder_with_separators_stays_out_of_the_filename(self, tmp_path):
         """Names like 'Archiv/2016' must never become path components."""
@@ -100,7 +115,7 @@ class TestWriting:
         root = tmp_path / "meta"
         _write(root)
 
-        assert [p.suffix for p in root.iterdir()] == [".jsonl"]
+        assert [p.suffix for p in root.glob("*/*")] == [".jsonl"]
 
     def test_declared_count_matches_what_is_written(self, tmp_path):
         (path,) = _write(tmp_path / "meta", store_ids=["aaa", "bbb"])
@@ -133,7 +148,7 @@ class TestReading:
         assert logfile.folder == "INBOX"
         assert logfile.store_ids == ["aaa", "bbb"]
 
-    def test_torn_final_line_is_skipped_and_the_rest_survives(self, tmp_path):
+    def test_torn_final_line_is_skipped_and_the_rest_survives(self, tmp_path, caplog):
         """The expected shape of an interrupted write."""
         (path,) = _write(tmp_path / "meta", store_ids=["aaa", "bbb"])
         body = path.read_text(encoding="utf-8")
@@ -189,25 +204,23 @@ class TestReading:
 
 
 class TestDiscovery:
-    def test_log_files_are_in_chronological_order(self, tmp_path):
+    def test_files_are_found_across_shards(self, tmp_path):
         root = tmp_path / "meta"
-        root.mkdir()
-        for name in ("2026-08-02T00-00-00.000000Z", "2026-08-01T18-02-21.999999Z"):
-            (root / f"{name}.jsonl").write_text("{}", encoding="utf-8")
+        _write(root, folder="one")
+        _write(root, folder="two")
 
-        assert [p.stem for p in metalog.log_files(root)] == [
-            "2026-08-01T18-02-21.999999Z",
-            "2026-08-02T00-00-00.000000Z",
-        ]
+        found = metalog.log_files(root)
+        assert len(found) == 2
+        assert all(p.parent.parent == root for p in found)
 
     def test_transient_files_and_the_marker_are_ignored(self, tmp_path):
         root = tmp_path / "meta"
-        root.mkdir()
-        (root / "log.jsonl").write_text("{}", encoding="utf-8")
-        (root / "log.jsonl._tmp_").write_text("half", encoding="utf-8")
+        _write(root)
+        (root / "aa").mkdir(exist_ok=True)
+        (root / "aa" / "half._tmp_").write_text("half", encoding="utf-8")
         (root / metalog.BOOTSTRAP_MARKER).write_text("x", encoding="utf-8")
 
-        assert [p.name for p in metalog.log_files(root)] == ["log.jsonl"]
+        assert len(metalog.log_files(root)) == 1
 
     def test_missing_directory_is_not_an_error(self, tmp_path):
         assert metalog.log_files(tmp_path / "nope") == []
@@ -217,7 +230,8 @@ class TestDiscovery:
     def test_read_all_skips_unusable_files(self, tmp_path):
         root = tmp_path / "meta"
         _write(root)
-        (root / "2027-01-01T00-00-00.000000Z.jsonl").write_text("broken", encoding="utf-8")
+        (root / "ff").mkdir(exist_ok=True)
+        (root / "ff" / "ff00.jsonl").write_text("broken", encoding="utf-8")
 
         assert len(list(metalog.read_all(root))) == 1
 

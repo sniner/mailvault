@@ -22,14 +22,20 @@ in kind, and modelling it as two concepts is what made the metadata database
 lose the pairing in the first place. Here a message's location is just the set of
 (mailbox, folder) pairs it was observed in, however many that is.
 
-File layout:
+File layout -- a content-addressed store, the same discipline the mail uses:
 
-    meta/2026-08-01T18-02-21.758307Z.jsonl
+    meta/a1/a1b2c3....jsonl
 
-The timestamp sorts lexicographically, which gives replay order for free -- no
-index file is needed, the directory listing is the log. The folder name lives in
-the header, never in the filename: names like `Archiv/2016` and `\\Sent` would
-otherwise have to be escaped for the filesystem.
+The name is the hash of the content, so a file carries its own integrity check:
+`sha384sum` against the name settles it, without knowing this format at all. It
+also shards, which keeps a decade of runs from piling thousands of files into one
+directory. Depth 1 is enough here -- the mail store uses 2 because it has to
+carry hundreds of thousands of entries, the log has orders of magnitude fewer.
+
+Nothing in the name orders the files, and nothing needs to: folders only ever
+accumulate, so replaying in any order gives the same result. The `date` in the
+header is what carries the chronology, for a reader that wants it and for any
+future semantics where the newest observation has to win.
 
 File content -- a header line, then one line per message:
 
@@ -50,13 +56,13 @@ from __future__ import annotations
 
 import collections.abc
 import dataclasses
+import hashlib
 import json
 import logging
 import pathlib
-import time
-from datetime import UTC, datetime
+from datetime import datetime
 
-from mailvault.store import atomic
+from mailvault.store import atomic, cas
 
 log = logging.getLogger(__name__)
 
@@ -97,40 +103,30 @@ def as_text(value: object) -> str:
     return str(value)
 
 
-def _timestamp(date: datetime) -> str:
-    """Format a timestamp for a filename: sortable, and free of path characters.
+def open_store(root: pathlib.Path) -> cas.ContentAddressedStorage:
+    """Open the log's content-addressed store.
 
-    Microseconds are part of the name, zero padded, so the plain lexicographic
-    order of the directory is still chronological order.
+    `fsync` is on, unlike for mail: a lost mail is re-fetched by the next run,
+    while a lost observation is only covered by the overlap window and may not
+    come back at all. It is a handful of small files per run, so it costs nothing.
+
+    Depth 1 is enough. The mail store uses 2 because it has to carry hundreds of
+    thousands of entries; the log has orders of magnitude fewer.
     """
-    if date.tzinfo is None:
-        date = date.replace(tzinfo=UTC)
-    return date.astimezone(UTC).strftime("%Y-%m-%dT%H-%M-%S.%fZ")
-
-
-def _free_path(root: pathlib.Path) -> pathlib.Path:
-    """Return a log path that does not exist yet.
-
-    Named after the moment it is written, to the microsecond, which is precise
-    enough that two files practically never collide. When they do, waiting out a
-    millisecond is cheaper than carrying a counter in every filename forever.
-    """
-    while True:
-        candidate = root / (_timestamp(datetime.now(UTC)) + ".jsonl")
-        if not candidate.exists():
-            return candidate
-        time.sleep(0.001)
+    return cas.ContentAddressedStorage(root, suffix=".jsonl", depth=1, fsync=True)
 
 
 def log_files(root: pathlib.Path) -> list[pathlib.Path]:
-    """Return the log files below `root` in replay order.
+    """Return every log file below `root`, in a stable order.
 
-    Ordering is by filename, which is chronological by construction. Transient
-    files and the bootstrap marker carry a different suffix and are skipped.
+    Sorted by path so a run is reproducible, not because the order carries
+    meaning -- folders only accumulate, so a replay gives the same result in any
+    order, and the chronology lives in each file's `date` header. Transient files
+    and the bootstrap marker do not match the pattern and are skipped.
     """
     if not root.is_dir():
         return []
-    return sorted(p for p in root.iterdir() if p.suffix == ".jsonl" and p.is_file())
+    return sorted(p for p in root.glob("*/*.jsonl") if p.is_file())
 
 
 def has_logs(root: pathlib.Path) -> bool:
@@ -198,7 +194,10 @@ class LogWriter:
         because a log of observations never claims to be exhaustive anyway --
         the messages recorded at a place are always a lower bound.
         """
+        if not self._places:
+            return []
         written: list[pathlib.Path] = []
+        store = open_store(self.root)
         for (mailbox, folder), store_ids in sorted(
             self._places.items(), key=lambda item: (item[0][0] or "", item[0][1] or "")
         ):
@@ -213,9 +212,7 @@ class LogWriter:
             body += "".join(
                 json.dumps({"store_id": s}, ensure_ascii=False) + "\n" for s in store_ids
             )
-            self.root.mkdir(parents=True, exist_ok=True)
-            path = _free_path(self.root)
-            atomic.write_text(path, body)
+            _status, _hashval, path = store.add(body.encode("utf-8"))
             log.debug("%s: %s message(s) in %s::%s", path, len(store_ids), mailbox, folder)
             written.append(path)
         self._places = {}
@@ -249,9 +246,27 @@ def read_log(path: pathlib.Path) -> LogFile | None:
     whole file, because without it the lines have no place to belong to.
     """
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError) as exc:
+        raw = path.read_bytes()
+    except OSError as exc:
         log.warning("%s: unreadable, skipped: %s", path, exc)
+        return None
+
+    # The name is the hash of the content, so the file carries its own integrity
+    # check -- the same guarantee the mail store gives, and it catches what syntax
+    # never could: a flipped bit inside an otherwise well-formed line.
+    #
+    # A mismatch is reported but does not discard the file. A log records
+    # observations and never claims to be exhaustive, so whatever still parses is
+    # a subset of the truth -- which is what every log file is anyway. Throwing
+    # away 80,000 readable lines because the last one was cut short would be the
+    # worse answer. The warning is what lets someone repair the archive.
+    if hashlib.sha384(raw).hexdigest() != path.name.removesuffix(".jsonl"):
+        log.warning("%s: damaged -- content does not match its name", path)
+
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        log.warning("%s: not valid UTF-8, skipped: %s", path, exc)
         return None
     if not lines:
         log.warning("%s: empty, skipped", path)
