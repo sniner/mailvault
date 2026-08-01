@@ -203,17 +203,17 @@ def test_metadata_record(dummy_eml_bytes):
     assert md.mailbox == "mb"
     assert md.folder == "INBOX"
     assert md.store_id == "deadbeef"
-    assert md.labels == ["INBOX"]
+    assert md.folders == ["INBOX"]
     assert md.subject == "Test Email"
     assert "test@example.com" in md.sender
     assert "recipient@example.com" in md.recipients
 
 
-def test_metadata_explicit_labels(dummy_eml_bytes):
+def test_metadata_explicit_folders(dummy_eml_bytes):
     md = mailutils.metadata(
-        dummy_eml_bytes, mailbox="mb", folder="INBOX", store_id="x", labels=["A", "B"]
+        dummy_eml_bytes, mailbox="mb", folder="INBOX", store_id="x", folders=["A", "B"]
     )
-    assert md.labels == ["A", "B"]
+    assert md.folders == ["A", "B"]
 
 
 @pytest.mark.parametrize(

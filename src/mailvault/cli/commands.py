@@ -117,10 +117,10 @@ def _human_size(size: int) -> str:
 
 
 def report_bootstrap(source: pathlib.Path, result: jobs.BootstrapResult) -> None:
-    """Say what the export found and what it did about it."""
+    """Say what the export found, what it could place, and what it could not."""
     if result.skipped:
-        print(f"{source}: metadata log already present, nothing exported")
-        print(f"{source}: use --force to export the database into the log again")
+        print(f"{source}: already exported to the metadata log, nothing to do")
+        print(f"{source}: use --force to export the database again")
         return
     if not result.messages:
         print(f"{source}: no messages in the metadata database, nothing to export")
@@ -128,8 +128,21 @@ def report_bootstrap(source: pathlib.Path, result: jobs.BootstrapResult) -> None
     if not result.written:
         print(f"{source}: {result.messages:,} message(s) found but the log was not written")
         return
-    print(f"{source}: {result.messages:,} message(s) exported to the metadata log")
-    print(f"{source}: mailbox and folder attribution now survives a damaged database")
+    print(
+        f"{source}: {result.messages:,} message(s) exported to "
+        f"{result.places:,} mailbox/folder place(s)"
+    )
+    if result.placeless:
+        print(
+            f"{source}: {result.placeless:,} of them recorded without a folder -- the old "
+            f"database did not store which folder of which mailbox"
+        )
+    if result.undecidable:
+        print(
+            f"{source}: {result.undecidable:,} folder name(s) fit more than one mailbox "
+            f"and were left out rather than guessed"
+        )
+    print(f"{source}: the location of each message now survives a damaged database")
 
 
 def report_rebuild(source: pathlib.Path, result: jobs.RebuildResult) -> None:

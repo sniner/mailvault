@@ -151,8 +151,14 @@ class MessageMetadata:
     field name is caught statically instead of surfacing as a runtime KeyError in
     the middle of a backup run.
 
-    ``labels`` may contain ``bytes`` as well as ``str`` because Gmail reports its
-    labels as raw bytes; hence it is deliberately not annotated ``list[str]``.
+    ``folder`` is where the message was looked for; ``folders`` is where it
+    actually turned out to be. The two differ for Gmail, which reports every
+    folder a message is in no matter which one it was fetched from, so a message
+    found in the inbox may report three folders.
+
+    ``folders`` may contain ``bytes`` as well as ``str`` because Gmail reports
+    its folder names as raw bytes; hence it is deliberately not annotated
+    ``list[str]``.
     """
 
     mailbox: str
@@ -161,7 +167,7 @@ class MessageMetadata:
     email_id: str
     date: datetime | None
     subject: str
-    labels: list
+    folders: list
     sender: set[str]
     recipients: set[str]
 
@@ -171,7 +177,7 @@ def metadata(
     mailbox: str,
     folder: str,
     store_id: str,
-    labels: list | None = None,
+    folders: list | None = None,
 ) -> MessageMetadata:
     """Extract the metadata record that the storage database is fed with."""
     header = decode_email_header(msg)
@@ -183,7 +189,7 @@ def metadata(
         email_id=message_id(header),
         date=date(header),
         subject=subject(header),
-        labels=labels if labels is not None else [folder],
+        folders=folders if folders is not None else [folder],
         sender=from_addrs,
         recipients=to_addrs,
     )

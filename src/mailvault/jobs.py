@@ -44,37 +44,40 @@ def _metadata_writer(
     def _store_metadata(email: mailutils.MessageMetadata) -> None:
         msg = db.add_message(email.store_id, email.email_id, email.date, email.subject)
         db.assign_message_to_mailbox(msg, mailbox_id)
-        db.add_message_labels(msg, *email.labels)
+        db.add_message_labels(msg, *email.folders)
         db.add_message_sender(msg, *email.sender)
         db.add_message_recipients(msg, *email.recipients)
         if log_writer is not None:
-            log_writer.add(email.store_id, email.labels)
+            log_writer.add(email.mailbox, email.folders, email.store_id)
 
     return _store_metadata
 
 
 def _seal_log(writer: metalog.LogWriter, date: datetime, complete: bool = True) -> None:
-    """Write out a folder's log, tolerating a failure to do so.
+    """Write out a pass over a folder, tolerating a failure to do so.
 
     A log that cannot be written is reported but does not abort the run: the
-    messages themselves are archived and the database still holds the
-    attribution, so the loss is repairable while an aborted run is not.
+    messages themselves are archived and the database still holds the location,
+    so the loss is repairable while an aborted run is not.
     """
-    recorded = len(writer)
+    recorded, places = len(writer), writer.places
     try:
-        path = writer.seal(date, complete=complete)
+        paths = writer.seal(date, complete=complete)
     except OSError as exc:
         log.error("%s: metadata log not written: %s", writer.root, exc)
         return
-    if path is not None:
-        log.info("%s: %s message(s) recorded", path, recorded)
+    if paths:
+        log.info("%s: %s message(s) recorded in %s place(s)", writer.root, recorded, places)
 
 
 @dataclasses.dataclass
 class BootstrapResult:
-    """Outcome of exporting an existing database's attribution into the log."""
+    """Outcome of exporting an existing database's locations into the log."""
 
     messages: int = 0
+    places: int = 0
+    placeless: int = 0
+    undecidable: int = 0
     written: bool = False
     skipped: bool = False
 
@@ -97,72 +100,166 @@ class RebuildResult:
     replay: ReplayResult = dataclasses.field(default_factory=ReplayResult)
 
 
+def _learn_by_elimination(
+    owners: dict[str, set[str]],
+    mailboxes: dict[int, list[str]],
+    folders: dict[int, list[str]],
+) -> int:
+    """One pass of: one mailbox unexplained, one folder unplaced -- they pair up.
+
+    Every run that saw a message recorded the folder it saw it in, so a mailbox
+    listed for a message has to be explained by one of that message's folders.
+    Where all but one folder is placed and all but one mailbox is explained, the
+    two that remain belong together.
+
+    Returns how many new pairings were learnt, because each one makes the next
+    pass see further: a folder that no single-mailbox message ever witnessed can
+    become decidable once its companions are placed.
+    """
+    learnt = 0
+    for message_id, names in mailboxes.items():
+        present = set(names)
+        if len(present) < 2:
+            continue
+        explained: set[str] = set()
+        orphans: list[str] = []
+        for folder in folders.get(message_id, ()):
+            candidates = owners.get(folder, set()) & present
+            if len(candidates) == 1:
+                explained |= candidates
+            elif not candidates:
+                orphans.append(folder)
+        missing = present - explained
+        if len(missing) == 1 and len(orphans) == 1:
+            owner = missing.pop()
+            if owner not in owners.setdefault(orphans[0], set()):
+                owners[orphans[0]].add(owner)
+                learnt += 1
+    return learnt
+
+
+def _folder_owners(db: metadb.MetaDatabaseConnection) -> dict[str, set[str]]:
+    """Work out which mailbox each folder name can have come from.
+
+    Three sources, in order of how much they assume. The snapshot table pairs
+    mailbox and folder directly -- it is the one place in the old schema where
+    the two were stored together. Every message that belongs to exactly one
+    mailbox is a witness: whatever folders it carries can only have come from
+    there, which is what catches Gmail's folder names, since those are never
+    visited as folders and so never reach the snapshot table. And finally
+    elimination, repeated until it stops finding anything, for folders that no
+    single-mailbox message ever witnessed.
+    """
+    owners: dict[str, set[str]] = {}
+    for mailbox, folder, _date in db.all_snapshots():
+        owners.setdefault(folder, set()).add(mailbox)
+
+    mailboxes = db.message_mailboxes()
+    folders = db.message_labels()
+    for message_id, names in mailboxes.items():
+        if len(names) == 1:
+            for folder in folders.get(message_id, ()):
+                owners.setdefault(folder, set()).add(names[0])
+
+    while True:
+        learnt = _learn_by_elimination(owners, mailboxes, folders)
+        if not learnt:
+            return owners
+        log.debug("Folder owners: %s pairing(s) learnt by elimination", learnt)
+
+
 def _export_metalog(
     db: metadb.MetaDatabaseConnection, log_root: pathlib.Path, date: datetime
 ) -> BootstrapResult:
-    """Write the mailbox and folder attribution of a database into the log.
+    """Write the locations held in an existing database into the log.
 
-    Written as a single file rather than several: a run interrupted halfway
-    through a chunked export would leave the log looking populated while covering
-    only part of the archive, and every later run would skip the export because a
-    log already exists. One file is either there completely or not at all.
+    The old schema stored which mailboxes and which folders a message has as two
+    independent relations, so the pairing between them was never recorded. It is
+    reconstructed here: a folder that can only have come from one of the
+    message's mailboxes belongs to that one.
 
-    The database records which mailboxes and which labels a message has, but not
-    which label belonged to which mailbox -- the two are separate relations. The
-    export therefore names both per message and pairs neither, because inventing
-    a pairing would be worse than recording what is actually known.
+    Where that does not decide it -- a folder name two of the message's mailboxes
+    both have -- nothing is invented. The folder is counted as undecidable and
+    left out, and a mailbox left without any folder is written with a null
+    folder, which says "seen in this mailbox, where exactly is not knowable"
+    instead of guessing a place.
     """
     result = BootstrapResult()
+    owners = _folder_owners(db)
     mailboxes = db.message_mailboxes()
-    labels = db.message_labels()
+    folders = db.message_labels()
     writer = metalog.LogWriter(log_root)
+
     for message_id, store_id in db.iter_messages():
-        writer.add(
-            store_id,
-            labels.get(message_id, []),
-            mailboxes=mailboxes.get(message_id, []),
-        )
         result.messages += 1
-    if not result.messages:
-        return result
-    result.written = writer.seal(date) is not None
+        names = set(mailboxes.get(message_id, ()))
+        if not names:
+            result.placeless += 1
+            continue
+        placed: dict[str, list[str]] = {}
+        for folder in folders.get(message_id, ()):
+            candidates = owners.get(folder, set()) & names
+            if len(candidates) == 1:
+                placed.setdefault(candidates.pop(), []).append(folder)
+            else:
+                result.undecidable += 1
+        for mailbox in sorted(names):
+            here = placed.get(mailbox, [])
+            if not here:
+                result.placeless += 1
+            writer.add(mailbox, here, store_id)
+
+    result.places = writer.places
+    if len(writer):
+        result.written = bool(writer.seal(date))
     return result
 
 
 def bootstrap_metalog(store_path: pathlib.Path, force: bool = False) -> BootstrapResult:
-    """Export an archive's existing attribution into the metadata log.
+    """Export an archive's existing locations into the metadata log.
 
-    Skips an archive that already has a log unless `force` is given: the log is
-    append-only by design, and exporting a second time would duplicate every
-    attribution. Replaying duplicates is harmless -- the database methods are
-    idempotent -- but it doubles the log for no gain.
+    Skipped once a previous export has finished, unless `force` is given: the log
+    is append-only, and exporting again would duplicate every location. Replaying
+    duplicates is harmless -- the database methods are idempotent -- but it
+    doubles the log for no gain.
+
+    The decision rests on the completion marker rather than on log files being
+    present. An export interrupted halfway leaves files behind, and treating
+    those as "already done" would freeze the archive at partial coverage.
     """
     log_root = store_path / metalog.DEFAULT_LOG_DIR
-    if metalog.has_logs(log_root) and not force:
+    if metalog.bootstrap_done(log_root) and not force:
         return BootstrapResult(skipped=True)
     with metadb.MetaDatabase(path=store_path / metadb.DEFAULT_DB_NAME) as db:
-        return _export_metalog(db, log_root, datetime.now(UTC))
+        date = datetime.now(UTC)
+        result = _export_metalog(db, log_root, date)
+    metalog.mark_bootstrap_done(log_root, date)
+    return result
 
 
 def _bootstrap_missing_log(db: metadb.MetaDatabaseConnection, log_root: pathlib.Path) -> None:
-    """Export the attribution of an archive that has no log yet.
+    """Export the locations of an archive that has not been exported yet.
 
     Runs before the first folder of a backup so that an archive filled by an
     earlier version is protected from the very first run, without the user having
-    to know that the log exists.
+    to know that the log exists. The marker is written even when nothing was
+    exported, so a fresh archive does not retry on every run.
     """
-    if metalog.has_logs(log_root):
+    if metalog.bootstrap_done(log_root):
         return
+    date = datetime.now(UTC)
     try:
-        result = _export_metalog(db, log_root, datetime.now(UTC))
+        result = _export_metalog(db, log_root, date)
+        metalog.mark_bootstrap_done(log_root, date)
     except OSError as exc:
         log.error("%s: metadata log could not be created: %s", log_root, exc)
         return
     if result.written:
         log.info(
-            "%s: no metadata log found, exported %s message(s) from the database",
+            "%s: no metadata log found, exported %s message(s) into %s place(s)",
             log_root,
             result.messages,
+            result.places,
         )
 
 
@@ -179,20 +276,23 @@ def _replay_metalog(db: metadb.MetaDatabaseConnection, log_root: pathlib.Path) -
     known = db.store_id_map()
     for logfile in metalog.read_all(log_root):
         result.files += 1
+        if logfile.mailbox is None:
+            log.warning("%s: no mailbox in the header, skipped", logfile.path)
+            continue
+        mailbox_id = db.add_mailbox(logfile.mailbox)
         # One transaction per file rather than per entry: the write methods
         # commit individually when called at the top level, which would mean a
         # commit per message and is ruinous over a network share.
         with db.transaction():
-            for entry in logfile.entries:
+            for store_id in logfile.store_ids:
                 result.entries += 1
-                message_id = known.get(entry.store_id)
+                message_id = known.get(store_id)
                 if message_id is None:
                     result.unknown += 1
                     continue
-                for mailbox in entry.mailboxes:
-                    db.assign_message_to_mailbox(message_id, db.add_mailbox(mailbox))
-                if entry.labels:
-                    db.add_message_labels(message_id, *entry.labels)
+                db.assign_message_to_mailbox(message_id, mailbox_id)
+                if logfile.folder is not None:
+                    db.add_message_labels(message_id, logfile.folder)
                 result.applied += 1
     return result
 
@@ -311,7 +411,7 @@ def _backup_with_db(
                 else None
             )
             snapshot_date = datetime.now(UTC)
-            log_writer = metalog.LogWriter(log_root, mailbox=job.name, folder=folder)
+            log_writer = metalog.LogWriter(log_root)
             result = mb.folder_backup(
                 folder,
                 store,
@@ -393,7 +493,7 @@ def _verify_folder(
 
     # A repaired message is new archive content, so its attribution has to reach
     # the log as well -- otherwise it exists only in the database.
-    log_writer = metalog.LogWriter(log_root, mailbox=job_name, folder=folder)
+    log_writer = metalog.LogWriter(log_root)
     store_metadata = _metadata_writer(db, mailbox_id, log_writer)
     for ref in missing:
         label = ref.message_id or ref.msg_id

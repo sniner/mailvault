@@ -33,6 +33,14 @@ from mailvault.store import cas
 
 log = logging.getLogger(__name__)
 
+# Stands in for Gmail's "All Mail", which holds every message that is not in
+# Trash or Spam and is therefore the place a message is in when it carries no
+# label of its own. Gmail has no canonical name for it -- the IMAP folder is
+# localised (`[Gmail]/All Mail`, `[Google Mail]/Alle Nachrichten`) -- so this
+# name follows the convention of the system labels it sits next to. Gmail never
+# reports a user label with a leading backslash, so it cannot collide with one.
+GMAIL_ALL_MAIL = "\\All"
+
 
 class MailboxError(Exception):
     pass
@@ -186,18 +194,26 @@ class ImapClient:
         self, folder_name: str, msg_id: Any, store_id: str, msg: bytes
     ) -> mailutils.MessageMetadata:
         if self.gmail:
-            labels = self.conn.get_gmail_labels(msg_id)
-            labels = labels.get(msg_id, [])
-            if not folder_name.startswith("[Google Mail]"):
-                labels = [folder_name] + labels
+            # X-GM-LABELS reports every folder the message is in, in canonical
+            # form (`\Sent`). The IMAP folder name is a localised view of the
+            # same thing -- `[Google Mail]/Gesendet` on a German account,
+            # `[Gmail]/Sent Mail` on an English one -- so taking it as well would
+            # record one place twice, once in a spelling that differs per
+            # account. Hence Gmail's own list is the only source here.
+            folders = self.conn.get_gmail_labels(msg_id).get(msg_id, [])
+            if not folders:
+                # "All Mail" is not a label, so a message filed nowhere else
+                # reports nothing at all. Name that place instead of leaving the
+                # message without one -- it is where the message actually is.
+                folders = [GMAIL_ALL_MAIL]
         else:
-            labels = [folder_name]
+            folders = [folder_name]
         return mailutils.metadata(
             msg,
             mailbox=self.job_name,
             folder=folder_name,
             store_id=store_id,
-            labels=labels,
+            folders=folders,
         )
 
     def _clear_folder(self, folder_name: str) -> None:

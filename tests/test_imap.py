@@ -689,30 +689,41 @@ class TestCollectMetadata:
         assert md.folder == "INBOX"
         assert md.store_id == "hash123"
         assert md.email_id == "<abc123@example.com>"
-        assert md.labels == ["INBOX"]
+        assert md.folders == ["INBOX"]
         assert "sender@example.com" in md.sender
         assert "recipient@example.com" in md.recipients
         assert md.subject == "Hello World"
 
-    def test_gmail_labels(self):
+    def test_gmail_reports_its_own_folders_only(self):
+        """The IMAP folder name is a localised view of what X-GM-LABELS already
+        says, so taking both would record one place twice."""
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
         conn.get_gmail_labels.return_value = {1: [b"\\Important", b"Work"]}
         client = _make_client(conn=conn)
 
         md = client._collect_metadata("INBOX", 1, "hash123", DUMMY_EML)
-        assert "INBOX" in md.labels
-        assert b"\\Important" in md.labels
-        assert b"Work" in md.labels
 
-    def test_gmail_labels_google_mail_prefix(self):
+        assert md.folders == [b"\\Important", b"Work"]
+        assert "INBOX" not in md.folders
+
+    def test_gmail_localised_pseudo_folder_is_not_recorded(self):
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
         conn.get_gmail_labels.return_value = {1: [b"\\Sent"]}
         client = _make_client(conn=conn)
 
         md = client._collect_metadata("[Google Mail]/Sent", 1, "hash123", DUMMY_EML)
-        # folder_name starting with [Google Mail] should not be prepended
-        assert "[Google Mail]/Sent" not in md.labels
-        assert md.labels == [b"\\Sent"]
+
+        assert md.folders == [b"\\Sent"]
+
+    def test_gmail_message_without_labels_lands_in_all_mail(self):
+        """A message filed nowhere else is in All Mail, which is a place too."""
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
+        conn.get_gmail_labels.return_value = {}
+        client = _make_client(conn=conn)
+
+        md = client._collect_metadata("[Google Mail]/Alle Nachrichten", 1, "hash123", DUMMY_EML)
+
+        assert md.folders == [imap.GMAIL_ALL_MAIL]
 
 
 # ---------------------------------------------------------------------------

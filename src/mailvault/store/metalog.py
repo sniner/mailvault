@@ -1,58 +1,59 @@
 """Append-only record of where each archived message was seen.
 
-Of everything the metadata database holds, only two things cannot be recovered
-from the archived `.eml` files: which mailbox a message came from, and which
-folder or label it carried there. Subject, sender, recipients and date are all in
-the message itself. And the archive is usually the only copy left -- mailvault
-exists to move mail out of a mailbox, so "just fetch it from the server again" is
-not a recovery path.
+Of everything the metadata database holds, only one thing cannot be recovered
+from the archived `.eml` files: the place a message was seen -- which mailbox,
+and which folder within it. Subject, sender, recipients and date are all in the
+message itself. And the archive is usually the only copy left: mailvault exists
+to move mail out of a mailbox, so "fetch it from the server again" is not a
+recovery path.
 
-So that attribution is written a second time, into a log that is never modified.
-Each folder of each run produces one JSONL file under `meta/`, written once and
-then left alone. The database becomes a projection that can be thrown away and
-rebuilt from the log.
+So that one fact is written a second time, into files that are never modified.
+The database becomes a projection that can be thrown away and rebuilt from here.
 
-Why one file per folder rather than one per message: a content-addressed archive
-stores a message once, but the same message legitimately belongs to several
-mailboxes and folders at once. A per-message file would therefore have to be
-reopened and merged by the next job -- read-modify-write, the very thing this is
-meant to avoid. A log file instead records one *observation* ("during this run,
-in this mailbox, in this folder, these messages were seen"). Two jobs seeing the
-same message write two lines in two different files and never collide; the merge
-happens when the log is replayed.
+**One file is one place.** A log file's header names a mailbox and a folder, and
+its lines name the messages that were seen there. Nothing else is needed: the
+question "which folder of which mailbox" is answered by the file a line sits in,
+not by the line. That is what keeps a message belonging to several places from
+being ambiguous -- it simply appears in several files.
+
+Folders, not labels. Gmail calls them labels and allows several per message,
+IMAP calls them folders and allows one; that is a difference in cardinality, not
+in kind, and modelling it as two concepts is what made the metadata database
+lose the pairing in the first place. Here a message's location is just the set of
+(mailbox, folder) pairs it was observed in, however many that is.
 
 File layout:
 
-    meta/2026-08-01T18-02-21Z_001.jsonl
+    meta/2026-08-01T18-02-21.758307Z.jsonl
 
 The timestamp sorts lexicographically, which gives replay order for free -- no
-index file is needed, the directory listing is the log. The folder name goes in
-the header line, never in the filename: names like `Archiv/2016` and `\\Sent`
-would otherwise have to be escaped for the filesystem.
+index file is needed, the directory listing is the log. The folder name lives in
+the header, never in the filename: names like `Archiv/2016` and `\\Sent` would
+otherwise have to be escaped for the filesystem.
 
 File content -- a header line, then one line per message:
 
-    {"version":1,"mailbox":"mail.example.org","folder":"INBOX","date":"...","complete":true}
-    {"store_id":"df3823f1...","labels":["INBOX"]}
+    {"version":1,"mailbox":"mail.example.org","folder":"INBOX","date":"...","complete":true,"messages":2}
+    {"store_id":"df3823f1..."}
+    {"store_id":"60f57aa7..."}
 
-The mailbox of a message is the header's unless the line overrides it with its
-own `mailboxes` list, which is what the bootstrap export of an existing database
-does: that database knows which mailboxes and which labels a message has, but not
-which label belonged to which mailbox, and inventing that pairing would be worse
-than recording it as it is.
+`folder` may be null: the mailbox is known but which folder it was in is not.
+That happens when importing from a database written before this log existed,
+where the pairing was never recorded. It is deliberately representable rather
+than guessed -- an archive should not invent a location it cannot know.
 
 A torn write costs the last line of one file, which is skipped on read. A file
-whose header is unreadable costs that one folder of that one run.
+whose header is unreadable costs that one place of that one run.
 """
 
 from __future__ import annotations
 
 import collections.abc
 import dataclasses
-import itertools
 import json
 import logging
 import pathlib
+import time
 from datetime import UTC, datetime
 
 from mailvault.store import atomic
@@ -62,38 +63,35 @@ log = logging.getLogger(__name__)
 # Default directory of the metadata log inside a store directory.
 DEFAULT_LOG_DIR = "meta"
 
+# Marker written once the bootstrap export has finished. Its absence -- not the
+# absence of log files -- is what makes the export run: an export interrupted
+# halfway leaves files behind, and "some files exist" would then be read as
+# "nothing to do", freezing the archive at partial coverage forever.
+BOOTSTRAP_MARKER = ".bootstrap"
+
 # Payload format version. Readers reject what they do not know rather than
 # misread it; a file with an unknown version is skipped with a warning.
 LOG_VERSION = 1
 
 
 @dataclasses.dataclass
-class LogEntry:
-    """One observation: a message, and where it was seen."""
-
-    store_id: str
-    mailboxes: list[str]
-    labels: list[str]
-
-
-@dataclasses.dataclass
 class LogFile:
-    """The readable content of one log file."""
+    """One place, and the messages observed there."""
 
     path: pathlib.Path
     mailbox: str | None
     folder: str | None
     date: str | None
     complete: bool
-    entries: list[LogEntry]
+    store_ids: list[str]
 
 
 def as_text(value: object) -> str:
-    """Coerce a label to text.
+    """Coerce a folder name to text.
 
-    Gmail reports its labels as raw bytes, which is why `MessageMetadata.labels`
-    is deliberately not typed `list[str]`. JSON has no bytes, so a byte label is
-    decoded here rather than crashing the run that found it.
+    Gmail reports its folder names as raw bytes over `X-GM-LABELS`, which is why
+    `MessageMetadata.folders` is deliberately not typed `list[str]`. JSON has no
+    bytes, so a byte name is decoded here rather than crashing the run.
     """
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
@@ -101,31 +99,35 @@ def as_text(value: object) -> str:
 
 
 def _timestamp(date: datetime) -> str:
-    """Format a timestamp for a filename: sortable, and free of path characters."""
+    """Format a timestamp for a filename: sortable, and free of path characters.
+
+    Microseconds are part of the name, zero padded, so the plain lexicographic
+    order of the directory is still chronological order.
+    """
     if date.tzinfo is None:
         date = date.replace(tzinfo=UTC)
-    return date.astimezone(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
+    return date.astimezone(UTC).strftime("%Y-%m-%dT%H-%M-%S.%fZ")
 
 
-def _free_path(root: pathlib.Path, date: datetime) -> pathlib.Path:
+def _free_path(root: pathlib.Path) -> pathlib.Path:
     """Return a log path that does not exist yet.
 
-    The counter disambiguates the folders of one run, which usually share a
-    second, and it also keeps two runs that started in the same second apart.
+    Named after the moment it is written, to the microsecond, which is precise
+    enough that two files practically never collide. When they do, waiting out a
+    millisecond is cheaper than carrying a counter in every filename forever.
     """
-    stamp = _timestamp(date)
-    for counter in itertools.count(1):
-        candidate = root / f"{stamp}_{counter:03d}.jsonl"
+    while True:
+        candidate = root / (_timestamp(datetime.now(UTC)) + ".jsonl")
         if not candidate.exists():
             return candidate
-    raise AssertionError("unreachable")  # pragma: no cover
+        time.sleep(0.001)
 
 
 def log_files(root: pathlib.Path) -> list[pathlib.Path]:
     """Return the log files below `root` in replay order.
 
     Ordering is by filename, which is chronological by construction. Transient
-    files carry a different suffix and are therefore skipped.
+    files and the bootstrap marker carry a different suffix and are skipped.
     """
     if not root.is_dir():
         return []
@@ -137,78 +139,90 @@ def has_logs(root: pathlib.Path) -> bool:
     return bool(log_files(root))
 
 
-class LogWriter:
-    """Collects the observations of one folder run and seals them into one file.
+def bootstrap_done(root: pathlib.Path) -> bool:
+    """True when a bootstrap export has run to completion for this archive."""
+    return (root / BOOTSTRAP_MARKER).exists()
 
-    Nothing is written until `seal`, so an interrupted run leaves no partial file
-    behind and the log never contains a half-observed folder. Entries are
-    serialised as they arrive rather than kept as objects, which keeps even a
-    whole-database export to roughly the size of the file it will produce.
+
+def mark_bootstrap_done(root: pathlib.Path, date: datetime) -> None:
+    """Record that the bootstrap export finished, after every file was sealed."""
+    atomic.write_text(root / BOOTSTRAP_MARKER, date.isoformat() + "\n")
+
+
+class LogWriter:
+    """Collects observations and seals them into one file per (mailbox, folder).
+
+    Nothing is written until `seal`, so an interrupted pass leaves no partial
+    file behind and the log never contains a half-observed place. Entries are
+    held as bare store ids, so even a whole-archive export costs roughly what the
+    files it produces will cost.
     """
 
-    def __init__(
-        self,
-        root: pathlib.Path,
-        mailbox: str | None = None,
-        folder: str | None = None,
-    ):
+    def __init__(self, root: pathlib.Path):
         self.root = root
-        self.mailbox = mailbox
-        self.folder = folder
-        self._lines: list[str] = []
+        self._places: dict[tuple[str | None, str | None], list[str]] = {}
 
     def __len__(self) -> int:
-        return len(self._lines)
+        return sum(len(ids) for ids in self._places.values())
+
+    @property
+    def places(self) -> int:
+        """How many distinct (mailbox, folder) pairs are pending."""
+        return len(self._places)
 
     def add(
         self,
+        mailbox: str | None,
+        folders: collections.abc.Iterable[object],
         store_id: str,
-        labels: collections.abc.Iterable[object],
-        mailboxes: collections.abc.Iterable[str] | None = None,
     ) -> None:
-        """Record one message. `mailboxes` overrides the header's mailbox."""
-        entry: dict[str, object] = {
-            "store_id": store_id,
-            "labels": [as_text(label) for label in labels],
-        }
-        if mailboxes is not None:
-            entry["mailboxes"] = list(mailboxes)
-        self._lines.append(json.dumps(entry, ensure_ascii=False))
+        """Record one message as seen in each of `folders` of `mailbox`.
 
-    def seal(self, date: datetime, complete: bool = True) -> pathlib.Path | None:
-        """Write the collected entries to a new file and return its path.
+        An empty `folders` records the message as seen in the mailbox without a
+        known folder, rather than dropping it: knowing less is not the same as
+        knowing nothing.
+        """
+        names: list[str | None] = [as_text(f) for f in folders]
+        for name in names or [None]:
+            self._places.setdefault((mailbox, name), []).append(store_id)
 
-        Returns None when nothing was observed: an incremental run over an
-        unchanged folder has nothing to record, and writing an empty file for
+    def seal(self, date: datetime, complete: bool = True) -> list[pathlib.Path]:
+        """Write one file per pending place and return their paths.
+
+        Returns an empty list when nothing was observed: an incremental run over
+        an unchanged folder has nothing to record, and writing an empty file for
         every folder of every run would bury the log in noise.
 
-        A folder whose downloads partly failed is still written, with `complete`
-        false. The messages that *were* stored need their attribution recorded --
+        A pass whose downloads partly failed is still written, with `complete`
+        false. The messages that *were* stored need their location recorded --
         it is only the snapshot that must not advance.
         """
-        if not self._lines:
-            return None
-        header = {
-            "version": LOG_VERSION,
-            "mailbox": self.mailbox,
-            "folder": self.folder,
-            "date": date.isoformat(),
-            "complete": complete,
-            "messages": len(self._lines),
-        }
-        body = json.dumps(header, ensure_ascii=False) + "\n"
-        body += "\n".join(self._lines) + "\n"
-        self.root.mkdir(parents=True, exist_ok=True)
-        path = _free_path(self.root, date)
-        atomic.write_text(path, body)
-        log.debug("%s: %s entries sealed", path, len(self._lines))
-        self._lines = []
-        return path
+        written: list[pathlib.Path] = []
+        for (mailbox, folder), store_ids in sorted(
+            self._places.items(), key=lambda item: (item[0][0] or "", item[0][1] or "")
+        ):
+            header = {
+                "version": LOG_VERSION,
+                "mailbox": mailbox,
+                "folder": folder,
+                "date": date.isoformat(),
+                "complete": complete,
+                "messages": len(store_ids),
+            }
+            body = json.dumps(header, ensure_ascii=False) + "\n"
+            body += "".join(
+                json.dumps({"store_id": s}, ensure_ascii=False) + "\n" for s in store_ids
+            )
+            self.root.mkdir(parents=True, exist_ok=True)
+            path = _free_path(self.root)
+            atomic.write_text(path, body)
+            log.debug("%s: %s message(s) in %s::%s", path, len(store_ids), mailbox, folder)
+            written.append(path)
+        self._places = {}
+        return written
 
 
-def _parse_entry(
-    path: pathlib.Path, number: int, line: str, default_mailbox: str | None
-) -> LogEntry | None:
+def _parse_store_id(path: pathlib.Path, number: int, line: str) -> str | None:
     """Decode one message line, returning None when it is unusable."""
     if not line.strip():
         return None
@@ -225,21 +239,14 @@ def _parse_entry(
     if not isinstance(store_id, str) or not store_id:
         log.warning("%s:%d: no usable store_id, skipped", path, number)
         return None
-    raw_labels = data.get("labels")
-    labels = [as_text(label) for label in raw_labels] if isinstance(raw_labels, list) else []
-    raw_mailboxes = data.get("mailboxes")
-    if isinstance(raw_mailboxes, list):
-        mailboxes = [as_text(mailbox) for mailbox in raw_mailboxes]
-    else:
-        mailboxes = [default_mailbox] if default_mailbox else []
-    return LogEntry(store_id=store_id, mailboxes=mailboxes, labels=labels)
+    return store_id
 
 
 def read_log(path: pathlib.Path) -> LogFile | None:
     """Read one log file, returning None when it cannot be used at all.
 
     Individual damaged lines are skipped; only an unreadable header discards the
-    whole file, because without it the lines have no mailbox to belong to.
+    whole file, because without it the lines have no place to belong to.
     """
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -259,7 +266,8 @@ def read_log(path: pathlib.Path) -> LogFile | None:
         return None
     if header.get("version") != LOG_VERSION:
         log.warning(
-            "%s: unknown log version %r (expected %d), skipped",
+            "%s: log version %r is not %d, skipped -- re-run 'archive bootstrap-log'"
+            " to regenerate it",
             path,
             header.get("version"),
             LOG_VERSION,
@@ -267,25 +275,21 @@ def read_log(path: pathlib.Path) -> LogFile | None:
         return None
 
     mailbox = header.get("mailbox")
-    mailbox = mailbox if isinstance(mailbox, str) else None
     folder = header.get("folder")
-    folder = folder if isinstance(folder, str) else None
     date = header.get("date")
-    date = date if isinstance(date, str) else None
-
-    entries = []
+    store_ids = []
     for number, line in enumerate(lines[1:], start=2):
-        entry = _parse_entry(path, number, line, mailbox)
-        if entry is not None:
-            entries.append(entry)
+        store_id = _parse_store_id(path, number, line)
+        if store_id is not None:
+            store_ids.append(store_id)
 
     return LogFile(
         path=path,
-        mailbox=mailbox,
-        folder=folder,
-        date=date,
+        mailbox=mailbox if isinstance(mailbox, str) else None,
+        folder=folder if isinstance(folder, str) else None,
+        date=date if isinstance(date, str) else None,
         complete=bool(header.get("complete", True)),
-        entries=entries,
+        store_ids=store_ids,
     )
 
 

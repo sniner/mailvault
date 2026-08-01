@@ -4,16 +4,23 @@
 
 ### Added
 
-- **The archive now carries an append-only metadata log under `meta/`.** It records which
-  mailbox and which folder each message was seen in -- the only part of the metadata database
-  that cannot be recovered from the archived `.eml` files, since subject, sender, recipients
-  and date are all in the message itself. One file per folder per run, written once and never
-  modified, so a damaged database no longer means losing that attribution permanently
+- **The archive now carries an append-only metadata log under `meta/`.** It records where each
+  message was seen -- which mailbox, and which folder within it -- the only part of the
+  metadata database that cannot be recovered from the archived `.eml` files, since subject,
+  sender, recipients and date are all in the message itself. **One file is one place:** the
+  header names a mailbox and a folder, the lines name the messages seen there, so a message
+  belonging to several places simply appears in several files and is never ambiguous. Files are
+  written once and never modified, so a damaged database no longer loses that record
 
-- **`mailvault archive bootstrap-log <archive>`** exports the mailbox and folder attribution
-  of an existing metadata database into the log, so archives created by earlier versions are
-  protected. This also runs automatically at the start of the next backup when an archive has
-  no log yet. Use `--force` to export again when a log already exists
+- **`mailvault archive bootstrap-log <archive>`** exports the locations held in an existing
+  metadata database into the log, so archives created by earlier versions are protected. It
+  also runs automatically at the start of the next backup when an archive has not been exported
+  yet. Use `--force` to export again.
+
+  The old schema stored which mailboxes and which folders a message has as two independent
+  relations, so the pairing between them was never recorded; the export reconstructs it, and
+  reports how much it could not decide rather than guessing. Where a mailbox is known but the
+  folder is not, that is recorded as such
 
 - **The snapshot state of an archive is now also kept in `store.json`**, next to `store.db`.
   It holds the per-folder timestamps that decide where the next incremental run resumes, and
@@ -37,6 +44,12 @@
 - **`archive rebuild-db` now applies the metadata log** and reports what it restored. Without
   a log it says so plainly, because the rebuilt database then lacks the mailbox and folder
   attribution that `verify` compares against
+
+- **Gmail folders are now taken from `X-GM-LABELS` alone.** The IMAP folder name is a localised
+  view of what Gmail already reports canonically -- `[Google Mail]/Gesendet` on a German account
+  is `\Sent` -- so recording both stored one place twice, in a spelling that differed per
+  account. A message carrying no label of its own is recorded as being in `\All`, which stands
+  in for "All Mail"; previously such a message was archived with no location at all
 
 ### Fixed
 
