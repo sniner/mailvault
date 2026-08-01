@@ -33,7 +33,7 @@ otherwise have to be escaped for the filesystem.
 
 File content -- a header line, then one line per message:
 
-    {"version":1,"mailbox":"mail.example.org","folder":"INBOX","date":"...","complete":true,"messages":2}
+    {"version":1,"mailbox":"mail.example.org","folder":"INBOX","date":"...","messages":2}
     {"store_id":"df3823f1..."}
     {"store_id":"60f57aa7..."}
 
@@ -82,7 +82,6 @@ class LogFile:
     mailbox: str | None
     folder: str | None
     date: str | None
-    complete: bool
     store_ids: list[str]
 
 
@@ -186,16 +185,18 @@ class LogWriter:
         for name in names or [None]:
             self._places.setdefault((mailbox, name), []).append(store_id)
 
-    def seal(self, date: datetime, complete: bool = True) -> list[pathlib.Path]:
+    def seal(self, date: datetime) -> list[pathlib.Path]:
         """Write one file per pending place and return their paths.
 
         Returns an empty list when nothing was observed: an incremental run over
         an unchanged folder has nothing to record, and writing an empty file for
         every folder of every run would bury the log in noise.
 
-        A pass whose downloads partly failed is still written, with `complete`
-        false. The messages that *were* stored need their location recorded --
-        it is only the snapshot that must not advance.
+        A pass whose downloads partly failed is written just the same. The
+        messages that *were* stored need their location recorded; it is only the
+        snapshot that must not advance. Nothing marks the pass as partial,
+        because a log of observations never claims to be exhaustive anyway --
+        the messages recorded at a place are always a lower bound.
         """
         written: list[pathlib.Path] = []
         for (mailbox, folder), store_ids in sorted(
@@ -206,7 +207,6 @@ class LogWriter:
                 "mailbox": mailbox,
                 "folder": folder,
                 "date": date.isoformat(),
-                "complete": complete,
                 "messages": len(store_ids),
             }
             body = json.dumps(header, ensure_ascii=False) + "\n"
@@ -283,12 +283,23 @@ def read_log(path: pathlib.Path) -> LogFile | None:
         if store_id is not None:
             store_ids.append(store_id)
 
+    # The header's count is what catches a truncation that happens to end on a
+    # line boundary: such a file parses cleanly and is still short. A torn line
+    # already reports itself, this covers the case that otherwise passes unseen.
+    declared = header.get("messages")
+    if isinstance(declared, int) and declared != len(store_ids):
+        log.warning(
+            "%s: header declares %s message(s) but %s were readable, file is damaged",
+            path,
+            declared,
+            len(store_ids),
+        )
+
     return LogFile(
         path=path,
         mailbox=mailbox if isinstance(mailbox, str) else None,
         folder=folder if isinstance(folder, str) else None,
         date=date if isinstance(date, str) else None,
-        complete=bool(header.get("complete", True)),
         store_ids=store_ids,
     )
 

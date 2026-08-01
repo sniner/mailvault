@@ -15,11 +15,11 @@ STORE_ID = "df3823f1cd1638d0f374745bb0e200e3"
 NAME_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{6}Z\.jsonl$")
 
 
-def _write(root, mailbox="job", folder="INBOX", store_ids=(STORE_ID,), complete=True):
+def _write(root, mailbox="job", folder="INBOX", store_ids=(STORE_ID,)):
     writer = metalog.LogWriter(root)
     for store_id in store_ids:
         writer.add(mailbox, [folder] if folder is not None else [], store_id)
-    return writer.seal(WHEN, complete=complete)
+    return writer.seal(WHEN)
 
 
 class TestWriting:
@@ -102,13 +102,11 @@ class TestWriting:
 
         assert [p.suffix for p in root.iterdir()] == [".jsonl"]
 
-    def test_incomplete_pass_is_still_recorded(self, tmp_path):
-        """Stored messages need their location even when the folder failed."""
-        (path,) = _write(tmp_path / "meta", complete=False)
+    def test_declared_count_matches_what_is_written(self, tmp_path):
+        (path,) = _write(tmp_path / "meta", store_ids=["aaa", "bbb"])
 
-        logfile = metalog.read_log(path)
-        assert logfile.complete is False
-        assert logfile.store_ids == [STORE_ID]
+        header = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+        assert header["messages"] == 2
 
     def test_writer_is_reusable_after_sealing(self, tmp_path):
         writer = metalog.LogWriter(tmp_path / "meta")
@@ -133,7 +131,6 @@ class TestReading:
 
         assert logfile.mailbox == "mail.example.org"
         assert logfile.folder == "INBOX"
-        assert logfile.complete is True
         assert logfile.store_ids == ["aaa", "bbb"]
 
     def test_torn_final_line_is_skipped_and_the_rest_survives(self, tmp_path):
@@ -143,6 +140,17 @@ class TestReading:
         path.write_text(body[: body.rindex("\n") - 12], encoding="utf-8")
 
         assert metalog.read_log(path).store_ids == ["aaa"]
+
+    def test_truncation_on_a_line_boundary_is_reported(self, tmp_path, caplog):
+        """A file cut at a newline parses cleanly and is still short."""
+        (path,) = _write(tmp_path / "meta", store_ids=["aaa", "bbb", "ccc"])
+        lines = path.read_text(encoding="utf-8").splitlines()
+        path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+
+        logfile = metalog.read_log(path)
+
+        assert logfile.store_ids == ["aaa", "bbb"]
+        assert "header declares 3 message(s) but 2 were readable" in caplog.text
 
     def test_unknown_version_is_rejected(self, tmp_path, caplog):
         path = tmp_path / "log.jsonl"

@@ -53,7 +53,7 @@ def _metadata_writer(
     return _store_metadata
 
 
-def _seal_log(writer: metalog.LogWriter, date: datetime, complete: bool = True) -> None:
+def _seal_log(writer: metalog.LogWriter, date: datetime) -> None:
     """Write out a pass over a folder, tolerating a failure to do so.
 
     A log that cannot be written is reported but does not abort the run: the
@@ -62,7 +62,7 @@ def _seal_log(writer: metalog.LogWriter, date: datetime, complete: bool = True) 
     """
     recorded, places = len(writer), writer.places
     try:
-        paths = writer.seal(date, complete=complete)
+        paths = writer.seal(date)
     except OSError as exc:
         log.error("%s: metadata log not written: %s", writer.root, exc)
         return
@@ -418,7 +418,7 @@ def _backup_with_db(
                 since=start_date,
                 callback=_metadata_writer(db, mb_id, log_writer),
             )
-            _seal_log(log_writer, snapshot_date, complete=result.complete)
+            _seal_log(log_writer, snapshot_date)
             if result.complete:
                 _record_snapshot(
                     snapshot_state, db, job.name, mb_id, folder_id, folder, snapshot_date
@@ -515,7 +515,7 @@ def _verify_folder(
         log.info("%s::%s: restored %s: %s id=%s", job_name, folder, label, status, store_id)
         result.restored += 1
 
-    _seal_log(log_writer, datetime.now(UTC), complete=result.failed == 0)
+    _seal_log(log_writer, datetime.now(UTC))
     return result
 
 

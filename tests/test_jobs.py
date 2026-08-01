@@ -412,7 +412,6 @@ class TestMetadataLog:
 
         logs = list(metalog.read_all(tmp_path / "meta"))
         assert len(logs) == 1
-        assert logs[0].complete is False
         assert logs[0].store_ids == ["aaa"]
         assert state.SnapshotState.load(tmp_path / "store.json").is_empty()
 
