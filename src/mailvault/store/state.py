@@ -1,12 +1,12 @@
-"""Durable snapshot state of an archive, kept as a small JSON file.
+"""Where the next incremental run picks up, kept as a small JSON file.
 
 The per-folder snapshot timestamps decide where the next incremental run picks
 up. They also live in the metadata database, but that database is a SQLite file
 rewritten in place -- over SMB or NFS a torn write can take the whole file with
 it, and with it the record of what has already been fetched.
 
-This module keeps the same handful of timestamps in `store.json` next to the
-database and only ever replaces that file atomically: write a temporary file,
+This module keeps the same handful of timestamps in `state.json` in the archive
+and only ever replaces that file atomically: write a temporary file,
 flush it to disk, then rename it over the old one. A rename within a directory
 is atomic on every filesystem in practical use, so a reader sees either the
 previous state or the new one, never a half-written mixture. The worst case is
@@ -33,8 +33,8 @@ from mailvault.store import atomic
 
 log = logging.getLogger(__name__)
 
-# Default filename of the snapshot state inside a store directory.
-DEFAULT_STATE_NAME = "store.json"
+# Default filename of the resume state inside an archive.
+DEFAULT_STATE_NAME = "state.json"
 
 # Payload format version, so a future change can be recognised rather than
 # guessed at. Readers reject what they do not know instead of misreading it.

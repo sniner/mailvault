@@ -211,7 +211,7 @@ class TestBackup:
 
 
 # ---------------------------------------------------------------------------
-# snapshot state file (store.json)
+# snapshot state file (state.json)
 # ---------------------------------------------------------------------------
 
 
@@ -237,7 +237,7 @@ class TestSnapshotStateFile:
 
         self._run(job, mock_client, tmp_path)
 
-        s = state.SnapshotState.load(tmp_path / "store.json")
+        s = state.SnapshotState.load(tmp_path / "state.json")
         assert s.get_date("test-job", "INBOX") is not None
 
     def test_state_file_frozen_on_failed_downloads(self, tmp_path):
@@ -247,7 +247,7 @@ class TestSnapshotStateFile:
 
         self._run(job, mock_client, tmp_path)
 
-        s = state.SnapshotState.load(tmp_path / "store.json")
+        s = state.SnapshotState.load(tmp_path / "state.json")
         assert s.get_date("test-job", "INBOX") is None
 
     def test_state_file_takes_precedence_over_database(self, tmp_path):
@@ -260,7 +260,7 @@ class TestSnapshotStateFile:
         current = datetime(2026, 6, 1, tzinfo=UTC)
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
             db.set_snapshot(db.add_mailbox("test-job"), db.add_label("INBOX"), date=stale)
-        s = state.SnapshotState(tmp_path / "store.json")
+        s = state.SnapshotState(tmp_path / "state.json")
         s.set_date("test-job", "INBOX", current)
         s.save()
 
@@ -281,7 +281,7 @@ class TestSnapshotStateFile:
         self._run(job, mock_client, tmp_path)
 
         assert self._since(mock_client) == existing
-        adopted = state.SnapshotState.load(tmp_path / "store.json")
+        adopted = state.SnapshotState.load(tmp_path / "state.json")
         assert adopted.get_date("test-job", "INBOX") is not None
 
     def test_all_database_snapshots_are_adopted_at_once(self, tmp_path):
@@ -298,7 +298,7 @@ class TestSnapshotStateFile:
 
         self._run(job, mock_client, tmp_path)
 
-        s = state.SnapshotState.load(tmp_path / "store.json")
+        s = state.SnapshotState.load(tmp_path / "state.json")
         assert s.get_date("test-job", "Sent") == untouched
         assert s.get_date("test-job", "Archiv/2016") == untouched
         # The visited folder advanced, the others kept the adopted timestamp.
@@ -313,14 +313,14 @@ class TestSnapshotStateFile:
         stale = datetime(2026, 1, 1, tzinfo=UTC)
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
             db.set_snapshot(db.add_mailbox("test-job"), db.add_label("Sent"), date=stale)
-        s = state.SnapshotState(tmp_path / "store.json")
+        s = state.SnapshotState(tmp_path / "state.json")
         s.set_date("test-job", "Sent", current)
         s.save()
 
         self._run(job, mock_client, tmp_path)
 
         assert (
-            state.SnapshotState.load(tmp_path / "store.json").get_date("test-job", "Sent")
+            state.SnapshotState.load(tmp_path / "state.json").get_date("test-job", "Sent")
             == current
         )
 
@@ -413,7 +413,7 @@ class TestMetadataLog:
         logs = list(metalog.read_all(tmp_path / "meta"))
         assert len(logs) == 1
         assert logs[0].store_ids == ["aaa"]
-        assert state.SnapshotState.load(tmp_path / "store.json").is_empty()
+        assert state.SnapshotState.load(tmp_path / "state.json").is_empty()
 
     def test_existing_archive_is_bootstrapped_on_first_run(self, tmp_path):
         """An archive filled by an earlier version is protected straight away."""

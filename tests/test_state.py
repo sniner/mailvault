@@ -16,12 +16,12 @@ def _write(path, payload) -> None:
 
 class TestLoad:
     def test_missing_file_yields_empty_state(self, tmp_path):
-        s = state.SnapshotState.load(tmp_path / "store.json")
+        s = state.SnapshotState.load(tmp_path / "state.json")
         assert s.get_date("job", "INBOX") is None
         assert list(s.entries()) == []
 
     def test_unknown_mailbox_or_folder_is_none(self, tmp_path):
-        path = tmp_path / "store.json"
+        path = tmp_path / "state.json"
         s = state.SnapshotState(path)
         s.set_date("job", "INBOX", SNAPSHOT)
         s.save()
@@ -31,7 +31,7 @@ class TestLoad:
         assert s.get_date("job", "Sent") is None
 
     def test_broken_json_yields_empty_state(self, tmp_path, caplog):
-        path = tmp_path / "store.json"
+        path = tmp_path / "state.json"
         path.write_text('{"version": 1, "snapshots": {', encoding="utf-8")
 
         s = state.SnapshotState.load(path)
@@ -40,7 +40,7 @@ class TestLoad:
         assert "not valid JSON" in caplog.text
 
     def test_unknown_version_is_rejected(self, tmp_path, caplog):
-        path = tmp_path / "store.json"
+        path = tmp_path / "state.json"
         _write(path, {"version": 99, "snapshots": {"job": {"INBOX": SNAPSHOT.isoformat()}}})
 
         s = state.SnapshotState.load(path)
@@ -49,14 +49,14 @@ class TestLoad:
         assert "unknown state version" in caplog.text
 
     def test_non_object_payload_is_rejected(self, tmp_path, caplog):
-        path = tmp_path / "store.json"
+        path = tmp_path / "state.json"
         _write(path, ["not", "an", "object"])
 
         assert list(state.SnapshotState.load(path).entries()) == []
         assert "expected a JSON object" in caplog.text
 
     def test_malformed_entries_are_dropped_but_valid_ones_kept(self, tmp_path, caplog):
-        path = tmp_path / "store.json"
+        path = tmp_path / "state.json"
         _write(
             path,
             {
@@ -76,7 +76,7 @@ class TestLoad:
         assert "skipping malformed entry" in caplog.text
 
     def test_unparsable_timestamp_counts_as_unknown(self, tmp_path, caplog):
-        path = tmp_path / "store.json"
+        path = tmp_path / "state.json"
         _write(path, {"version": state.STATE_VERSION, "snapshots": {"job": {"INBOX": "soon"}}})
 
         assert state.SnapshotState.load(path).get_date("job", "INBOX") is None
@@ -85,7 +85,7 @@ class TestLoad:
 
 class TestSave:
     def test_roundtrip_preserves_timestamp(self, tmp_path):
-        path = tmp_path / "store.json"
+        path = tmp_path / "state.json"
         s = state.SnapshotState(path)
         s.set_date("job", "INBOX", SNAPSHOT)
         s.save()
@@ -94,7 +94,7 @@ class TestSave:
 
     def test_folder_names_with_separators_survive(self, tmp_path):
         """Folder names are dictionary keys, never path components."""
-        path = tmp_path / "store.json"
+        path = tmp_path / "state.json"
         s = state.SnapshotState(path)
         s.set_date("job", "Archiv/2016", SNAPSHOT)
         s.set_date("job", "\\Sent", SNAPSHOT)
@@ -106,15 +106,15 @@ class TestSave:
         assert list(tmp_path.iterdir()) == [path]
 
     def test_leaves_no_temporary_file_behind(self, tmp_path):
-        path = tmp_path / "store.json"
+        path = tmp_path / "state.json"
         s = state.SnapshotState(path)
         s.set_date("job", "INBOX", SNAPSHOT)
         s.save()
 
-        assert [p.name for p in tmp_path.iterdir()] == ["store.json"]
+        assert [p.name for p in tmp_path.iterdir()] == ["state.json"]
 
     def test_replaces_previous_content(self, tmp_path):
-        path = tmp_path / "store.json"
+        path = tmp_path / "state.json"
         later = datetime(2026, 3, 1, tzinfo=UTC)
 
         s = state.SnapshotState(path)
@@ -126,7 +126,7 @@ class TestSave:
         assert state.SnapshotState.load(path).get_date("job", "INBOX") == later
 
     def test_creates_missing_parent_directory(self, tmp_path):
-        path = tmp_path / "fresh-archive" / "store.json"
+        path = tmp_path / "fresh-archive" / "state.json"
         s = state.SnapshotState(path)
         s.set_date("job", "INBOX", SNAPSHOT)
         s.save()
@@ -135,7 +135,7 @@ class TestSave:
 
     def test_written_file_is_readable_json(self, tmp_path):
         """The file is meant to be inspectable without mailvault."""
-        path = tmp_path / "store.json"
+        path = tmp_path / "state.json"
         s = state.SnapshotState(path)
         s.set_date("job", "INBOX", SNAPSHOT)
         s.save()
@@ -149,7 +149,7 @@ class TestSave:
 
 class TestEntries:
     def test_entries_are_sorted(self, tmp_path):
-        s = state.SnapshotState(tmp_path / "store.json")
+        s = state.SnapshotState(tmp_path / "state.json")
         s.set_date("b-job", "INBOX", SNAPSHOT)
         s.set_date("a-job", "Sent", SNAPSHOT)
         s.set_date("a-job", "INBOX", SNAPSHOT)

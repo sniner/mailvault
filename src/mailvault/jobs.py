@@ -307,7 +307,7 @@ def _snapshot_start(
 ) -> datetime | None:
     """Return the timestamp an incremental run of this folder has to start from.
 
-    `store.json` wins whenever it knows the folder, because it is the copy that
+    `state.json` wins whenever it knows the folder, because it is the copy that
     survives a damaged database. The database is consulted as a fallback, and
     that is what makes the changeover seamless: an archive written by an earlier
     version carries its timestamps only in the database, and the first run copies
