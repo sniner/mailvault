@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 from mailvault import conf, mailutils
 from mailvault.backend import base, imap, session
-from mailvault.store import cas, metadb
+from mailvault.store import cas, metadb, state
 
 log = logging.getLogger(__name__)
 
@@ -45,41 +45,103 @@ def _metadata_writer(
     return _store_metadata
 
 
+def _snapshot_start(
+    snapshot_state: state.SnapshotState,
+    db: metadb.MetaDatabaseConnection,
+    job_name: str,
+    mailbox_id: int,
+    label_id: int,
+    folder: str,
+) -> datetime | None:
+    """Return the timestamp an incremental run of this folder has to start from.
+
+    `store.json` wins whenever it knows the folder, because it is the copy that
+    survives a damaged database. The database is consulted as a fallback, and
+    that is what makes the changeover seamless: an archive written by an earlier
+    version carries its timestamps only in the database, and the first run copies
+    them over into the state file without re-fetching anything.
+    """
+    date = snapshot_state.get_date(job_name, folder)
+    if date is not None:
+        return date
+    return db.get_snapshot_date(mailbox_id, label_id)
+
+
+def _record_snapshot(
+    snapshot_state: state.SnapshotState,
+    db: metadb.MetaDatabaseConnection,
+    job_name: str,
+    mailbox_id: int,
+    label_id: int,
+    folder: str,
+    date: datetime,
+) -> None:
+    """Advance the snapshot of one folder in both the database and the state file.
+
+    A state file that cannot be written is logged and otherwise tolerated: the
+    database still holds the timestamp, so the next run falls back to it and
+    nothing is re-fetched. Aborting here would instead cost the remaining folders
+    of the run for a failure that has no effect on the archived mail.
+    """
+    db.set_snapshot(mailbox_id, label_id, date=date)
+    snapshot_state.set_date(job_name, folder, date)
+    try:
+        snapshot_state.save()
+    except OSError as exc:
+        log.error(
+            "%s: snapshot state not written, database still holds it: %s",
+            snapshot_state.path,
+            exc,
+        )
+
+
+def _backup_with_db(
+    mb: base.MailboxClient,
+    store: cas.ContentAddressedStorage,
+    job: conf.JobConfig,
+    store_path: pathlib.Path,
+) -> None:
+    """Back up the selected folders, recording metadata and snapshot state."""
+    snapshot_state = state.SnapshotState.load(store_path / state.DEFAULT_STATE_NAME)
+    with metadb.MetaDatabase(path=store_path / metadb.DEFAULT_DB_NAME) as db:
+        mb_id = db.add_mailbox(job.name)
+        _store_metadata = _metadata_writer(db, mb_id)
+        folders = job.folders if job.folders else mb.folders()
+        for folder in folders:
+            folder_id = db.add_label(folder)
+            start_date = (
+                _snapshot_start(snapshot_state, db, job.name, mb_id, folder_id, folder)
+                if job.incremental
+                else None
+            )
+            snapshot_date = datetime.now(UTC)
+            result = mb.folder_backup(folder, store, since=start_date, callback=_store_metadata)
+            if result.complete:
+                _record_snapshot(
+                    snapshot_state, db, job.name, mb_id, folder_id, folder, snapshot_date
+                )
+            else:
+                # Advancing the snapshot now would push the failed messages
+                # out of every future date filter, losing them permanently.
+                log.warning(
+                    "%s::%s: %s of %s message(s) failed, snapshot not advanced",
+                    job.name,
+                    folder,
+                    result.failed,
+                    result.total,
+                )
+
+
 def backup(job: conf.JobConfig, store_path: pathlib.Path, compress: bool = False) -> None:
     with session.open_mailbox(job) as mb:
         store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
         if job.with_db:
-            with metadb.MetaDatabase(path=store_path / metadb.DEFAULT_DB_NAME) as db:
-                mb_id = db.add_mailbox(job.name)
-                _store_metadata = _metadata_writer(db, mb_id)
-                folders = job.folders if job.folders else mb.folders()
-                for folder in folders:
-                    folder_id = db.add_label(folder)
-                    start_date = (
-                        db.get_snapshot_date(mb_id, folder_id) if job.incremental else None
-                    )
-                    snapshot_date = datetime.now(UTC)
-                    result = mb.folder_backup(
-                        folder, store, since=start_date, callback=_store_metadata
-                    )
-                    if result.complete:
-                        db.set_snapshot(mb_id, folder_id, date=snapshot_date)
-                    else:
-                        # Advancing the snapshot now would push the failed messages
-                        # out of every future date filter, losing them permanently.
-                        log.warning(
-                            "%s::%s: %s of %s message(s) failed, snapshot not advanced",
-                            job.name,
-                            folder,
-                            result.failed,
-                            result.total,
-                        )
+            _backup_with_db(mb, store, job, store_path)
+        elif job.folders:
+            for folder in job.folders:
+                mb.folder_backup(folder, store)
         else:
-            if job.folders:
-                for folder in job.folders:
-                    mb.folder_backup(folder, store)
-            else:
-                mb.full_backup(store)
+            mb.full_backup(store)
 
 
 def _verify_folder(

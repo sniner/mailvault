@@ -10,7 +10,7 @@ import pytest
 
 from mailvault import conf, jobs, mailutils
 from mailvault.backend import base
-from mailvault.store import cas, metadb
+from mailvault.store import cas, metadb, state
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -208,6 +208,95 @@ class TestBackup:
             mb_id = db.add_mailbox("test-job")
             label_id = db.add_label("INBOX")
             assert db.get_snapshot_date(mb_id, label_id) == old_snapshot
+
+
+# ---------------------------------------------------------------------------
+# snapshot state file (store.json)
+# ---------------------------------------------------------------------------
+
+
+class TestSnapshotStateFile:
+    """The snapshot state has to survive a metadata database that does not."""
+
+    @staticmethod
+    def _run(job, mock_client, tmp_path) -> None:
+        with patch("mailvault.jobs.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+            jobs.backup(job, tmp_path)
+
+    @staticmethod
+    def _since(mock_client):
+        call_kwargs = mock_client.folder_backup.call_args
+        return call_kwargs.kwargs.get("since") or call_kwargs[1].get("since")
+
+    def test_state_file_written_on_clean_run(self, tmp_path):
+        job = _make_job(with_db=True, folders=["INBOX"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = base.BackupResult(total=3, stored=3)
+
+        self._run(job, mock_client, tmp_path)
+
+        s = state.SnapshotState.load(tmp_path / "store.json")
+        assert s.get_date("test-job", "INBOX") is not None
+
+    def test_state_file_frozen_on_failed_downloads(self, tmp_path):
+        job = _make_job(with_db=True, folders=["INBOX"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = base.BackupResult(total=3, stored=2, failed=1)
+
+        self._run(job, mock_client, tmp_path)
+
+        s = state.SnapshotState.load(tmp_path / "store.json")
+        assert s.get_date("test-job", "INBOX") is None
+
+    def test_state_file_takes_precedence_over_database(self, tmp_path):
+        """The state file is the durable copy, so it decides where a run resumes."""
+        job = _make_job(with_db=True, folders=["INBOX"], incremental=True)
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = base.BackupResult()
+
+        stale = datetime(2026, 1, 1, tzinfo=UTC)
+        current = datetime(2026, 6, 1, tzinfo=UTC)
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+            db.set_snapshot(db.add_mailbox("test-job"), db.add_label("INBOX"), date=stale)
+        s = state.SnapshotState(tmp_path / "store.json")
+        s.set_date("test-job", "INBOX", current)
+        s.save()
+
+        self._run(job, mock_client, tmp_path)
+
+        assert self._since(mock_client) == current
+
+    def test_database_snapshot_is_adopted_when_state_file_is_absent(self, tmp_path):
+        """Upgrading an existing archive must not trigger a full re-fetch."""
+        job = _make_job(with_db=True, folders=["INBOX"], incremental=True)
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = base.BackupResult()
+
+        existing = datetime(2026, 2, 1, tzinfo=UTC)
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+            db.set_snapshot(db.add_mailbox("test-job"), db.add_label("INBOX"), date=existing)
+
+        self._run(job, mock_client, tmp_path)
+
+        assert self._since(mock_client) == existing
+        adopted = state.SnapshotState.load(tmp_path / "store.json")
+        assert adopted.get_date("test-job", "INBOX") is not None
+
+    def test_unwritable_state_file_does_not_abort_the_run(self, tmp_path, caplog):
+        """Losing the state file costs bandwidth later, never the run in progress."""
+        job = _make_job(with_db=True, folders=["INBOX"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = base.BackupResult(total=1, stored=1)
+
+        with patch.object(state.SnapshotState, "save", side_effect=OSError("read-only")):
+            self._run(job, mock_client, tmp_path)
+
+        assert "snapshot state not written" in caplog.text
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+            mb_id = db.add_mailbox("test-job")
+            assert db.get_snapshot_date(mb_id, db.add_label("INBOX")) is not None
 
 
 # ---------------------------------------------------------------------------

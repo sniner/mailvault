@@ -1,0 +1,194 @@
+"""Durable snapshot state of an archive, kept as a small JSON file.
+
+The per-folder snapshot timestamps decide where the next incremental run picks
+up. They also live in the metadata database, but that database is a SQLite file
+rewritten in place -- over SMB or NFS a torn write can take the whole file with
+it, and with it the record of what has already been fetched.
+
+This module keeps the same handful of timestamps in `store.json` next to the
+database and only ever replaces that file atomically: write a temporary file,
+flush it to disk, then rename it over the old one. A rename within a directory
+is atomic on every filesystem in practical use, so a reader sees either the
+previous state or the new one, never a half-written mixture. The worst case is
+losing the most recent update, which costs bandwidth on the next run -- the
+content-addressed storage discards the redundant downloads.
+
+The file is not a second source of truth: an archive's snapshot state can be
+reconstructed from the metadata log. It exists so that starting a run does not
+require reading the whole log.
+
+Single writer assumed, matching the rest of mailvault: two runs writing the same
+archive concurrently can lose one another's updates.
+"""
+
+from __future__ import annotations
+
+import collections.abc
+import json
+import logging
+import os
+import pathlib
+from datetime import datetime
+
+log = logging.getLogger(__name__)
+
+# Default filename of the snapshot state inside a store directory.
+DEFAULT_STATE_NAME = "store.json"
+
+# Payload format version, so a future change can be recognised rather than
+# guessed at. Readers reject what they do not know instead of misreading it.
+STATE_VERSION = 1
+
+
+def _sync_directory(path: pathlib.Path) -> None:
+    """Flush a directory entry so a rename survives a power loss.
+
+    Not every platform supports opening a directory for fsync -- Windows refuses,
+    and some network shares do not implement it. The rename itself is still
+    atomic there, so a failure only costs durability of the very last update and
+    is logged at debug level rather than raised.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError as exc:
+        log.debug("%s: directory not open-able for sync: %s", path, exc)
+        return
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        log.debug("%s: directory sync failed: %s", path, exc)
+    finally:
+        os.close(fd)
+
+
+class SnapshotState:
+    """The per-mailbox, per-folder snapshot timestamps of one archive.
+
+    Timestamps are held as ISO 8601 strings and converted on access, so a value
+    that cannot be parsed costs one folder rather than the whole file.
+    """
+
+    def __init__(
+        self,
+        path: pathlib.Path,
+        snapshots: dict[str, dict[str, str]] | None = None,
+    ):
+        self.path = path
+        self._snapshots: dict[str, dict[str, str]] = snapshots if snapshots else {}
+
+    @classmethod
+    def load(cls, path: pathlib.Path) -> SnapshotState:
+        """Read the state file, returning empty state when it is unusable.
+
+        A missing file is the normal case for a new archive. A corrupt one is
+        deliberately not an error either: the state is a cache of something the
+        log can reproduce, and treating it as empty falls back to a full run --
+        expensive, but never wrong. Anything unusable is reported as a warning so
+        it does not pass unnoticed.
+        """
+        try:
+            body = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return cls(path)
+        except (OSError, UnicodeDecodeError) as exc:
+            log.warning("%s: unreadable, starting from empty state: %s", path, exc)
+            return cls(path)
+
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError as exc:
+            log.warning("%s: not valid JSON, starting from empty state: %s", path, exc)
+            return cls(path)
+
+        return cls(path, cls._extract(path, payload))
+
+    @staticmethod
+    def _extract(path: pathlib.Path, payload: object) -> dict[str, dict[str, str]]:
+        """Pull the snapshot mapping out of a decoded payload, dropping junk.
+
+        Validated field by field: the file lives in an archive that other tools
+        may touch, so a wrong shape has to degrade into "unknown" rather than an
+        AttributeError in the middle of a backup run.
+        """
+        if not isinstance(payload, dict):
+            log.warning("%s: expected a JSON object, ignoring content", path)
+            return {}
+        version = payload.get("version")
+        if version != STATE_VERSION:
+            log.warning(
+                "%s: unknown state version %r (expected %d), ignoring content",
+                path,
+                version,
+                STATE_VERSION,
+            )
+            return {}
+        raw = payload.get("snapshots")
+        if not isinstance(raw, dict):
+            log.warning("%s: 'snapshots' is not an object, ignoring content", path)
+            return {}
+
+        snapshots: dict[str, dict[str, str]] = {}
+        for mailbox, folders in raw.items():
+            if not isinstance(mailbox, str) or not isinstance(folders, dict):
+                log.warning("%s: skipping malformed entry for %r", path, mailbox)
+                continue
+            valid = {
+                folder: date
+                for folder, date in folders.items()
+                if isinstance(folder, str) and isinstance(date, str)
+            }
+            if len(valid) != len(folders):
+                log.warning("%s: dropped malformed folder entries of %r", path, mailbox)
+            if valid:
+                snapshots[mailbox] = valid
+        return snapshots
+
+    def get_date(self, mailbox: str, folder: str) -> datetime | None:
+        """Return the snapshot timestamp of one folder, or None when unknown."""
+        value = self._snapshots.get(mailbox, {}).get(folder)
+        if value is None:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            log.warning(
+                "%s: %s::%s has an unparsable timestamp %r, treating as unknown",
+                self.path,
+                mailbox,
+                folder,
+                value,
+            )
+            return None
+
+    def set_date(self, mailbox: str, folder: str, date: datetime) -> None:
+        """Record the snapshot timestamp of one folder. Call save() to persist."""
+        self._snapshots.setdefault(mailbox, {})[folder] = date.isoformat()
+
+    def entries(self) -> collections.abc.Iterator[tuple[str, str, str]]:
+        """Yield (mailbox, folder, timestamp) for every recorded folder."""
+        for mailbox in sorted(self._snapshots):
+            for folder in sorted(self._snapshots[mailbox]):
+                yield mailbox, folder, self._snapshots[mailbox][folder]
+
+    def save(self) -> None:
+        """Write the state to disk atomically, replacing any previous version.
+
+        Written to a temporary file in the same directory first: a rename is only
+        atomic within one filesystem, and the temporary file has to share the
+        destination's filesystem for that to hold.
+        """
+        payload = {"version": STATE_VERSION, "snapshots": self._snapshots}
+        body = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self.path.with_name(self.path.name + "._tmp_")
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(body)
+                f.flush()
+                os.fsync(f.fileno())
+            tmp_path.replace(self.path)
+        except OSError:
+            tmp_path.unlink(missing_ok=True)
+            raise
+        _sync_directory(self.path.parent)
+        log.debug("%s: snapshot state written", self.path)

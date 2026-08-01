@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The snapshot state of an archive is now also kept in `store.json`**, next to `store.db`.
+  It holds the per-folder timestamps that decide where the next incremental run resumes, and
+  is only ever replaced atomically, so an interrupted or torn write cannot destroy it. The
+  metadata database is a SQLite file rewritten in place, which is a real hazard on SMB and NFS
+  shares; the state file is what makes an incremental backup survive a damaged database
+
+### Changed
+
+- **An incremental run reads its start date from `store.json` when that file knows the folder**,
+  and falls back to the metadata database otherwise. Existing archives therefore need no
+  migration: the first run after upgrading adopts the timestamps already in the database
+  without re-fetching anything
+
+- **A snapshot state file that cannot be written no longer aborts the run.** The problem is
+  logged and the backup continues, because the database still holds the timestamp and the
+  archived mail is unaffected
+
 ## 0.7.0 (2026-08-01)
 
 ### Breaking changes
