@@ -8,7 +8,7 @@ import pathlib
 import time
 from datetime import UTC, datetime
 
-from mailvault import conf, mailutils
+from mailvault import conf, mailutils, utils
 from mailvault.backend import base, imap, session
 from mailvault.store import cas, metadb, metalog, state
 
@@ -65,6 +65,12 @@ class MigrationResult:
     snapshots: int = 0
     verified: bool = False
     renamed_to: pathlib.Path | None = None
+
+
+# Messages per transaction when building a database. Large enough that commits
+# stop dominating, small enough that an interrupted run has not done much work
+# it will have to repeat.
+CREATE_DB_BATCH = 2000
 
 
 @dataclasses.dataclass
@@ -577,25 +583,29 @@ def create_db(
     result = RebuildResult()
     with metadb.MetaDatabase(path=db_path) as db:
         mb_id = db.add_mailbox(mailbox) if mailbox else None
-        for path in store.walk():
-            # Only the headers: everything this needs is in them, and the
-            # attachments behind them are 98% of the bytes.
-            header = mailutils.decode_email_header(store.read_header(path))
-            from_addrs, to_addrs = mailutils.addresses(header)
-            store_id = path.name.split(".")[0]
-            email_id = mailutils.message_id(header)
-            date = mailutils.date(header)
-            subject = mailutils.subject(header)
-            log.debug("%s: message_id=%s, date=%s", store_id, email_id, date)
+        # One transaction per batch, not per message. Every write method commits
+        # on its own when called at the top level, which over a whole archive is
+        # half a million commits -- unnoticeable on a RAM disk and hours on a
+        # real filesystem, where each one waits for the device.
+        for batch in utils.batched(store.walk(), CREATE_DB_BATCH):
+            with db.transaction():
+                for path in batch:
+                    # Only the headers: everything this needs is in them, and the
+                    # attachments behind them are 98% of the bytes.
+                    header = mailutils.decode_email_header(store.read_header(path))
+                    from_addrs, to_addrs = mailutils.addresses(header)
+                    store_id = path.name.split(".")[0]
+                    email_id = mailutils.message_id(header)
+                    date = mailutils.date(header)
+                    subject = mailutils.subject(header)
 
-            msg_id = db.add_message(store_id, email_id, date, subject)
-            if mb_id:
-                db.assign_message_to_mailbox(msg_id, mb_id)
-            db.add_message_sender(msg_id, *from_addrs)
-            db.add_message_recipients(msg_id, *to_addrs)
-            result.messages += 1
-            if result.messages % 5000 == 0:
-                log.info("%s: %s message(s) read", store_path, result.messages)
+                    msg_id = db.add_message(store_id, email_id, date, subject)
+                    if mb_id:
+                        db.assign_message_to_mailbox(msg_id, mb_id)
+                    db.add_message_sender(msg_id, *from_addrs)
+                    db.add_message_recipients(msg_id, *to_addrs)
+                    result.messages += 1
+            log.info("%s: %s message(s) read", store_path, result.messages)
 
         result.replay = _replay_metalog(db, store_path / metalog.DEFAULT_LOG_DIR)
     return result
