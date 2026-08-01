@@ -6,8 +6,19 @@ import io
 import logging
 import os
 import pathlib
+from typing import Any
 
 log = logging.getLogger(__name__)
+
+
+def _header_end(buf: bytes | bytearray, start: int = 0) -> int | None:
+    """Index just past the blank line that ends a message's headers, or None."""
+    ends = [
+        found + len(separator)
+        for separator in (b"\r\n\r\n", b"\n\n")
+        if (found := buf.find(separator, start)) >= 0
+    ]
+    return min(ends) if ends else None
 
 
 class ContentAddressedStorage:
@@ -143,6 +154,43 @@ class ContentAddressedStorage:
             tmp_file.rename(file)
         log.debug(f"{file}: new entry")
         return "NEW", hashval, file
+
+    def _read_until_header_end(self, reader: Any, limit: int) -> bytes:
+        """Pull blocks off `reader` until the headers are complete."""
+        buf = bytearray()
+        while len(buf) < limit:
+            block = reader.read(self.blocksize)
+            if not block:
+                break
+            # Resume the search three bytes back so a separator split across two
+            # blocks is still found.
+            start = max(0, len(buf) - 3)
+            buf += block
+            end = _header_end(buf, start)
+            if end is not None:
+                return bytes(buf[:end])
+        return bytes(buf)
+
+    def read_header(self, path: pathlib.Path, limit: int = 1 << 20) -> bytes:
+        """Read only the header block of a stored message.
+
+        Headers are a few kilobytes; the message behind them can be tens of
+        megabytes. Anything that only needs the headers -- matching a Message-ID,
+        building a database -- would otherwise pull whole attachments off the disk
+        or over the network to throw them away. On the reference archive the
+        headers are 4.8% of the bytes.
+
+        Stops at the blank line that separates headers from body, or at `limit`
+        for a message that has no such line.
+        """
+        if path.suffix == ".zst":
+            import zstandard
+
+            dctx = zstandard.ZstdDecompressor()
+            with open(path, "rb") as f, dctx.stream_reader(f) as reader:
+                return self._read_until_header_end(reader, limit)
+        with open(path, "rb") as f:
+            return self._read_until_header_end(f, limit)
 
     def read(self, path: pathlib.Path) -> bytes:
         """Read file content, decompressing transparently if needed."""

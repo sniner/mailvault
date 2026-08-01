@@ -30,29 +30,6 @@ class VerifyResult:
     failed: int = 0
 
 
-def _metadata_writer(
-    db: metadb.MetaDatabaseConnection,
-    mailbox_id: int,
-    log_writer: metalog.LogWriter | None = None,
-) -> collections.abc.Callable[[mailutils.MessageMetadata], None]:
-    """Build the callback that records a message's metadata in the store database.
-
-    With a log writer the mailbox and folder attribution is additionally recorded
-    in the metadata log, which is the copy that survives a damaged database.
-    """
-
-    def _store_metadata(email: mailutils.MessageMetadata) -> None:
-        msg = db.add_message(email.store_id, email.email_id, email.date, email.subject)
-        db.assign_message_to_mailbox(msg, mailbox_id)
-        db.add_message_labels(msg, *email.folders)
-        db.add_message_sender(msg, *email.sender)
-        db.add_message_recipients(msg, *email.recipients)
-        if log_writer is not None:
-            log_writer.add(email.mailbox, email.folders, email.store_id)
-
-    return _store_metadata
-
-
 def _seal_log(writer: metalog.LogWriter, date: datetime) -> None:
     """Write out a pass over a folder, tolerating a failure to do so.
 
@@ -70,16 +47,24 @@ def _seal_log(writer: metalog.LogWriter, date: datetime) -> None:
         log.info("%s: %s message(s) recorded in %s place(s)", writer.root, recorded, places)
 
 
-@dataclasses.dataclass
-class BootstrapResult:
-    """Outcome of exporting an existing database's locations into the log."""
+# What a migrated database is renamed to. Not deleted: renaming says "the log is
+# the source now" without destroying anything, and the name alone answers which
+# artefact counts at any moment.
+MIGRATED_SUFFIX = ".migrated"
 
+
+@dataclasses.dataclass
+class MigrationResult:
+    """Outcome of moving an archive off its metadata database."""
+
+    needed: bool = False
     messages: int = 0
     places: int = 0
     placeless: int = 0
     undecidable: int = 0
-    written: bool = False
-    skipped: bool = False
+    snapshots: int = 0
+    verified: bool = False
+    renamed_to: pathlib.Path | None = None
 
 
 @dataclasses.dataclass
@@ -169,8 +154,11 @@ def _folder_owners(db: metadb.MetaDatabaseConnection) -> dict[str, set[str]]:
 
 
 def _export_metalog(
-    db: metadb.MetaDatabaseConnection, log_root: pathlib.Path, date: datetime
-) -> BootstrapResult:
+    db: metadb.MetaDatabaseConnection,
+    log_root: pathlib.Path,
+    date: datetime,
+    result: MigrationResult,
+) -> list[pathlib.Path]:
     """Write the locations held in an existing database into the log.
 
     The old schema stored which mailboxes and which folders a message has as two
@@ -184,7 +172,6 @@ def _export_metalog(
     folder, which says "seen in this mailbox, where exactly is not knowable"
     instead of guessing a place.
     """
-    result = BootstrapResult()
     owners = _folder_owners(db)
     mailboxes = db.message_mailboxes()
     folders = db.message_labels()
@@ -210,66 +197,16 @@ def _export_metalog(
             writer.add(mailbox, here, store_id)
 
     result.places = writer.places
-    if len(writer):
-        result.written = bool(writer.seal(date))
-    return result
-
-
-def bootstrap_metalog(store_path: pathlib.Path, force: bool = False) -> BootstrapResult:
-    """Export an archive's existing locations into the metadata log.
-
-    Skipped once a previous export has finished, unless `force` is given: the log
-    is append-only, and exporting again would duplicate every location. Replaying
-    duplicates is harmless -- the database methods are idempotent -- but it
-    doubles the log for no gain.
-
-    The decision rests on the completion marker rather than on log files being
-    present. An export interrupted halfway leaves files behind, and treating
-    those as "already done" would freeze the archive at partial coverage.
-    """
-    log_root = store_path / metalog.DEFAULT_LOG_DIR
-    if metalog.bootstrap_done(log_root) and not force:
-        return BootstrapResult(skipped=True)
-    with metadb.MetaDatabase(path=store_path / metadb.DEFAULT_DB_NAME) as db:
-        date = datetime.now(UTC)
-        result = _export_metalog(db, log_root, date)
-    metalog.mark_bootstrap_done(log_root, date)
-    return result
-
-
-def _bootstrap_missing_log(db: metadb.MetaDatabaseConnection, log_root: pathlib.Path) -> None:
-    """Export the locations of an archive that has not been exported yet.
-
-    Runs before the first folder of a backup so that an archive filled by an
-    earlier version is protected from the very first run, without the user having
-    to know that the log exists. The marker is written even when nothing was
-    exported, so a fresh archive does not retry on every run.
-    """
-    if metalog.bootstrap_done(log_root):
-        return
-    date = datetime.now(UTC)
-    try:
-        result = _export_metalog(db, log_root, date)
-        metalog.mark_bootstrap_done(log_root, date)
-    except OSError as exc:
-        log.error("%s: metadata log could not be created: %s", log_root, exc)
-        return
-    if result.written:
-        log.info(
-            "%s: no metadata log found, exported %s message(s) into %s place(s)",
-            log_root,
-            result.messages,
-            result.places,
-        )
+    return writer.seal(date)
 
 
 def _replay_metalog(db: metadb.MetaDatabaseConnection, log_root: pathlib.Path) -> ReplayResult:
     """Apply every log file to the database, in order.
 
-    Uses the same idempotent methods a backup uses, so replaying is nothing more
-    than calling them again: a message seen in two mailboxes ends up with two
-    rows exactly as it would have during the runs that observed it. Entries whose
-    message is not in the archive are counted and skipped -- the blob was
+    Uses the same idempotent methods a backup used to, so replaying is nothing
+    more than calling them again: a message seen in two mailboxes ends up with
+    two rows exactly as the runs that observed it would have written. Entries
+    whose message is not in the archive are counted and skipped -- the blob was
     removed, and inventing a row for it would describe mail that is not there.
     """
     result = ReplayResult()
@@ -297,71 +234,33 @@ def _replay_metalog(db: metadb.MetaDatabaseConnection, log_root: pathlib.Path) -
     return result
 
 
-def _snapshot_start(
-    snapshot_state: state.SnapshotState,
-    db: metadb.MetaDatabaseConnection,
-    job_name: str,
-    mailbox_id: int,
-    label_id: int,
-    folder: str,
-) -> datetime | None:
-    """Return the timestamp an incremental run of this folder has to start from.
-
-    `state.json` wins whenever it knows the folder, because it is the copy that
-    survives a damaged database. The database is consulted as a fallback, and
-    that is what makes the changeover seamless: an archive written by an earlier
-    version carries its timestamps only in the database, and the first run copies
-    them over into the state file without re-fetching anything.
-    """
-    date = snapshot_state.get_date(job_name, folder)
-    if date is not None:
-        return date
-    return db.get_snapshot_date(mailbox_id, label_id)
-
-
 def _record_snapshot(
-    snapshot_state: state.SnapshotState,
-    db: metadb.MetaDatabaseConnection,
-    job_name: str,
-    mailbox_id: int,
-    label_id: int,
-    folder: str,
-    date: datetime,
+    snapshot_state: state.SnapshotState, job_name: str, folder: str, date: datetime
 ) -> None:
-    """Advance the snapshot of one folder in both the database and the state file.
+    """Advance the snapshot of one folder.
 
-    A state file that cannot be written is logged and otherwise tolerated: the
-    database still holds the timestamp, so the next run falls back to it and
-    nothing is re-fetched. Aborting here would instead cost the remaining folders
-    of the run for a failure that has no effect on the archived mail.
+    A state file that cannot be written is logged and otherwise tolerated. The
+    folder is simply fetched again next time, which the content-addressed storage
+    absorbs; aborting here would instead cost the remaining folders of the run for
+    a failure that has no effect on the archived mail.
     """
-    db.set_snapshot(mailbox_id, label_id, date=date)
     snapshot_state.set_date(job_name, folder, date)
     try:
         snapshot_state.save()
     except OSError as exc:
-        log.error(
-            "%s: snapshot state not written, database still holds it: %s",
-            snapshot_state.path,
-            exc,
-        )
+        log.error("%s: resume state not written: %s", snapshot_state.path, exc)
 
 
 def _adopt_database_snapshots(
     snapshot_state: state.SnapshotState, db: metadb.MetaDatabaseConnection
-) -> None:
-    """Seed an empty state file from the snapshot table of an existing archive.
+) -> int:
+    """Copy the snapshot table of a legacy archive into the state file.
 
-    An archive written before the state file existed carries its timestamps only
-    in the database. They are copied across in one go rather than one folder per
-    run as folders happen to be visited, so the state file is complete after the
-    first run and the database stops being the load-bearing copy immediately.
-
-    Only ever fills an empty state file: a state file that already holds
-    something is the newer truth and must not be overwritten by the database.
+    Only ever fills an empty state file: one that already holds something is the
+    newer truth and must not be overwritten by the database.
     """
     if not snapshot_state.is_empty():
-        return
+        return 0
     adopted = 0
     for mailbox, folder, timestamp in db.all_snapshots():
         try:
@@ -375,71 +274,121 @@ def _adopt_database_snapshots(
             )
             continue
         adopted += 1
-    if not adopted:
-        return
-    try:
+    if adopted:
         snapshot_state.save()
-    except OSError as exc:
-        log.error("%s: snapshot state not written: %s", snapshot_state.path, exc)
-        return
+    return adopted
+
+
+def migrate_archive(store_path: pathlib.Path) -> MigrationResult:
+    """Move an archive written by an earlier version onto the log.
+
+    Older archives keep everything in `store.db`: the resume timestamps and, more
+    importantly, the only record of which mailbox and folder each message was
+    seen in. Both move out -- the timestamps into `state.json`, the locations into
+    the log -- and the database is then no longer part of the archive.
+
+    It is not deleted. It is renamed to `store.db.migrated`, which says the same
+    thing without destroying anything: the name alone answers "which of these is
+    the source" at any moment, so there is never a period where two artefacts hold
+    the same information and nothing says which one counts.
+
+        store.db            not migrated -- the old locations live only here
+        store.db.migrated   the log is the source, this file is spare
+        neither             the log is the source
+
+    Idempotent by construction. An interrupted export leaves `store.db` in place,
+    so the next attempt exports again; the duplicate entries make no difference
+    because replaying them is idempotent. Called on an archive with no `store.db`
+    it does nothing at all.
+    """
+    legacy = store_path / metadb.DEFAULT_DB_NAME
+    result = MigrationResult()
+    if not legacy.exists():
+        return result
+    result.needed = True
+
+    log_root = store_path / metalog.DEFAULT_LOG_DIR
+    snapshot_state = state.SnapshotState.load(store_path / state.DEFAULT_STATE_NAME)
+    date = datetime.now(UTC)
+    with metadb.MetaDatabase(path=legacy) as db:
+        result.snapshots = _adopt_database_snapshots(snapshot_state, db)
+        written = _export_metalog(db, log_root, date, result)
+
+    # Read back what was just written before anything is renamed. The files are
+    # named after their own content, so this catches a write that did not land.
+    result.verified = all(metalog.verify_file(path) for path in written)
+    if not result.verified:
+        log.error("%s: written log files did not verify, database left alone", log_root)
+        return result
+
+    target = legacy.with_name(legacy.name + MIGRATED_SUFFIX)
+    legacy.replace(target)
+    result.renamed_to = target
     log.info(
-        "%s: adopted %s snapshot(s) from the metadata database",
-        snapshot_state.path,
-        adopted,
+        "%s: migrated -- %s message(s) into %s place(s), %s snapshot(s); %s is now spare",
+        store_path,
+        result.messages,
+        result.places,
+        result.snapshots,
+        target.name,
     )
+    return result
 
 
-def _backup_with_db(
+def _location_writer(
+    log_writer: metalog.LogWriter,
+) -> collections.abc.Callable[[mailutils.MessageMetadata], None]:
+    """Build the callback that records where a message was seen.
+
+    That is all a backup writes about a message now. Subject, sender and date are
+    in the message itself, so anything that wants them reads them back out of the
+    archive -- there is no database to keep up to date any more.
+    """
+
+    def _record(email: mailutils.MessageMetadata) -> None:
+        log_writer.add(email.mailbox, email.folders, email.store_id)
+
+    return _record
+
+
+def _backup_to_log(
     mb: base.MailboxClient,
     store: cas.ContentAddressedStorage,
     job: conf.JobConfig,
     store_path: pathlib.Path,
 ) -> None:
-    """Back up the selected folders, recording metadata, log and snapshot state."""
+    """Back up the selected folders, recording locations and resume state."""
+    migrate_archive(store_path)
     snapshot_state = state.SnapshotState.load(store_path / state.DEFAULT_STATE_NAME)
     log_root = store_path / metalog.DEFAULT_LOG_DIR
-    with metadb.MetaDatabase(path=store_path / metadb.DEFAULT_DB_NAME) as db:
-        _adopt_database_snapshots(snapshot_state, db)
-        _bootstrap_missing_log(db, log_root)
-        mb_id = db.add_mailbox(job.name)
-        folders = job.folders if job.folders else mb.folders()
-        for folder in folders:
-            folder_id = db.add_label(folder)
-            start_date = (
-                _snapshot_start(snapshot_state, db, job.name, mb_id, folder_id, folder)
-                if job.incremental
-                else None
-            )
-            snapshot_date = datetime.now(UTC)
-            log_writer = metalog.LogWriter(log_root)
-            result = mb.folder_backup(
+    folders = job.folders if job.folders else mb.folders()
+    for folder in folders:
+        start_date = snapshot_state.get_date(job.name, folder) if job.incremental else None
+        snapshot_date = datetime.now(UTC)
+        log_writer = metalog.LogWriter(log_root)
+        result = mb.folder_backup(
+            folder, store, since=start_date, callback=_location_writer(log_writer)
+        )
+        _seal_log(log_writer, snapshot_date)
+        if result.complete:
+            _record_snapshot(snapshot_state, job.name, folder, snapshot_date)
+        else:
+            # Advancing the snapshot now would push the failed messages
+            # out of every future date filter, losing them permanently.
+            log.warning(
+                "%s::%s: %s of %s message(s) failed, snapshot not advanced",
+                job.name,
                 folder,
-                store,
-                since=start_date,
-                callback=_metadata_writer(db, mb_id, log_writer),
+                result.failed,
+                result.total,
             )
-            _seal_log(log_writer, snapshot_date)
-            if result.complete:
-                _record_snapshot(
-                    snapshot_state, db, job.name, mb_id, folder_id, folder, snapshot_date
-                )
-            else:
-                # Advancing the snapshot now would push the failed messages
-                # out of every future date filter, losing them permanently.
-                log.warning(
-                    "%s::%s: %s of %s message(s) failed, snapshot not advanced",
-                    job.name,
-                    folder,
-                    result.failed,
-                    result.total,
-                )
 
 
 def backup(job: conf.JobConfig, store_path: pathlib.Path, compress: bool = False) -> None:
     with session.open_mailbox(job) as mb:
         store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
         if job.with_db:
-            _backup_with_db(mb, store, job, store_path)
+            _backup_to_log(mb, store, job, store_path)
         elif job.folders:
             for folder in job.folders:
                 mb.folder_backup(folder, store)
@@ -447,28 +396,68 @@ def backup(job: conf.JobConfig, store_path: pathlib.Path, compress: bool = False
             mb.full_backup(store)
 
 
+def _places_from_log(log_root: pathlib.Path) -> dict[tuple[str, str | None], set[str]]:
+    """Read the whole log once into `(mailbox, folder) -> store ids`."""
+    places: dict[tuple[str, str | None], set[str]] = {}
+    for logfile in metalog.read_all(log_root):
+        if logfile.mailbox is None:
+            continue
+        places.setdefault((logfile.mailbox, logfile.folder), set()).update(logfile.store_ids)
+    return places
+
+
+def _archived_message_ids(
+    store: cas.ContentAddressedStorage, store_ids: collections.abc.Iterable[str]
+) -> set[str]:
+    """Return the normalised Message-IDs of the given archived messages.
+
+    The log says which messages are at a place; the Message-ID itself is only in
+    the message, so each one is parsed. That is a few thousand header reads for a
+    folder -- `verify` is a once-in-a-blue-moon command, and the database it used
+    to ask is no longer part of the archive.
+
+    Messages without a usable Message-ID are omitted: they cannot serve as a
+    comparison key and must count as "not present" so a verify run re-fetches
+    them, which is harmless because the storage deduplicates by content.
+    """
+    known: set[str] = set()
+    for store_id in store_ids:
+        path = store.locate(store_id, exists=True)
+        if path is None:
+            continue
+        try:
+            header = mailutils.decode_email_header(store.read_header(path))
+        except (OSError, ValueError) as exc:
+            log.warning("%s: unreadable, not counted as archived: %s", path, exc)
+            continue
+        known.add(mailutils.normalize_message_id(mailutils.message_id(header)))
+    known.discard("")
+    return known
+
+
 def _verify_folder(
     mb: base.MailboxClient,
-    db: metadb.MetaDatabaseConnection,
     store: cas.ContentAddressedStorage,
-    mailbox_id: int,
+    log_root: pathlib.Path,
+    archived: set[str],
     job_name: str,
     folder: str,
-    log_root: pathlib.Path,
     repair: bool = False,
 ) -> VerifyResult:
     """Compare one server folder against the archive and optionally refetch gaps.
 
-    Matching is done by Message-ID, which is cheap: listing a folder's headers
-    costs a handful of requests, while re-downloading it costs one request per
-    message. A message counts as missing whenever its Message-ID is not archived
-    for this folder, so messages with an absent or duplicated Message-ID may be
-    fetched needlessly -- that is deliberate, since the content-addressed storage
-    discards the redundant copy anyway. The reverse mistake, skipping a message
-    that really is missing, is the one worth avoiding.
+    Matching is done by Message-ID, which is the only key both sides share
+    without transferring the message: listing a folder's headers costs a handful
+    of requests, while re-downloading it costs one request per message. The
+    content hash would be exact, but the server does not know it.
+
+    A message counts as missing whenever its Message-ID is not archived for this
+    folder, so messages with an absent or duplicated Message-ID may be fetched
+    needlessly -- deliberate, since the storage discards the redundant copy. The
+    reverse mistake, skipping a message that really is missing, is the one worth
+    avoiding.
     """
-    label_id = db.add_label(folder)
-    known = mailutils.MessageIdIndex(db.get_known_message_ids(mailbox_id, label_id))
+    known = mailutils.MessageIdIndex(_archived_message_ids(store, archived))
     log.info("%s::%s: %s message(s) in archive", job_name, folder, len(known))
 
     result = VerifyResult(folder=folder)
@@ -491,10 +480,9 @@ def _verify_folder(
     if not repair or not missing:
         return result
 
-    # A repaired message is new archive content, so its attribution has to reach
-    # the log as well -- otherwise it exists only in the database.
+    # A repaired message is new archive content, so its location has to reach the
+    # log as well -- otherwise nothing records where it belongs.
     log_writer = metalog.LogWriter(log_root)
-    store_metadata = _metadata_writer(db, mailbox_id, log_writer)
     for ref in missing:
         label = ref.message_id or ref.msg_id
         try:
@@ -505,9 +493,7 @@ def _verify_folder(
             continue
         try:
             status, store_id, _path = store.add(msg)
-            store_metadata(
-                mailutils.metadata(msg, mailbox=job_name, folder=folder, store_id=store_id)
-            )
+            log_writer.add(job_name, [folder], store_id)
         except Exception as exc:
             log.exception("%s::%s: storing %s failed: %s", job_name, folder, label, exc)
             result.failed += 1
@@ -527,10 +513,12 @@ def verify(
 ) -> list[VerifyResult]:
     """Check the archive for messages the server still has but the archive lacks.
 
-    Gaps arise when individual downloads fail during a backup run. The snapshot
-    date of an incremental job hides them from every later run, so they need an
-    explicit comparison to be found. With `repair` the missing messages are
-    fetched and added to the archive. The snapshot dates are left untouched.
+    Gaps are rare by design: a folder whose downloads partly failed does not
+    advance its snapshot, so the next run fetches it again. What is left are
+    archives from older versions, jobs that keep no state, and mail moved into a
+    folder with an internal date older than the snapshot. This is a last resort,
+    not part of the routine -- which is why it can afford to read the archive
+    itself rather than keep an index alongside it.
     """
     if not job.with_db:
         raise JobError(f"{job.name}: verify requires a job with 'with_db' enabled")
@@ -543,20 +531,25 @@ def verify(
 
     results: list[VerifyResult] = []
     log_root = store_path / metalog.DEFAULT_LOG_DIR
+    places = _places_from_log(log_root)
     with session.open_mailbox(job) as mb:
         store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
-        with metadb.MetaDatabase(path=store_path / metadb.DEFAULT_DB_NAME) as db:
-            mb_id = db.add_mailbox(job.name)
-            folders = job.folders if job.folders else list(mb.folders())
-            for folder in folders:
-                try:
-                    results.append(
-                        _verify_folder(
-                            mb, db, store, mb_id, job.name, folder, log_root, repair=repair
-                        )
+        folders = job.folders if job.folders else list(mb.folders())
+        for folder in folders:
+            try:
+                results.append(
+                    _verify_folder(
+                        mb,
+                        store,
+                        log_root,
+                        places.get((job.name, folder), set()),
+                        job.name,
+                        folder,
+                        repair=repair,
                     )
-                except Exception as exc:
-                    log.error("%s::%s: verify failed: %s", job.name, folder, exc)
+                )
+            except Exception as exc:
+                log.error("%s::%s: verify failed: %s", job.name, folder, exc)
     return results
 
 
@@ -566,21 +559,28 @@ def folder_list(job: conf.JobConfig) -> None:
             print(f"{job.name}::{folder}")
 
 
-def rebuild_metadb(store_path: pathlib.Path, mailbox: str | None = None) -> RebuildResult:
-    """Rebuild the metadata database from the archive, then apply the metadata log.
+def create_db(
+    store_path: pathlib.Path, db_path: pathlib.Path, mailbox: str | None = None
+) -> RebuildResult:
+    """Build a queryable database from the archive and its log.
 
-    The archived messages supply everything a message carries in itself -- sender,
-    recipients, subject, date. Which mailbox and which folder it was seen in is
-    not in the message, so it comes from the log. Without a log that attribution
-    stays missing, which also leaves `verify` with nothing to compare against.
+    Not a rebuild of something the archive owns: the archive holds no database.
+    This makes one, wherever the caller asks for it, out of the two things that do
+    live there. The messages supply everything they carry in themselves -- sender,
+    recipients, subject, date -- and the log supplies the one thing they do not,
+    which mailbox and folder each was seen in.
+
+    What comes out is a snapshot. It is accurate for the moment it was built and
+    goes stale from the next backup onwards; build it again when that matters.
     """
     store = cas.ContentAddressedStorage(store_path, suffix=".eml")
     result = RebuildResult()
-    with metadb.MetaDatabase(path=store_path / metadb.DEFAULT_DB_NAME) as db:
+    with metadb.MetaDatabase(path=db_path) as db:
         mb_id = db.add_mailbox(mailbox) if mailbox else None
         for path in store.walk():
-            msg = store.read(path)
-            header = mailutils.decode_email_header(msg)
+            # Only the headers: everything this needs is in them, and the
+            # attachments behind them are 98% of the bytes.
+            header = mailutils.decode_email_header(store.read_header(path))
             from_addrs, to_addrs = mailutils.addresses(header)
             store_id = path.name.split(".")[0]
             email_id = mailutils.message_id(header)

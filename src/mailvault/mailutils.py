@@ -3,6 +3,7 @@ from __future__ import annotations
 import bisect
 import collections.abc
 import dataclasses
+import email.header
 import email.message
 import email.parser
 import email.policy
@@ -65,10 +66,35 @@ def addresses(msg: email.message.EmailMessage) -> tuple[set[str], set[str]]:
 
 
 def date(msg: email.message.EmailMessage) -> datetime | None:
-    date = msg.get("Date")
-    if date:
-        date = email.utils.parsedate_to_datetime(date)
-    return date
+    """Return the message's Date, or None when the header cannot be read at all.
+
+    Nineties mail sometimes RFC 2047-encodes the whole Date header, comment and
+    all, which the date parser refuses outright:
+
+        =?iso-8859-1?Q?Thu=2C_18_Dec_1997_22=3A03=3A34_+0100_=28=28ME?=
+        =?iso-8859-1?Q?Z=29_Mitteleurop=E4ische_Zeit=29?=
+
+    Decoding the encoded words first turns that back into a perfectly ordinary
+    `Thu, 18 Dec 1997 22:03:34 +0100 ((MEZ) Mitteleuropäische Zeit)`, so it is
+    worth a second attempt before giving up.
+
+    What still cannot be read yields None rather than an exception. Walking an
+    archive must not stop at one bad header: the date is one field of one
+    message, and losing it costs less than losing the run that found it.
+    """
+    value = msg.get("Date")
+    if not value:
+        return None
+    try:
+        return email.utils.parsedate_to_datetime(value)
+    except (ValueError, TypeError):
+        pass
+    try:
+        decoded = str(email.header.make_header(email.header.decode_header(value)))
+        return email.utils.parsedate_to_datetime(decoded)
+    except (ValueError, TypeError, LookupError, UnicodeDecodeError) as exc:
+        logging.warning("Unreadable Date header %r: %s", value, exc)
+        return None
 
 
 def message_id(msg: email.message.EmailMessage) -> str:

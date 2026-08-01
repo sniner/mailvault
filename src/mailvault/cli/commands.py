@@ -116,22 +116,20 @@ def _human_size(size: int) -> str:
     return f"{value:.1f} {unit}"
 
 
-def report_bootstrap(source: pathlib.Path, result: jobs.BootstrapResult) -> None:
-    """Say what the export found, what it could place, and what it could not."""
-    if result.skipped:
-        print(f"{source}: already exported to the metadata log, nothing to do")
-        print(f"{source}: use --force to export the database again")
+def report_migration(source: pathlib.Path, result: jobs.MigrationResult) -> None:
+    """Say what was moved out of the database and what became of it."""
+    if not result.needed:
+        print(f"{source}: no metadata database, nothing to migrate")
         return
-    if not result.messages:
-        print(f"{source}: no messages in the metadata database, nothing to export")
-        return
-    if not result.written:
-        print(f"{source}: {result.messages:,} message(s) found but the log was not written")
+    if not result.verified:
+        print(f"{source}: the written log files did not verify, database left alone")
         return
     print(
-        f"{source}: {result.messages:,} message(s) exported to "
+        f"{source}: {result.messages:,} message(s) moved into "
         f"{result.places:,} mailbox/folder place(s)"
     )
+    if result.snapshots:
+        print(f"{source}: {result.snapshots:,} resume timestamp(s) moved into state.json")
     if result.placeless:
         print(
             f"{source}: {result.placeless:,} of them recorded without a folder -- the old "
@@ -142,32 +140,32 @@ def report_bootstrap(source: pathlib.Path, result: jobs.BootstrapResult) -> None
             f"{source}: {result.undecidable:,} folder name(s) fit more than one mailbox "
             f"and were left out rather than guessed"
         )
-    print(f"{source}: the location of each message now survives a damaged database")
+    if result.renamed_to is not None:
+        print(f"{source}: the database is now {result.renamed_to.name} and is no longer used")
+        print(f"{source}: delete it once you are satisfied with the archive")
 
 
-def report_rebuild(source: pathlib.Path, result: jobs.RebuildResult) -> None:
-    """Say what was rebuilt, and name what could not be."""
+def report_create_db(source: pathlib.Path, target: pathlib.Path, result) -> None:
+    """Say what went into the database, and name what could not."""
     replay = result.replay
     print(f"{source}: {result.messages:,} message(s) read from the archive")
     if replay.files:
         print(
             f"{source}: metadata log: {replay.files:,} file(s), "
-            f"{replay.applied:,} of {replay.entries:,} entry/entries applied"
+            f"{replay.applied:,} of {replay.entries:,} location(s) applied"
         )
         if replay.unknown:
             print(
                 f"{source}: {replay.unknown:,} log entry/entries name messages that are "
                 f"not in the archive, ignored"
             )
-        print(f"{source}: database rebuilt including mailbox and folder attribution")
-        return
-    print(f"{source}: no metadata log found, mailbox and folder attribution NOT restored")
-    print(f"{source}: 'verify' cannot work against this database until it is")
-    print(f"{source}: run 'mailvault archive bootstrap-log' while the old database is intact")
+    else:
+        print(f"{source}: no metadata log found, mailbox and folder are NOT in the database")
+    print(f"{target}: written -- a snapshot, stale from the next backup onwards")
 
 
 def run_archive(args: argparse.Namespace) -> int:
-    """Run an `archive` subcommand (stats/import/addresses/compress/rebuild-db/...)."""
+    """Run an `archive` subcommand (stats/import/addresses/compress/create-db/...)."""
     cmd = args.archive_command
 
     if cmd == "stats":
@@ -190,9 +188,10 @@ def run_archive(args: argparse.Namespace) -> int:
         store = cas.ContentAddressedStorage(args.source, suffix=".eml")
         decompressed, skipped = store.decompress_all()
         print(f"{args.source}: {decompressed:,} files decompressed, {skipped:,} already plain")
-    elif cmd == "rebuild-db":
-        report_rebuild(args.source, jobs.rebuild_metadb(args.source, mailbox=args.mailbox))
-    elif cmd == "bootstrap-log":
-        report_bootstrap(args.source, jobs.bootstrap_metalog(args.source, force=args.force))
+    elif cmd == "create-db":
+        result = jobs.create_db(args.source, args.database, mailbox=args.mailbox)
+        report_create_db(args.source, args.database, result)
+    elif cmd == "migrate":
+        report_migration(args.source, jobs.migrate_archive(args.source))
 
     return 0

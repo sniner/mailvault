@@ -293,3 +293,27 @@ class TestMessageIdIndex:
         archived = _long_id()
         index = mailutils.MessageIdIndex({archived})
         assert archived + "-more" not in index
+
+
+def test_date_decodes_an_rfc2047_encoded_header():
+    """Nineties mail sometimes encodes the whole Date, comment and all."""
+    raw = (
+        b"From: a@example.com\r\n"
+        b"Date: =?iso-8859-1?Q?Thu=2C_18_Dec_1997_22=3A03=3A34_+0100_=28=28ME?="
+        b" =?iso-8859-1?Q?Z=29_Mitteleurop=E4ische_Zeit=29?=\r\n"
+        b"\r\n"
+    )
+    header = mailutils.decode_email_header(raw)
+
+    parsed = mailutils.date(header)
+
+    assert parsed is not None
+    assert parsed.year == 1997 and parsed.month == 12 and parsed.day == 18
+
+
+def test_date_returns_none_for_a_header_beyond_repair(caplog):
+    raw = b"From: a@example.com\r\nDate: yesterday afternoon\r\n\r\n"
+    header = mailutils.decode_email_header(raw)
+
+    assert mailutils.date(header) is None
+    assert "Unreadable Date header" in caplog.text

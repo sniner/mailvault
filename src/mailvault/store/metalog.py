@@ -134,6 +134,16 @@ def has_logs(root: pathlib.Path) -> bool:
     return bool(log_files(root))
 
 
+def verify_file(path: pathlib.Path) -> bool:
+    """True when a file's content still matches the name it was stored under."""
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        log.warning("%s: unreadable: %s", path, exc)
+        return False
+    return hashlib.sha384(raw).hexdigest() == path.name.removesuffix(".jsonl")
+
+
 def bootstrap_done(root: pathlib.Path) -> bool:
     """True when a bootstrap export has run to completion for this archive."""
     return (root / BOOTSTRAP_MARKER).exists()

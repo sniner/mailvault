@@ -69,8 +69,8 @@ class TestBackup:
             or call_kwargs[1].get("callback") is not None
         )
 
-        # DB should exist
-        assert (tmp_path / "store.db").exists()
+        # A backup writes no database at all any more.
+        assert not (tmp_path / "store.db").exists()
 
     def test_backup_without_db(self, tmp_path):
         job = _make_job(with_db=False, folders=["INBOX", "Sent"])
@@ -165,10 +165,9 @@ class TestBackup:
 
             jobs.backup(job, tmp_path)
 
-        # Verify metadata was stored
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
-            row = db.execute("SELECT * FROM message WHERE store_id='abc123'").fetchone()
-            assert row is not None
+        logs = list(metalog.read_all(tmp_path / "meta"))
+        assert [(f.mailbox, f.folder) for f in logs] == [("test-job", "INBOX")]
+        assert logs[0].store_ids == ["abc123"]
 
     def test_snapshot_advances_on_clean_run(self, tmp_path):
         job = _make_job(with_db=True, folders=["INBOX"])
@@ -181,10 +180,8 @@ class TestBackup:
 
             jobs.backup(job, tmp_path)
 
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
-            mb_id = db.add_mailbox("test-job")
-            label_id = db.add_label("INBOX")
-            assert db.get_snapshot_date(mb_id, label_id) is not None
+        s = state.SnapshotState.load(tmp_path / "state.json")
+        assert s.get_date("test-job", "INBOX") is not None
 
     def test_snapshot_frozen_on_failed_downloads(self, tmp_path):
         """A failed download must not be hidden behind an advanced snapshot."""
@@ -192,11 +189,9 @@ class TestBackup:
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult(total=3, stored=2, failed=1)
         old_snapshot = datetime(2026, 2, 1, tzinfo=UTC)
-
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
-            db.set_snapshot(
-                db.add_mailbox("test-job"), db.add_label("INBOX"), date=old_snapshot
-            )
+        s = state.SnapshotState(tmp_path / "state.json")
+        s.set_date("test-job", "INBOX", old_snapshot)
+        s.save()
 
         with patch("mailvault.jobs.session.open_mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -204,10 +199,10 @@ class TestBackup:
 
             jobs.backup(job, tmp_path)
 
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
-            mb_id = db.add_mailbox("test-job")
-            label_id = db.add_label("INBOX")
-            assert db.get_snapshot_date(mb_id, label_id) == old_snapshot
+        assert (
+            state.SnapshotState.load(tmp_path / "state.json").get_date("test-job", "INBOX")
+            == old_snapshot
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -333,10 +328,7 @@ class TestSnapshotStateFile:
         with patch.object(state.SnapshotState, "save", side_effect=OSError("read-only")):
             self._run(job, mock_client, tmp_path)
 
-        assert "snapshot state not written" in caplog.text
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
-            mb_id = db.add_mailbox("test-job")
-            assert db.get_snapshot_date(mb_id, db.add_label("INBOX")) is not None
+        assert "resume state not written" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -448,55 +440,55 @@ class TestMetadataLog:
         assert metalog.log_files(tmp_path / "meta") == before
 
 
-class TestBootstrapMetalog:
-    def test_exports_the_attribution_of_an_existing_database(self, tmp_path):
+class TestMigration:
+    def test_moves_locations_out_of_an_existing_database(self, tmp_path):
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
             msg_id = db.add_message("aaa", "<a@example.com>", None, "Subject")
             for mailbox in ("job-a", "job-b"):
                 db.assign_message_to_mailbox(msg_id, db.add_mailbox(mailbox))
             db.add_message_labels(msg_id, "INBOX", "\\Sent")
 
-        result = jobs.bootstrap_metalog(tmp_path)
+        result = jobs.migrate_archive(tmp_path)
 
+        assert result.needed is True
+        assert result.verified is True
         assert result.messages == 1
-        assert result.written is True
         places = {(f.mailbox, f.folder) for f in metalog.read_all(tmp_path / "meta")}
         assert places == {("job-a", None), ("job-b", None)}
+        # Renamed, never deleted -- the name says which artefact counts.
+        assert not (tmp_path / "store.db").exists()
+        assert (tmp_path / "store.db.migrated").exists()
 
-    def test_skips_an_archive_that_was_already_exported(self, tmp_path):
+    def test_a_second_run_has_nothing_to_do(self, tmp_path):
+        """The absence of store.db is what says "already migrated"."""
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
             msg_id = db.add_message("aaa", "<a@example.com>", None, "Subject")
             db.assign_message_to_mailbox(msg_id, db.add_mailbox("job-a"))
-        jobs.bootstrap_metalog(tmp_path)
+        jobs.migrate_archive(tmp_path)
 
-        result = jobs.bootstrap_metalog(tmp_path)
+        result = jobs.migrate_archive(tmp_path)
 
-        assert result.skipped is True
+        assert result.needed is False
         assert len(metalog.log_files(tmp_path / "meta")) == 1
 
-    def test_partial_export_is_retried_because_the_marker_is_missing(self, tmp_path):
-        """Log files alone must not be read as "already done"."""
+    def test_an_interrupted_migration_is_simply_repeated(self, tmp_path):
+        """store.db still there means not done -- exporting twice is harmless."""
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
             msg_id = db.add_message("aaa", "<a@example.com>", None, "Subject")
             db.assign_message_to_mailbox(msg_id, db.add_mailbox("job-a"))
-        jobs.bootstrap_metalog(tmp_path)
-        (tmp_path / "meta" / metalog.BOOTSTRAP_MARKER).unlink()
+        jobs.migrate_archive(tmp_path)
+        # Put it back, as if the rename had never happened.
+        (tmp_path / "store.db.migrated").rename(tmp_path / "store.db")
 
-        result = jobs.bootstrap_metalog(tmp_path)
+        result = jobs.migrate_archive(tmp_path)
 
-        assert result.skipped is False
-        assert result.messages == 1
-
-    def test_force_exports_again(self, tmp_path):
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
-            msg_id = db.add_message("aaa", "<a@example.com>", None, "Subject")
-            db.assign_message_to_mailbox(msg_id, db.add_mailbox("job-a"))
-        jobs.bootstrap_metalog(tmp_path)
-
-        result = jobs.bootstrap_metalog(tmp_path, force=True)
-
-        assert result.skipped is False
+        assert result.needed is True
+        assert result.verified is True
+        # A second file, because its header carries a later date -- and harmless,
+        # because it says the same thing and replaying it is idempotent.
         assert len(metalog.log_files(tmp_path / "meta")) == 2
+        places = {(f.mailbox, f.folder) for f in metalog.read_all(tmp_path / "meta")}
+        assert places == {("job-a", None)}
 
     def test_folder_is_placed_by_elimination_when_nothing_witnesses_it(self, tmp_path):
         """A folder only ever seen on messages in two mailboxes has no witness.
@@ -519,7 +511,7 @@ class TestBootstrapMetalog:
             db.assign_message_to_mailbox(solo, gmail)
             db.add_message_labels(solo, "\\Important")
 
-        result = jobs.bootstrap_metalog(tmp_path)
+        result = jobs.migrate_archive(tmp_path)
 
         assert result.undecidable == 0
         places = {
@@ -541,17 +533,16 @@ class TestBootstrapMetalog:
             db.assign_message_to_mailbox(msg, second)
             db.add_message_labels(msg, "INBOX")
 
-        result = jobs.bootstrap_metalog(tmp_path)
+        result = jobs.migrate_archive(tmp_path)
 
         assert result.undecidable == 1
         places = {(f.mailbox, f.folder) for f in metalog.read_all(tmp_path / "meta")}
         assert places == {("a.example.org", None), ("b.example.org", None)}
 
-    def test_empty_database_exports_nothing(self, tmp_path):
-        result = jobs.bootstrap_metalog(tmp_path)
+    def test_archive_without_a_database_needs_nothing(self, tmp_path):
+        result = jobs.migrate_archive(tmp_path)
 
-        assert result.messages == 0
-        assert result.written is False
+        assert result.needed is False
         assert not metalog.has_logs(tmp_path / "meta")
 
 
@@ -571,14 +562,14 @@ class TestRebuildWithLog:
     def test_replay_restores_mailbox_and_labels(self, tmp_path):
         store_id = self._archive_with_log(tmp_path, [("mail.example.org", ["INBOX", "\\Sent"])])
 
-        result = jobs.rebuild_metadb(tmp_path)
+        result = jobs.create_db(tmp_path, tmp_path / "out.db")
 
         # Two places -- one file each -- so the message is applied twice.
         assert result.messages == 1
         assert result.replay.files == 2
         assert result.replay.applied == 2
         assert result.replay.unknown == 0
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with metadb.MetaDatabase(tmp_path / "out.db") as db:
             msg_id = db.store_id_map()[store_id]
             assert db.message_mailboxes()[msg_id] == ["mail.example.org"]
             assert sorted(db.get_message_labels(msg_id)) == ["INBOX", "\\Sent"]
@@ -588,9 +579,9 @@ class TestRebuildWithLog:
             tmp_path, [("mail.example.org", ["INBOX"]), ("other.example.org", ["INBOX"])]
         )
 
-        jobs.rebuild_metadb(tmp_path)
+        jobs.create_db(tmp_path, tmp_path / "out.db")
 
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with metadb.MetaDatabase(tmp_path / "out.db") as db:
             msg_id = db.store_id_map()[store_id]
             assert sorted(db.message_mailboxes()[msg_id]) == [
                 "mail.example.org",
@@ -603,18 +594,18 @@ class TestRebuildWithLog:
         writer.add("job", ["INBOX"], "deadbeef")
         writer.seal(datetime(2026, 8, 1, tzinfo=UTC))
 
-        result = jobs.rebuild_metadb(tmp_path)
+        result = jobs.create_db(tmp_path, tmp_path / "out.db")
 
         assert result.replay.unknown == 1
         assert result.replay.applied == 0
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with metadb.MetaDatabase(tmp_path / "out.db") as db:
             assert db.store_id_map() == {}
 
     def test_rebuild_without_a_log_reports_no_files(self, tmp_path):
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
         store.add(DUMMY_EML)
 
-        result = jobs.rebuild_metadb(tmp_path)
+        result = jobs.create_db(tmp_path, tmp_path / "out.db")
 
         assert result.messages == 1
         assert result.replay.files == 0
@@ -640,10 +631,9 @@ def _archive_message(store_path, job_name: str, folder: str, msg: bytes) -> None
     """Put a message into the archive the way a successful backup would."""
     store = cas.ContentAddressedStorage(store_path, suffix=".eml")
     _status, store_id, _path = store.add(msg)
-    with metadb.MetaDatabase(store_path / "store.db") as db:
-        mb_id = db.add_mailbox(job_name)
-        writer = jobs._metadata_writer(db, mb_id)
-        writer(mailutils.metadata(msg, mailbox=job_name, folder=folder, store_id=store_id))
+    writer = metalog.LogWriter(store_path / metalog.DEFAULT_LOG_DIR)
+    writer.add(job_name, [folder], store_id)
+    writer.seal(datetime.now(UTC))
 
 
 def _verify_client(index: list[base.MessageRef], bodies: dict[str, bytes]):
@@ -706,10 +696,10 @@ class TestVerify:
 
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
         assert len(list(store.walk())) == 2
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
-            mb_id = db.add_mailbox("test-job")
-            known = db.get_known_message_ids(mb_id, db.add_label("INBOX"))
-            assert known == {"a@example.com", "b@example.com"}
+        # The restored message reached the log too, not just the archive.
+        places = jobs._places_from_log(tmp_path / metalog.DEFAULT_LOG_DIR)
+        known = jobs._archived_message_ids(store, places[("test-job", "INBOX")])
+        assert known == {"a@example.com", "b@example.com"}
 
     def test_repair_is_idempotent(self, tmp_path):
         """A second verify run right after a repair must find nothing."""
@@ -939,9 +929,9 @@ class TestUpdateDbFromArchive:
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
         store.add(DUMMY_EML)
 
-        jobs.rebuild_metadb(tmp_path, mailbox="test")
+        jobs.create_db(tmp_path, tmp_path / "out.db", mailbox="test")
 
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with metadb.MetaDatabase(tmp_path / "out.db") as db:
             rows = db.execute("SELECT * FROM message").fetchall()
             assert len(rows) == 1
 
@@ -949,9 +939,9 @@ class TestUpdateDbFromArchive:
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
         store.add(DUMMY_EML)
 
-        jobs.rebuild_metadb(tmp_path)
+        jobs.create_db(tmp_path, tmp_path / "out.db")
 
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with metadb.MetaDatabase(tmp_path / "out.db") as db:
             rows = db.execute("SELECT * FROM message").fetchall()
             assert len(rows) == 1
             # No mailbox assignment

@@ -191,35 +191,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     a_decomp.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
-    a_rebuild = asub.add_parser(
-        "rebuild-db",
-        help="Rebuild the metadata database from the archive",
+    a_create = asub.add_parser(
+        "create-db",
+        help="Build a queryable database from the archive",
         description=(
-            "Rebuild the metadata database by reading all archive items and applying"
-            " the metadata log. Without a log the mailbox and folder attribution"
-            " cannot be restored, because it is not part of the message itself."
+            "Build an SQLite database from the archived messages and the metadata"
+            " log, for querying with SQL. The archive itself holds no database:"
+            " what this writes is a snapshot, accurate for the moment it was built"
+            " and stale from the next backup onwards."
         ),
     )
-    a_rebuild.add_argument(
-        "--mailbox", type=str, help="Mailbox identifier (matching a config entry)"
+    a_create.add_argument(
+        "--mailbox", type=str, help="Mailbox identifier for messages the log does not place"
     )
-    a_rebuild.add_argument("source", type=pathlib.Path, help="Email archive directory")
+    a_create.add_argument("source", type=pathlib.Path, help="Email archive directory")
+    a_create.add_argument("database", type=pathlib.Path, help="Database file to write")
 
-    a_bootstrap = asub.add_parser(
-        "bootstrap-log",
-        help="Export the metadata database into the metadata log",
+    a_migrate = asub.add_parser(
+        "migrate",
+        help="Move an older archive off its metadata database",
         description=(
-            "Write the mailbox and folder attribution held in the metadata database"
-            " into the append-only metadata log, so it survives a damaged database."
-            " Runs automatically on the next backup when no log exists yet."
+            "Move the resume timestamps and the mailbox/folder locations out of an"
+            " archive's store.db and into state.json and the metadata log. The"
+            " database is not deleted, it is renamed to store.db.migrated and no"
+            " longer used. Runs automatically at the start of a backup; this"
+            " command only lets you do it deliberately."
         ),
     )
-    a_bootstrap.add_argument(
-        "--force",
-        action="store_true",
-        help="Export again even though a metadata log already exists",
-    )
-    a_bootstrap.add_argument("source", type=pathlib.Path, help="Email archive directory")
+    a_migrate.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
     return parser
 
