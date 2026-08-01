@@ -51,8 +51,8 @@ def _make_mock_client():
 
 
 class TestBackup:
-    def test_backup_with_db(self, tmp_path):
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+    def test_backup_records_to_the_log(self, tmp_path):
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult(total=5, stored=5)
 
@@ -72,8 +72,8 @@ class TestBackup:
         # A backup writes no database at all any more.
         assert not (tmp_path / "store.db").exists()
 
-    def test_backup_without_db(self, tmp_path):
-        job = _make_job(with_metadata=False, folders=["INBOX", "Sent"])
+    def test_backup_writes_no_database(self, tmp_path):
+        job = _make_job(folders=["INBOX", "Sent"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
 
@@ -86,10 +86,11 @@ class TestBackup:
         assert mock_client.folder_backup.call_count == 2
         assert not (tmp_path / "store.db").exists()
 
-    def test_backup_without_db_no_folders(self, tmp_path):
-        job = _make_job(with_metadata=False)  # folders=None -> full_backup
+    def test_without_folders_every_folder_of_the_mailbox_is_backed_up(self, tmp_path):
+        job = _make_job()  # folders=None
         mock_client = _make_mock_client()
-        mock_client.full_backup.return_value = None
+        mock_client.folders.return_value = iter(["INBOX", "Sent", "Archive"])
+        mock_client.folder_backup.return_value = base.BackupResult()
 
         with patch("mailvault.jobs.session.open_mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -97,10 +98,30 @@ class TestBackup:
 
             jobs.backup(job, tmp_path)
 
-        mock_client.full_backup.assert_called_once()
+        assert mock_client.folder_backup.call_count == 3
+
+    def test_one_broken_folder_does_not_stop_the_backup(self, tmp_path):
+        """A folder that cannot be read costs that folder, not the run."""
+        job = _make_job(folders=["Broken", "INBOX"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = [
+            OSError("connection reset"),
+            base.BackupResult(total=1, stored=1),
+        ]
+
+        with patch("mailvault.jobs.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            jobs.backup(job, tmp_path)
+
+        assert mock_client.folder_backup.call_count == 2
+        s = state.SnapshotState.load(tmp_path / "state.json")
+        assert s.get_date("test-job", "Broken") is None
+        assert s.get_date("test-job", "INBOX") is not None
 
     def test_backup_incremental_uses_snapshot(self, tmp_path):
-        job = _make_job(with_metadata=True, folders=["INBOX"], incremental=True)
+        job = _make_job(folders=["INBOX"], incremental=True)
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
 
@@ -122,7 +143,7 @@ class TestBackup:
         assert since == snapshot_date
 
     def test_backup_non_incremental_ignores_snapshot(self, tmp_path):
-        job = _make_job(with_metadata=True, folders=["INBOX"], incremental=False)
+        job = _make_job(folders=["INBOX"], incremental=False)
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
 
@@ -137,7 +158,7 @@ class TestBackup:
         assert since is None
 
     def test_backup_db_stores_metadata(self, tmp_path):
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
 
         def fake_folder_backup(folder_name, store, since=None, callback=None):
@@ -170,7 +191,7 @@ class TestBackup:
         assert logs[0].store_ids == ["abc123"]
 
     def test_snapshot_advances_on_clean_run(self, tmp_path):
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult(total=3, stored=3)
 
@@ -185,7 +206,7 @@ class TestBackup:
 
     def test_snapshot_frozen_on_failed_downloads(self, tmp_path):
         """A failed download must not be hidden behind an advanced snapshot."""
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult(total=3, stored=2, failed=1)
         old_snapshot = datetime(2026, 2, 1, tzinfo=UTC)
@@ -226,7 +247,7 @@ class TestSnapshotStateFile:
         return call_kwargs.kwargs.get("since") or call_kwargs[1].get("since")
 
     def test_state_file_written_on_clean_run(self, tmp_path):
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult(total=3, stored=3)
 
@@ -236,7 +257,7 @@ class TestSnapshotStateFile:
         assert s.get_date("test-job", "INBOX") is not None
 
     def test_state_file_frozen_on_failed_downloads(self, tmp_path):
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult(total=3, stored=2, failed=1)
 
@@ -247,7 +268,7 @@ class TestSnapshotStateFile:
 
     def test_state_file_takes_precedence_over_database(self, tmp_path):
         """The state file is the durable copy, so it decides where a run resumes."""
-        job = _make_job(with_metadata=True, folders=["INBOX"], incremental=True)
+        job = _make_job(folders=["INBOX"], incremental=True)
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
 
@@ -265,7 +286,7 @@ class TestSnapshotStateFile:
 
     def test_database_snapshot_is_adopted_when_state_file_is_absent(self, tmp_path):
         """Upgrading an existing archive must not trigger a full re-fetch."""
-        job = _make_job(with_metadata=True, folders=["INBOX"], incremental=True)
+        job = _make_job(folders=["INBOX"], incremental=True)
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
 
@@ -281,7 +302,7 @@ class TestSnapshotStateFile:
 
     def test_all_database_snapshots_are_adopted_at_once(self, tmp_path):
         """One run must carry over every folder, not just the ones it visits."""
-        job = _make_job(with_metadata=True, folders=["INBOX"], incremental=True)
+        job = _make_job(folders=["INBOX"], incremental=True)
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
 
@@ -300,7 +321,7 @@ class TestSnapshotStateFile:
         assert s.get_date("test-job", "INBOX") > untouched
 
     def test_adoption_never_overwrites_an_existing_state_file(self, tmp_path):
-        job = _make_job(with_metadata=True, folders=["INBOX"], incremental=True)
+        job = _make_job(folders=["INBOX"], incremental=True)
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
 
@@ -321,7 +342,7 @@ class TestSnapshotStateFile:
 
     def test_unwritable_state_file_does_not_abort_the_run(self, tmp_path, caplog):
         """Losing the state file costs bandwidth later, never the run in progress."""
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult(total=1, stored=1)
 
@@ -373,7 +394,7 @@ class TestMetadataLog:
             jobs.backup(job, tmp_path)
 
     def test_backup_records_mailbox_and_folder(self, tmp_path):
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.side_effect = _fake_folder_backup("aaa", "bbb")
 
@@ -386,7 +407,7 @@ class TestMetadataLog:
         assert logs[0].store_ids == ["aaa", "bbb"]
 
     def test_unchanged_folder_writes_no_log(self, tmp_path):
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
 
@@ -396,7 +417,7 @@ class TestMetadataLog:
 
     def test_failed_folder_is_logged_but_snapshot_is_not_advanced(self, tmp_path):
         """Stored messages keep their attribution; only progress is withheld."""
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.side_effect = _fake_folder_backup("aaa", failed=1)
 
@@ -415,7 +436,7 @@ class TestMetadataLog:
             db.assign_message_to_mailbox(msg_id, mb_id)
             db.add_message_labels(msg_id, "Archiv/2016")
 
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
 
@@ -428,7 +449,7 @@ class TestMetadataLog:
         assert logs[0].store_ids == ["old"]
 
     def test_existing_log_is_not_bootstrapped_again(self, tmp_path):
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.side_effect = _fake_folder_backup("aaa")
         self._run(job, mock_client, tmp_path)
@@ -682,7 +703,7 @@ def _verify_client(index: list[base.MessageRef], bodies: dict[str, bytes]):
 
 class TestVerify:
     def test_reports_missing_messages(self, tmp_path):
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+        job = _make_job(folders=["INBOX"])
         archived = _eml("<a@example.com>", "Archived")
         _archive_message(tmp_path, "test-job", "INBOX", archived)
 
@@ -707,7 +728,7 @@ class TestVerify:
         client.fetch_message.assert_not_called()
 
     def test_repair_fetches_and_stores(self, tmp_path):
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+        job = _make_job(folders=["INBOX"])
         archived = _eml("<a@example.com>", "Archived")
         lost = _eml("<b@example.com>", "Lost")
         _archive_message(tmp_path, "test-job", "INBOX", archived)
@@ -740,7 +761,7 @@ class TestVerify:
 
     def test_repair_is_idempotent(self, tmp_path):
         """A second verify run right after a repair must find nothing."""
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+        job = _make_job(folders=["INBOX"])
         lost = _eml("<b@example.com>", "Lost")
         index = [base.MessageRef(msg_id="id-b", message_id="<b@example.com>")]
 
@@ -759,7 +780,7 @@ class TestVerify:
         client.fetch_message.assert_not_called()
 
     def test_message_id_matching_ignores_brackets_and_case(self, tmp_path):
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+        job = _make_job(folders=["INBOX"])
         _archive_message(tmp_path, "test-job", "INBOX", _eml("<Mixed@Example.COM>"))
 
         client = _verify_client(
@@ -774,7 +795,7 @@ class TestVerify:
         assert results[0].missing == 0
 
     def test_download_failure_is_counted(self, tmp_path):
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+        job = _make_job(folders=["INBOX"])
         client = _make_mock_client()
         client.message_index.return_value = iter(
             [base.MessageRef(msg_id="id-b", message_id="<b@example.com>")]
@@ -792,7 +813,7 @@ class TestVerify:
         assert results[0].failed == 1
 
     def test_verify_leaves_snapshot_untouched(self, tmp_path):
-        job = _make_job(with_metadata=True, folders=["INBOX"])
+        job = _make_job(folders=["INBOX"])
         old_snapshot = datetime(2026, 2, 1, tzinfo=UTC)
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
             db.set_snapshot(
@@ -810,18 +831,13 @@ class TestVerify:
             mb_id = db.add_mailbox("test-job")
             assert db.get_snapshot_date(mb_id, db.add_label("INBOX")) == old_snapshot
 
-    def test_requires_db(self, tmp_path):
-        job = _make_job(with_metadata=False, folders=["INBOX"])
-        with pytest.raises(jobs.JobError, match="with_metadata"):
-            jobs.verify(job, tmp_path)
-
     def test_rejects_exchange_journal(self, tmp_path):
-        job = _make_job(with_metadata=True, exchange_journal=True, folders=["INBOX"])
+        job = _make_job(exchange_journal=True, folders=["INBOX"])
         with pytest.raises(jobs.JobError, match="exchange_journal"):
             jobs.verify(job, tmp_path)
 
     def test_one_broken_folder_does_not_stop_the_rest(self, tmp_path):
-        job = _make_job(with_metadata=True, folders=["Broken", "INBOX"])
+        job = _make_job(folders=["Broken", "INBOX"])
         client = _make_mock_client()
 
         def index(folder, since=None):

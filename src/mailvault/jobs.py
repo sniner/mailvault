@@ -369,37 +369,48 @@ def _backup_to_log(
     log_root = store_path / metalog.DEFAULT_LOG_DIR
     folders = job.folders if job.folders else mb.folders()
     for folder in folders:
-        start_date = snapshot_state.get_date(job.name, folder) if job.incremental else None
-        snapshot_date = datetime.now(UTC)
-        log_writer = metalog.LogWriter(log_root)
-        result = mb.folder_backup(
-            folder, store, since=start_date, callback=_location_writer(log_writer)
+        try:
+            _backup_folder(mb, store, job, folder, snapshot_state, log_root)
+        except Exception as exc:
+            # One folder that cannot be read must not cost the remaining ones;
+            # its snapshot simply does not advance and the next run tries again.
+            log.error("%s::%s: backup failed: %s", job.name, folder, exc)
+
+
+def _backup_folder(
+    mb: base.MailboxClient,
+    store: cas.ContentAddressedStorage,
+    job: conf.JobConfig,
+    folder: str,
+    snapshot_state: state.SnapshotState,
+    log_root: pathlib.Path,
+) -> None:
+    """Back up one folder, recording where its messages were seen."""
+    start_date = snapshot_state.get_date(job.name, folder) if job.incremental else None
+    snapshot_date = datetime.now(UTC)
+    log_writer = metalog.LogWriter(log_root)
+    result = mb.folder_backup(
+        folder, store, since=start_date, callback=_location_writer(log_writer)
+    )
+    _seal_log(log_writer, snapshot_date)
+    if result.complete:
+        _record_snapshot(snapshot_state, job.name, folder, snapshot_date)
+    else:
+        # Advancing the snapshot now would push the failed messages
+        # out of every future date filter, losing them permanently.
+        log.warning(
+            "%s::%s: %s of %s message(s) failed, snapshot not advanced",
+            job.name,
+            folder,
+            result.failed,
+            result.total,
         )
-        _seal_log(log_writer, snapshot_date)
-        if result.complete:
-            _record_snapshot(snapshot_state, job.name, folder, snapshot_date)
-        else:
-            # Advancing the snapshot now would push the failed messages
-            # out of every future date filter, losing them permanently.
-            log.warning(
-                "%s::%s: %s of %s message(s) failed, snapshot not advanced",
-                job.name,
-                folder,
-                result.failed,
-                result.total,
-            )
 
 
 def backup(job: conf.JobConfig, store_path: pathlib.Path, compress: bool = False) -> None:
     with session.open_mailbox(job) as mb:
         store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
-        if job.with_metadata:
-            _backup_to_log(mb, store, job, store_path)
-        elif job.folders:
-            for folder in job.folders:
-                mb.folder_backup(folder, store)
-        else:
-            mb.full_backup(store)
+        _backup_to_log(mb, store, job, store_path)
 
 
 def _places_from_log(log_root: pathlib.Path) -> dict[tuple[str, str | None], set[str]]:
@@ -526,8 +537,6 @@ def verify(
     not part of the routine -- which is why it can afford to read the archive
     itself rather than keep an index alongside it.
     """
-    if not job.with_metadata:
-        raise JobError(f"{job.name}: verify requires a job with 'with_metadata' enabled")
     if job.exchange_journal:
         raise JobError(
             f"{job.name}: verify does not support 'exchange_journal' jobs, because the"

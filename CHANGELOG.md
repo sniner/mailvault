@@ -24,6 +24,13 @@
   adds to it. The database is built through a temporary file beside the target, so an
   interrupted run leaves the previous one intact.
 
+- **The job option `with_db` is gone.** It existed because of the SQLite database:
+  106 MB rewritten in place on every run was worth switching off. What remains in
+  its place is a few kilobytes of immutable files, while turning it off would
+  disable incremental backups and `verify` -- which is not what anyone wants from
+  an option about metadata. A configuration that still sets it says so on load,
+  rather than having the field quietly dropped as if it were a typo
+
 ### Added
 
 - **`meta/`, an append-only record of where each message was seen.** One file is one place:
@@ -39,11 +46,6 @@
 - **`archive migrate <archive>`** moves an older archive off its database, as described above
 
 ### Changed
-
-- **The job option `with_db` is now `with_metadata`.** There is no database to
-  have, and the option decides whether a backup records anything about its messages
-  at all. The old name keeps working with a warning, so an existing configuration
-  keeps meaning what it said rather than quietly reverting to the default
 
 - **`verify` no longer needs a database.** It reads which messages are archived for a folder
   from the log and their Message-IDs from the messages themselves

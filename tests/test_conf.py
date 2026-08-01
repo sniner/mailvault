@@ -47,7 +47,6 @@ def test_load_all_job_defaults(tmp_path):
     assert job.ignore_folder_names == []
     assert job.delete_after_export is False
     assert job.exchange_journal is False
-    assert job.with_metadata is True
     assert job.incremental is True
     assert job.move_to_archive is False
 
@@ -235,7 +234,6 @@ class TestTomlConfig:
             "tls = false\n"
             'folders = ["INBOX", "Sent"]\n'
             'ignore_folder_flags = ["Junk"]\n'
-            "with_metadata = false\n"
             "incremental = false\n"
         )
         config = conf.load(toml_file)
@@ -245,7 +243,6 @@ class TestTomlConfig:
         assert job.tls is False
         assert job.folders == ["INBOX", "Sent"]
         assert job.ignore_folder_flags == ["Junk"]
-        assert job.with_metadata is False
         assert job.incremental is False
 
     def test_load_toml_env_expansion(self, tmp_path, monkeypatch):
@@ -290,8 +287,8 @@ class TestTomlConfig:
         assert config.jobs == []
 
 
-def test_with_db_still_works_and_says_so(tmp_path, caplog):
-    """An old config must keep meaning what it said, not revert to a default."""
+def test_a_retired_option_is_reported_rather_than_ignored(tmp_path, caplog):
+    """A dropped field is otherwise indistinguishable from a typo."""
     path = tmp_path / "old.toml"
     path.write_text(
         '[[job]]\nname = "j"\nserver = "s"\nusername = "u"\npassword = "p"\nwith_db = false\n',
@@ -300,16 +297,19 @@ def test_with_db_still_works_and_says_so(tmp_path, caplog):
 
     config = conf.load(path)
 
-    assert config.jobs[0].with_metadata is False
-    assert "renamed to 'with_metadata'" in caplog.text
+    assert len(config.jobs) == 1
+    assert "'with_db' no longer exists" in caplog.text
+    assert "metadata is always recorded" in caplog.text
 
 
-def test_the_new_name_wins_when_both_are_given(tmp_path):
-    path = tmp_path / "both.toml"
+def test_the_later_name_is_reported_too(tmp_path, caplog):
+    path = tmp_path / "old.toml"
     path.write_text(
         '[[job]]\nname = "j"\nserver = "s"\nusername = "u"\npassword = "p"\n'
-        "with_db = false\nwith_metadata = true\n",
+        "with_metadata = false\n",
         encoding="utf-8",
     )
 
-    assert conf.load(path).jobs[0].with_metadata is True
+    conf.load(path)
+
+    assert "'with_metadata' no longer exists" in caplog.text

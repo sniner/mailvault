@@ -165,9 +165,8 @@ example.org: 43 of 43 message(s) restored
 Messages are matched by their `Message-ID`. A message whose `Message-ID` is
 missing or ambiguous is treated as not archived and fetched again, which is
 harmless: the content-addressed storage recognizes the duplicate and discards
-it. `verify` requires a job with `with_metadata = true` and does not support
-`exchange_journal` jobs, because there the archived message and the server's
-journal envelope carry different `Message-ID`s.
+it. `verify` does not support `exchange_journal` jobs, because there the archived
+message and the server's journal envelope carry different `Message-ID`s.
 
 `verify` is a last resort, not routine. A folder whose downloads partly failed
 does not advance its snapshot, so the next ordinary backup fetches it again by
@@ -543,23 +542,22 @@ with a warning.
 | `tls_verify_cert` | `true` | Verify the TLS certificate |
 | `exchange_journal` | `false` | Extract original emails from MS Exchange journal messages |
 | `delete_after_export` | `false` | Delete emails from the server after export (use with caution) |
-| `with_metadata` | `true` | Record where each message was seen, and where the next run resumes |
-| `incremental` | `true` | Only download messages added since the last backup run (requires `with_metadata`) |
+| `incremental` | `true` | Only download messages added since the last backup run |
 | `max_retries` | `5` | Retries for failed MS Graph requests (throttling, gateway and connection errors) |
 | `compress` | `false` | Compress stored emails with zstd (global option) |
 
 
 ## Metadata
 
-When `with_metadata` is enabled (the default), a backup records where each
-message was seen, into `meta/`, and where the next run should resume, into
-`state.json`. That is all it writes besides the messages themselves -- there is
-no database in the archive, and nothing is modified in place. See
+Besides the messages, a backup records two things: where each message was seen,
+into `meta/`, and where the next run should resume, into `state.json`. That is
+all -- there is no database in the archive, and nothing is modified in place. See
 [Why an archive holds no database](#why-an-archive-holds-no-database).
 
-Turning it off stores the messages and nothing else. Such a job cannot run
-incrementally and cannot be checked with `verify`, since both need to know what
-was already fetched.
+This is not optional. Both files are small, immutable or atomically replaced, and
+they are what makes an incremental backup and `verify` possible at all. The
+option that used to switch them off (`with_db`, later `with_metadata`) existed
+because of the SQLite database, and went with it.
 
 To query an archive with SQL, build a database from it when you need one: see
 [Querying an archive with SQL](#querying-an-archive-with-sql).
