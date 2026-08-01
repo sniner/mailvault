@@ -2,67 +2,76 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- **An archive no longer contains a database.** `store.db` held the only record of which
+  mailbox and folder each message was seen in, and it is a SQLite file rewritten in place --
+  over SMB or NFS a torn write can take the whole thing with it. That record now lives in an
+  append-only log inside the archive, and a backup writes nothing that is modified in place.
+
+  Existing archives are migrated automatically at the start of the next backup, or explicitly
+  with `mailvault archive migrate <archive>`. Nothing is deleted: the database is renamed to
+  `store.db.migrated` and no longer used, so it remains as a fallback until you remove it. The
+  migration is idempotent and can be repeated.
+
+- **`archive rebuild-db` is now `archive create-db <archive> <database>`**, and the destination
+  is an argument rather than a fixed place inside the archive. It is not a rebuild -- the
+  archive has no database to restore -- it builds one wherever you want it, out of the archived
+  messages and the log. What it produces is a snapshot: accurate when built, stale from the
+  next backup onwards. Build it again when that matters.
+
+  An existing file is refused unless `--force` is given, and `--force` replaces rather than
+  adds to it. The database is built through a temporary file beside the target, so an
+  interrupted run leaves the previous one intact.
+
 ### Added
 
-- **The archive now carries an append-only metadata log under `meta/`.** It records where each
-  message was seen -- which mailbox, and which folder within it -- the only part of the
-  metadata database that cannot be recovered from the archived `.eml` files, since subject,
-  sender, recipients and date are all in the message itself. **One file is one place:** the
-  header names a mailbox and a folder, the lines name the messages seen there, so a message
-  belonging to several places simply appears in several files and is never ambiguous. Files are
-  written once and never modified, so a damaged database no longer loses that record
+- **`meta/`, an append-only record of where each message was seen.** One file is one place:
+  its header names a mailbox and a folder, its lines name the messages seen there. A message
+  belonging to several places appears in several files and is never ambiguous. Like the mail
+  itself it is content-addressed, so every file carries its own integrity check -- `sha384sum`
+  against the filename settles it, with no knowledge of the format required
 
-- **`mailvault archive create-db <archive> <database>` refuses an existing file** and needs
-  `--force` to replace one. Filling a database that is already there would make the result an
-  accumulation rather than the snapshot it is meant to be: rows from an earlier run stay even
-  when the archive no longer yields them, and a correction to how a header is read never
-  reaches them. `--force` replaces, it does not add. The database is built through a temporary
-  file beside the target, so an interrupted run leaves the previous one intact
+- **`state.json`, where the next incremental run picks up.** The per-folder timestamps that
+  used to live in the database, replaced only atomically, so an interrupted or torn write
+  cannot destroy them
 
-- **`mailvault archive bootstrap-log <archive>`** exports the locations held in an existing
-  metadata database into the log, so archives created by earlier versions are protected. It
-  also runs automatically at the start of the next backup when an archive has not been exported
-  yet. Use `--force` to export again.
-
-  The old schema stored which mailboxes and which folders a message has as two independent
-  relations, so the pairing between them was never recorded; the export reconstructs it, and
-  reports how much it could not decide rather than guessing. Where a mailbox is known but the
-  folder is not, that is recorded as such
-
-- **The snapshot state of an archive is now also kept in `store.json`**, next to `store.db`.
-  It holds the per-folder timestamps that decide where the next incremental run resumes, and
-  is only ever replaced atomically, so an interrupted or torn write cannot destroy it. The
-  metadata database is a SQLite file rewritten in place, which is a real hazard on SMB and NFS
-  shares; the state file is what makes an incremental backup survive a damaged database
+- **`archive migrate <archive>`** moves an older archive off its database, as described above
 
 ### Changed
 
-- **An incremental run reads its start date from `store.json` when that file knows the folder**,
-  and falls back to the metadata database otherwise. Existing archives therefore need no
-  migration: the first run after upgrading adopts *every* timestamp already in the database --
-  not only the folders that run happens to visit -- so the state file is complete straight
-  away and nothing is re-fetched. A state file that already holds something is never
-  overwritten from the database
+- **`verify` no longer needs a database.** It reads which messages are archived for a folder
+  from the log and their Message-IDs from the messages themselves
 
-- **A snapshot state file that cannot be written no longer aborts the run.** The problem is
-  logged and the backup continues, because the database still holds the timestamp and the
-  archived mail is unaffected
+- **Gmail folders are taken from `X-GM-LABELS` alone.** The IMAP folder name is a localised
+  view of what Gmail already reports canonically -- `[Google Mail]/Gesendet` is `\Sent` -- so
+  recording both stored one place twice, in a spelling that differed per account. A message
+  carrying no label of its own is now recorded as being in `\All`; previously it was archived
+  with no location at all
 
-- **`archive rebuild-db` now applies the metadata log** and reports what it restored. Without
-  a log it says so plainly, because the rebuilt database then lacks the mailbox and folder
-  attribution that `verify` compares against
-
-- **Gmail folders are now taken from `X-GM-LABELS` alone.** The IMAP folder name is a localised
-  view of what Gmail already reports canonically -- `[Google Mail]/Gesendet` on a German account
-  is `\Sent` -- so recording both stored one place twice, in a spelling that differed per
-  account. A message carrying no label of its own is recorded as being in `\All`, which stands
-  in for "All Mail"; previously such a message was archived with no location at all
+- **Reading a message's headers no longer reads the message.** Anything that only needs headers
+  stops at the blank line, which on a real archive is one to five per cent of the bytes
 
 ### Fixed
 
-- **Labels added to a message were lost when nothing else was written afterwards.**
-  `add_message_labels` left its rows uncommitted and relied on a later call to commit them, so
-  the labels of the last message written on a connection could be dropped silently
+- **A message whose headers could not be parsed was dropped from the metadata entirely.** An
+  exception while *reading* a field was treated as a failure to *store* the message, though it
+  was already archived -- so it got no record at all, stayed invisible to `verify`, and froze
+  the folder's snapshot in a way no retry could clear. Reading a field can no longer fail the
+  message, and the extraction of dates, subjects, Message-IDs and addresses reports and yields
+  nothing instead of raising
+
+- **Group addresses were recorded as an empty recipient.** `To: Undisclosed recipients:;` is
+  legal RFC 5322, and the classic address parser reports it as an empty address, which reached
+  the database as if it were one. Addresses are now read through the policy that understands
+  groups
+
+- **Dates that could not be parsed are recovered where that is unambiguous:** a header encoded
+  whole as an RFC 2047 word, a timezone glued to the time, a UTC offset beyond 24 hours. What
+  still cannot be read is stored as unknown rather than guessed at
+
+- **Labels added to a message were lost when nothing else was written afterwards**, because the
+  rows were left uncommitted in the expectation that a later call would commit them
 
 ## 0.7.0 (2026-08-01)
 
