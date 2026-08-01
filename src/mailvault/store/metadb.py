@@ -326,6 +326,39 @@ class MetaDatabaseConnection(DatabaseConnection):
                 (message_id, mailbox_id),
             )
 
+    def iter_messages(self) -> collections.abc.Iterator[tuple[int, str]]:
+        """Yield (message_id, store_id) for every archived message."""
+        for row in self.execute("SELECT message_id, store_id FROM message"):
+            yield row[0], row[1]
+
+    def store_id_map(self) -> dict[str, int]:
+        """Map every store_id to its message_id.
+
+        Built in one query because the alternative -- one lookup per log entry
+        while replaying -- costs a round trip per message over the whole archive.
+        """
+        return {store_id: message_id for message_id, store_id in self.iter_messages()}
+
+    def message_mailboxes(self) -> dict[int, list[str]]:
+        """Map message_id to the mailboxes it was seen in."""
+        return self._attribution(
+            "SELECT mm.message_id, mb.name FROM message_mailbox mm "
+            "JOIN mailbox mb USING (mailbox_id)"
+        )
+
+    def message_labels(self) -> dict[int, list[str]]:
+        """Map message_id to the labels it carries."""
+        return self._attribution(
+            "SELECT ml.message_id, l.name FROM message_label ml JOIN label l USING (label_id)"
+        )
+
+    def _attribution(self, statement: str) -> dict[int, list[str]]:
+        """Collect a (message_id, name) query into a mapping of lists."""
+        result: dict[int, list[str]] = {}
+        for message_id, name in self.execute(statement):
+            result.setdefault(message_id, []).append(name)
+        return result
+
     def get_known_message_ids(self, mailbox_id: int, label_id: int) -> set[str]:
         """Return the normalised Message-IDs archived for this mailbox and folder.
 
@@ -366,12 +399,17 @@ class MetaDatabaseConnection(DatabaseConnection):
         ]
 
     def add_message_labels(self, message_id: int, *label_names: str) -> None:
-        for label in label_names:
-            label_id = self.add_label(label)
-            self.execute(
-                "INSERT OR IGNORE INTO message_label(message_id, label_id) VALUES (?, ?)",
-                (message_id, label_id),
-            )
+        # The transaction is what commits these rows. Without it the inserts sat
+        # in the connection until some later call happened to commit them, and
+        # the labels added last -- with nothing following -- were lost when the
+        # connection closed. Every sibling method here is wrapped the same way.
+        with self.transaction():
+            for label in label_names:
+                label_id = self.add_label(label)
+                self.execute(
+                    "INSERT OR IGNORE INTO message_label(message_id, label_id) VALUES (?, ?)",
+                    (message_id, label_id),
+                )
 
     def update_message_labels(self, message_id: int, *label_names: str) -> None:
         with self.transaction():

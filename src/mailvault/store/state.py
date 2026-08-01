@@ -26,9 +26,10 @@ from __future__ import annotations
 import collections.abc
 import json
 import logging
-import os
 import pathlib
 from datetime import datetime
+
+from mailvault.store import atomic
 
 log = logging.getLogger(__name__)
 
@@ -38,27 +39,6 @@ DEFAULT_STATE_NAME = "store.json"
 # Payload format version, so a future change can be recognised rather than
 # guessed at. Readers reject what they do not know instead of misreading it.
 STATE_VERSION = 1
-
-
-def _sync_directory(path: pathlib.Path) -> None:
-    """Flush a directory entry so a rename survives a power loss.
-
-    Not every platform supports opening a directory for fsync -- Windows refuses,
-    and some network shares do not implement it. The rename itself is still
-    atomic there, so a failure only costs durability of the very last update and
-    is logged at debug level rather than raised.
-    """
-    try:
-        fd = os.open(path, os.O_RDONLY)
-    except OSError as exc:
-        log.debug("%s: directory not open-able for sync: %s", path, exc)
-        return
-    try:
-        os.fsync(fd)
-    except OSError as exc:
-        log.debug("%s: directory sync failed: %s", path, exc)
-    finally:
-        os.close(fd)
 
 
 class SnapshotState:
@@ -175,24 +155,8 @@ class SnapshotState:
                 yield mailbox, folder, self._snapshots[mailbox][folder]
 
     def save(self) -> None:
-        """Write the state to disk atomically, replacing any previous version.
-
-        Written to a temporary file in the same directory first: a rename is only
-        atomic within one filesystem, and the temporary file has to share the
-        destination's filesystem for that to hold.
-        """
+        """Write the state to disk atomically, replacing any previous version."""
         payload = {"version": STATE_VERSION, "snapshots": self._snapshots}
         body = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self.path.with_name(self.path.name + "._tmp_")
-        try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                f.write(body)
-                f.flush()
-                os.fsync(f.fileno())
-            tmp_path.replace(self.path)
-        except OSError:
-            tmp_path.unlink(missing_ok=True)
-            raise
-        _sync_directory(self.path.parent)
+        atomic.write_text(self.path, body)
         log.debug("%s: snapshot state written", self.path)

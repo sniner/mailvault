@@ -4,6 +4,17 @@
 
 ### Added
 
+- **The archive now carries an append-only metadata log under `meta/`.** It records which
+  mailbox and which folder each message was seen in -- the only part of the metadata database
+  that cannot be recovered from the archived `.eml` files, since subject, sender, recipients
+  and date are all in the message itself. One file per folder per run, written once and never
+  modified, so a damaged database no longer means losing that attribution permanently
+
+- **`mailvault archive bootstrap-log <archive>`** exports the mailbox and folder attribution
+  of an existing metadata database into the log, so archives created by earlier versions are
+  protected. This also runs automatically at the start of the next backup when an archive has
+  no log yet. Use `--force` to export again when a log already exists
+
 - **The snapshot state of an archive is now also kept in `store.json`**, next to `store.db`.
   It holds the per-folder timestamps that decide where the next incremental run resumes, and
   is only ever replaced atomically, so an interrupted or torn write cannot destroy it. The
@@ -22,6 +33,16 @@
 - **A snapshot state file that cannot be written no longer aborts the run.** The problem is
   logged and the backup continues, because the database still holds the timestamp and the
   archived mail is unaffected
+
+- **`archive rebuild-db` now applies the metadata log** and reports what it restored. Without
+  a log it says so plainly, because the rebuilt database then lacks the mailbox and folder
+  attribution that `verify` compares against
+
+### Fixed
+
+- **Labels added to a message were lost when nothing else was written afterwards.**
+  `add_message_labels` left its rows uncommitted and relied on a later call to commit them, so
+  the labels of the last message written on a connection could be dropped silently
 
 ## 0.7.0 (2026-08-01)
 

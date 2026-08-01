@@ -194,12 +194,32 @@ def build_parser() -> argparse.ArgumentParser:
     a_rebuild = asub.add_parser(
         "rebuild-db",
         help="Rebuild the metadata database from the archive",
-        description="Rebuild the metadata database by reading all archive items.",
+        description=(
+            "Rebuild the metadata database by reading all archive items and applying"
+            " the metadata log. Without a log the mailbox and folder attribution"
+            " cannot be restored, because it is not part of the message itself."
+        ),
     )
     a_rebuild.add_argument(
         "--mailbox", type=str, help="Mailbox identifier (matching a config entry)"
     )
     a_rebuild.add_argument("source", type=pathlib.Path, help="Email archive directory")
+
+    a_bootstrap = asub.add_parser(
+        "bootstrap-log",
+        help="Export the metadata database into the metadata log",
+        description=(
+            "Write the mailbox and folder attribution held in the metadata database"
+            " into the append-only metadata log, so it survives a damaged database."
+            " Runs automatically on the next backup when no log exists yet."
+        ),
+    )
+    a_bootstrap.add_argument(
+        "--force",
+        action="store_true",
+        help="Export again even though a metadata log already exists",
+    )
+    a_bootstrap.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
     return parser
 

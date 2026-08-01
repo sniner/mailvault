@@ -10,7 +10,7 @@ import pytest
 
 from mailvault import conf, jobs, mailutils
 from mailvault.backend import base
-from mailvault.store import cas, metadb, state
+from mailvault.store import cas, metadb, metalog, state
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -337,6 +337,223 @@ class TestSnapshotStateFile:
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
             mb_id = db.add_mailbox("test-job")
             assert db.get_snapshot_date(mb_id, db.add_label("INBOX")) is not None
+
+
+# ---------------------------------------------------------------------------
+# metadata log (meta/*.jsonl)
+# ---------------------------------------------------------------------------
+
+
+def _fake_folder_backup(*store_ids: str, failed: int = 0):
+    """Build a folder_backup stand-in that reports the given messages."""
+
+    def run(folder_name, store, since=None, callback=None):
+        for store_id in store_ids:
+            if callback:
+                callback(
+                    mailutils.MessageMetadata(
+                        mailbox="test-job",
+                        folder=folder_name,
+                        store_id=store_id,
+                        email_id=f"<{store_id}@example.com>",
+                        date=datetime(2026, 2, 20, tzinfo=UTC),
+                        subject="Test",
+                        labels=[folder_name],
+                        sender={"sender@example.com"},
+                        recipients={"recipient@example.com"},
+                    )
+                )
+        return base.BackupResult(
+            total=len(store_ids) + failed, stored=len(store_ids), failed=failed
+        )
+
+    return run
+
+
+class TestMetadataLog:
+    """The attribution the .eml files cannot carry has to reach the log."""
+
+    @staticmethod
+    def _run(job, mock_client, tmp_path) -> None:
+        with patch("mailvault.jobs.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+            jobs.backup(job, tmp_path)
+
+    def test_backup_records_mailbox_and_folder(self, tmp_path):
+        job = _make_job(with_db=True, folders=["INBOX"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = _fake_folder_backup("aaa", "bbb")
+
+        self._run(job, mock_client, tmp_path)
+
+        logs = list(metalog.read_all(tmp_path / "meta"))
+        assert len(logs) == 1
+        assert logs[0].mailbox == "test-job"
+        assert logs[0].folder == "INBOX"
+        assert [e.store_id for e in logs[0].entries] == ["aaa", "bbb"]
+        assert logs[0].entries[0].labels == ["INBOX"]
+
+    def test_unchanged_folder_writes_no_log(self, tmp_path):
+        job = _make_job(with_db=True, folders=["INBOX"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = base.BackupResult()
+
+        self._run(job, mock_client, tmp_path)
+
+        assert not metalog.has_logs(tmp_path / "meta")
+
+    def test_failed_folder_is_logged_but_snapshot_is_not_advanced(self, tmp_path):
+        """Stored messages keep their attribution; only progress is withheld."""
+        job = _make_job(with_db=True, folders=["INBOX"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = _fake_folder_backup("aaa", failed=1)
+
+        self._run(job, mock_client, tmp_path)
+
+        logs = list(metalog.read_all(tmp_path / "meta"))
+        assert len(logs) == 1
+        assert logs[0].complete is False
+        assert [e.store_id for e in logs[0].entries] == ["aaa"]
+        assert state.SnapshotState.load(tmp_path / "store.json").is_empty()
+
+    def test_existing_archive_is_bootstrapped_on_first_run(self, tmp_path):
+        """An archive filled by an earlier version is protected straight away."""
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+            mb_id = db.add_mailbox("old-job")
+            msg_id = db.add_message("old", "<old@example.com>", None, "Subject")
+            db.assign_message_to_mailbox(msg_id, mb_id)
+            db.add_message_labels(msg_id, "Archiv/2016")
+
+        job = _make_job(with_db=True, folders=["INBOX"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = base.BackupResult()
+
+        self._run(job, mock_client, tmp_path)
+
+        entries = [e for f in metalog.read_all(tmp_path / "meta") for e in f.entries]
+        assert len(entries) == 1
+        assert entries[0].store_id == "old"
+        assert entries[0].mailboxes == ["old-job"]
+        assert entries[0].labels == ["Archiv/2016"]
+
+    def test_existing_log_is_not_bootstrapped_again(self, tmp_path):
+        job = _make_job(with_db=True, folders=["INBOX"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = _fake_folder_backup("aaa")
+        self._run(job, mock_client, tmp_path)
+        before = metalog.log_files(tmp_path / "meta")
+
+        mock_client.folder_backup.side_effect = _fake_folder_backup()
+        self._run(job, mock_client, tmp_path)
+
+        assert metalog.log_files(tmp_path / "meta") == before
+
+
+class TestBootstrapMetalog:
+    def test_exports_the_attribution_of_an_existing_database(self, tmp_path):
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+            msg_id = db.add_message("aaa", "<a@example.com>", None, "Subject")
+            for mailbox in ("job-a", "job-b"):
+                db.assign_message_to_mailbox(msg_id, db.add_mailbox(mailbox))
+            db.add_message_labels(msg_id, "INBOX", "\\Sent")
+
+        result = jobs.bootstrap_metalog(tmp_path)
+
+        assert result.messages == 1
+        assert result.written is True
+        entry = next(iter(metalog.read_all(tmp_path / "meta"))).entries[0]
+        assert sorted(entry.mailboxes) == ["job-a", "job-b"]
+        assert sorted(entry.labels) == ["INBOX", "\\Sent"]
+
+    def test_skips_an_archive_that_already_has_a_log(self, tmp_path):
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+            db.add_message("aaa", "<a@example.com>", None, "Subject")
+        jobs.bootstrap_metalog(tmp_path)
+
+        result = jobs.bootstrap_metalog(tmp_path)
+
+        assert result.skipped is True
+        assert len(metalog.log_files(tmp_path / "meta")) == 1
+
+    def test_force_exports_again(self, tmp_path):
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+            db.add_message("aaa", "<a@example.com>", None, "Subject")
+        jobs.bootstrap_metalog(tmp_path)
+
+        result = jobs.bootstrap_metalog(tmp_path, force=True)
+
+        assert result.skipped is False
+        assert len(metalog.log_files(tmp_path / "meta")) == 2
+
+    def test_empty_database_exports_nothing(self, tmp_path):
+        result = jobs.bootstrap_metalog(tmp_path)
+
+        assert result.messages == 0
+        assert result.written is False
+        assert not metalog.has_logs(tmp_path / "meta")
+
+
+class TestRebuildWithLog:
+    """A rebuild has to restore what the .eml files cannot supply."""
+
+    @staticmethod
+    def _archive_with_log(tmp_path, mailboxes, labels):
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        _status, store_id, _path = store.add(DUMMY_EML)
+        writer = metalog.LogWriter(tmp_path / "meta")
+        writer.add(store_id, labels, mailboxes=mailboxes)
+        writer.seal(datetime(2026, 8, 1, tzinfo=UTC))
+        return store_id
+
+    def test_replay_restores_mailbox_and_labels(self, tmp_path):
+        store_id = self._archive_with_log(tmp_path, ["mail.example.org"], ["INBOX", "\\Sent"])
+
+        result = jobs.rebuild_metadb(tmp_path)
+
+        assert result.messages == 1
+        assert result.replay.applied == 1
+        assert result.replay.unknown == 0
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+            msg_id = db.store_id_map()[store_id]
+            assert db.message_mailboxes()[msg_id] == ["mail.example.org"]
+            assert sorted(db.get_message_labels(msg_id)) == ["INBOX", "\\Sent"]
+
+    def test_replay_restores_a_message_held_in_several_mailboxes(self, tmp_path):
+        store_id = self._archive_with_log(
+            tmp_path, ["mail.example.org", "other.example.org"], ["INBOX"]
+        )
+
+        jobs.rebuild_metadb(tmp_path)
+
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+            msg_id = db.store_id_map()[store_id]
+            assert sorted(db.message_mailboxes()[msg_id]) == [
+                "mail.example.org",
+                "other.example.org",
+            ]
+
+    def test_log_entries_for_absent_messages_are_counted_not_invented(self, tmp_path):
+        """A blob removed from the archive must not reappear as a database row."""
+        writer = metalog.LogWriter(tmp_path / "meta", mailbox="job", folder="INBOX")
+        writer.add("deadbeef", ["INBOX"])
+        writer.seal(datetime(2026, 8, 1, tzinfo=UTC))
+
+        result = jobs.rebuild_metadb(tmp_path)
+
+        assert result.replay.unknown == 1
+        assert result.replay.applied == 0
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+            assert db.store_id_map() == {}
+
+    def test_rebuild_without_a_log_reports_no_files(self, tmp_path):
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        store.add(DUMMY_EML)
+
+        result = jobs.rebuild_metadb(tmp_path)
+
+        assert result.messages == 1
+        assert result.replay.files == 0
 
 
 # ---------------------------------------------------------------------------

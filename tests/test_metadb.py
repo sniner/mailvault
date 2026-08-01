@@ -202,6 +202,18 @@ def test_store_db_delete_snapshot_all_labels(tmp_path):
         assert db.get_snapshot(mb_id, l2) is None
 
 
+def test_store_db_labels_are_committed_without_a_following_write(tmp_path):
+    """Labels added last must survive the connection closing."""
+    db_path = tmp_path / "test.db"
+    with metadb.MetaDatabase(db_path) as db:
+        msg_id = db.add_message("aaa", "<a@example.com>", None, "Subject")
+        db.add_message_labels(msg_id, "INBOX", "Archiv/2016")
+
+    with metadb.MetaDatabase(db_path) as db:
+        msg_id = db.store_id_map()["aaa"]
+        assert sorted(db.get_message_labels(msg_id)) == ["Archiv/2016", "INBOX"]
+
+
 def test_store_db_all_snapshots(tmp_path):
     db_path = tmp_path / "test.db"
     with metadb.MetaDatabase(db_path) as db:
