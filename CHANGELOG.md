@@ -80,6 +80,13 @@
 - **Labels added to a message were lost when nothing else was written afterwards**, because the
   rows were left uncommitted in the expectation that a later call would commit them
 
+- **A resume timestamp without a timezone could make a Microsoft 365 job skip mail.** Older
+  versions wrote local time without saying so; the Graph filter stamped it `Z`, so it was read
+  as UTC — one or two hours later than meant, and the mail that arrived in between was passed
+  over once and never looked at again. Such a timestamp is now read as the local time it is,
+  and the filter converts to UTC before labelling it as UTC. IMAP was never affected, since it
+  compares whole days with a day to spare
+
 ## 0.7.0 (2026-08-01)
 
 ### Breaking changes

@@ -7,7 +7,7 @@ import logging
 import re
 import time
 import urllib.parse
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -258,7 +258,10 @@ class MSGraphClient:
             "$orderby": "receivedDateTime asc",
         }
         if since:
-            since_str = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+            # The trailing Z says UTC, so the value has to actually be UTC.
+            # `astimezone` converts an aware value and reads a naive one as local
+            # time, which is what a naive one means here.
+            since_str = since.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             params["$filter"] = f"receivedDateTime ge {since_str}"
 
         yield from self._paginate(url, params)

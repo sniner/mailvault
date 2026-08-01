@@ -159,3 +159,34 @@ class TestEntries:
             ("a-job", "Sent"),
             ("b-job", "INBOX"),
         ]
+
+
+class TestTimezones:
+    def test_a_naive_timestamp_is_read_as_local_time(self, tmp_path):
+        """Older versions wrote datetime.now(), which means local time.
+
+        Left naive, a caller that stamps it `Z` would read it as UTC -- later
+        than meant -- and skip the mail that arrived in between.
+        """
+        path = tmp_path / "state.json"
+        _write(
+            path,
+            {
+                "version": state.STATE_VERSION,
+                "snapshots": {"job": {"INBOX": "2025-10-16T19:16:59.494153"}},
+            },
+        )
+
+        parsed = state.SnapshotState.load(path).get_date("job", "INBOX")
+
+        assert parsed is not None
+        assert parsed.tzinfo is not None
+        assert parsed.replace(tzinfo=None) == datetime(2025, 10, 16, 19, 16, 59, 494153)
+
+    def test_an_aware_timestamp_is_left_alone(self, tmp_path):
+        path = tmp_path / "state.json"
+        s = state.SnapshotState(path)
+        s.set_date("job", "INBOX", SNAPSHOT)
+        s.save()
+
+        assert state.SnapshotState.load(path).get_date("job", "INBOX") == SNAPSHOT

@@ -128,12 +128,20 @@ class SnapshotState:
         return not self._snapshots
 
     def get_date(self, mailbox: str, folder: str) -> datetime | None:
-        """Return the snapshot timestamp of one folder, or None when unknown."""
+        """Return the snapshot timestamp of one folder, or None when unknown.
+
+        A value without a timezone is read as local time, because that is what it
+        was: those entries were written by a version that used `datetime.now()`
+        rather than `datetime.now(UTC)`. Leaving them naive would let a caller
+        that stamps them `Z` read a local time as UTC -- an hour or two later than
+        meant, and mail that arrived in that window is skipped once and never
+        looked at again.
+        """
         value = self._snapshots.get(mailbox, {}).get(folder)
         if value is None:
             return None
         try:
-            return datetime.fromisoformat(value)
+            parsed = datetime.fromisoformat(value)
         except ValueError:
             log.warning(
                 "%s: %s::%s has an unparsable timestamp %r, treating as unknown",
@@ -143,6 +151,7 @@ class SnapshotState:
                 value,
             )
             return None
+        return parsed if parsed.tzinfo is not None else parsed.astimezone()
 
     def set_date(self, mailbox: str, folder: str, date: datetime) -> None:
         """Record the snapshot timestamp of one folder. Call save() to persist."""
