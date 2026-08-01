@@ -14,8 +14,10 @@
 
 - **An incremental run reads its start date from `store.json` when that file knows the folder**,
   and falls back to the metadata database otherwise. Existing archives therefore need no
-  migration: the first run after upgrading adopts the timestamps already in the database
-  without re-fetching anything
+  migration: the first run after upgrading adopts *every* timestamp already in the database --
+  not only the folders that run happens to visit -- so the state file is complete straight
+  away and nothing is re-fetched. A state file that already holds something is never
+  overwritten from the database
 
 - **A snapshot state file that cannot be written no longer aborts the run.** The problem is
   logged and the backup continues, because the database still holds the timestamp and the

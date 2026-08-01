@@ -202,6 +202,31 @@ def test_store_db_delete_snapshot_all_labels(tmp_path):
         assert db.get_snapshot(mb_id, l2) is None
 
 
+def test_store_db_all_snapshots(tmp_path):
+    db_path = tmp_path / "test.db"
+    with metadb.MetaDatabase(db_path) as db:
+        assert db.all_snapshots() == []
+
+        mb_id = db.add_mailbox("SnapMB")
+        db.set_snapshot(mb_id, db.add_label("INBOX"), date=datetime(2026, 1, 1))
+        db.set_snapshot(mb_id, db.add_label("Archiv/2016"), date=datetime(2026, 1, 2))
+
+        assert sorted(db.all_snapshots()) == [
+            ("SnapMB", "Archiv/2016", "2026-01-02T00:00:00"),
+            ("SnapMB", "INBOX", "2026-01-01T00:00:00"),
+        ]
+
+
+def test_store_db_all_snapshots_without_table(tmp_path):
+    """A database rebuilt without the snapshot table must not raise."""
+    db_path = tmp_path / "test.db"
+    with metadb.MetaDatabase(db_path) as db:
+        db.execute("DROP TABLE snapshot")
+        db.commit()
+
+        assert db.all_snapshots() == []
+
+
 def test_store_db_transaction_rollback(tmp_path):
     db_path = tmp_path / "test.db"
     with metadb.MetaDatabase(db_path) as db:

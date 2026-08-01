@@ -143,6 +143,10 @@ class SnapshotState:
                 snapshots[mailbox] = valid
         return snapshots
 
+    def is_empty(self) -> bool:
+        """True when no folder is recorded, i.e. a new or unusable state file."""
+        return not self._snapshots
+
     def get_date(self, mailbox: str, folder: str) -> datetime | None:
         """Return the snapshot timestamp of one folder, or None when unknown."""
         value = self._snapshots.get(mailbox, {}).get(folder)

@@ -416,6 +416,24 @@ class MetaDatabaseConnection(DatabaseConnection):
         ).fetchone()
         return dict(row) if row else None
 
+    def all_snapshots(self) -> list[tuple[str, str, str]]:
+        """Return (mailbox, folder, timestamp) for every snapshot in the database.
+
+        Used once per archive to carry the timestamps of an older archive over
+        into the state file. A missing table is not an error: it only exists in
+        databases written before the state file did, and a database rebuilt by a
+        current version no longer creates one.
+        """
+        try:
+            rows = self.execute(
+                "SELECT mb.name, l.name, s.date FROM snapshot s "
+                "JOIN mailbox mb USING (mailbox_id) JOIN label l USING (label_id)"
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            log.debug("No snapshot table to read: %s", exc)
+            return []
+        return [(row[0], row[1], row[2]) for row in rows]
+
     def set_snapshot(
         self, mailbox_id: int, label_id: int, date: datetime | None = None
     ) -> None:

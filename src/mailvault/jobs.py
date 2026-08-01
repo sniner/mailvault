@@ -95,6 +95,48 @@ def _record_snapshot(
         )
 
 
+def _adopt_database_snapshots(
+    snapshot_state: state.SnapshotState, db: metadb.MetaDatabaseConnection
+) -> None:
+    """Seed an empty state file from the snapshot table of an existing archive.
+
+    An archive written before the state file existed carries its timestamps only
+    in the database. They are copied across in one go rather than one folder per
+    run as folders happen to be visited, so the state file is complete after the
+    first run and the database stops being the load-bearing copy immediately.
+
+    Only ever fills an empty state file: a state file that already holds
+    something is the newer truth and must not be overwritten by the database.
+    """
+    if not snapshot_state.is_empty():
+        return
+    adopted = 0
+    for mailbox, folder, timestamp in db.all_snapshots():
+        try:
+            snapshot_state.set_date(mailbox, folder, datetime.fromisoformat(timestamp))
+        except ValueError:
+            log.warning(
+                "%s::%s: unparsable snapshot %r in the database, skipped",
+                mailbox,
+                folder,
+                timestamp,
+            )
+            continue
+        adopted += 1
+    if not adopted:
+        return
+    try:
+        snapshot_state.save()
+    except OSError as exc:
+        log.error("%s: snapshot state not written: %s", snapshot_state.path, exc)
+        return
+    log.info(
+        "%s: adopted %s snapshot(s) from the metadata database",
+        snapshot_state.path,
+        adopted,
+    )
+
+
 def _backup_with_db(
     mb: base.MailboxClient,
     store: cas.ContentAddressedStorage,
@@ -104,6 +146,7 @@ def _backup_with_db(
     """Back up the selected folders, recording metadata and snapshot state."""
     snapshot_state = state.SnapshotState.load(store_path / state.DEFAULT_STATE_NAME)
     with metadb.MetaDatabase(path=store_path / metadb.DEFAULT_DB_NAME) as db:
+        _adopt_database_snapshots(snapshot_state, db)
         mb_id = db.add_mailbox(job.name)
         _store_metadata = _metadata_writer(db, mb_id)
         folders = job.folders if job.folders else mb.folders()

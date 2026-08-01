@@ -284,6 +284,46 @@ class TestSnapshotStateFile:
         adopted = state.SnapshotState.load(tmp_path / "store.json")
         assert adopted.get_date("test-job", "INBOX") is not None
 
+    def test_all_database_snapshots_are_adopted_at_once(self, tmp_path):
+        """One run must carry over every folder, not just the ones it visits."""
+        job = _make_job(with_db=True, folders=["INBOX"], incremental=True)
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = base.BackupResult()
+
+        untouched = datetime(2026, 2, 1, tzinfo=UTC)
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+            mb_id = db.add_mailbox("test-job")
+            for folder in ("INBOX", "Sent", "Archiv/2016"):
+                db.set_snapshot(mb_id, db.add_label(folder), date=untouched)
+
+        self._run(job, mock_client, tmp_path)
+
+        s = state.SnapshotState.load(tmp_path / "store.json")
+        assert s.get_date("test-job", "Sent") == untouched
+        assert s.get_date("test-job", "Archiv/2016") == untouched
+        # The visited folder advanced, the others kept the adopted timestamp.
+        assert s.get_date("test-job", "INBOX") > untouched
+
+    def test_adoption_never_overwrites_an_existing_state_file(self, tmp_path):
+        job = _make_job(with_db=True, folders=["INBOX"], incremental=True)
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = base.BackupResult()
+
+        current = datetime(2026, 6, 1, tzinfo=UTC)
+        stale = datetime(2026, 1, 1, tzinfo=UTC)
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+            db.set_snapshot(db.add_mailbox("test-job"), db.add_label("Sent"), date=stale)
+        s = state.SnapshotState(tmp_path / "store.json")
+        s.set_date("test-job", "Sent", current)
+        s.save()
+
+        self._run(job, mock_client, tmp_path)
+
+        assert (
+            state.SnapshotState.load(tmp_path / "store.json").get_date("test-job", "Sent")
+            == current
+        )
+
     def test_unwritable_state_file_does_not_abort_the_run(self, tmp_path, caplog):
         """Losing the state file costs bandwidth later, never the run in progress."""
         job = _make_job(with_db=True, folders=["INBOX"])
