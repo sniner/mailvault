@@ -566,7 +566,10 @@ def folder_list(job: conf.JobConfig) -> None:
 
 
 def create_db(
-    store_path: pathlib.Path, db_path: pathlib.Path, mailbox: str | None = None
+    store_path: pathlib.Path,
+    db_path: pathlib.Path,
+    mailbox: str | None = None,
+    force: bool = False,
 ) -> RebuildResult:
     """Build a queryable database from the archive and its log.
 
@@ -578,9 +581,40 @@ def create_db(
 
     What comes out is a snapshot. It is accurate for the moment it was built and
     goes stale from the next backup onwards; build it again when that matters.
+
+    An existing file is refused unless `force` is given, and `force` replaces it
+    rather than adding to it. Writing into a database that is already there would
+    make the result an accumulation instead of a snapshot -- rows from an earlier
+    run stay even when the archive no longer yields them, and a correction to how
+    a header is read would never reach them.
+
+    Built through a temporary file beside the target and renamed at the end, the
+    same discipline the archive uses. An interrupted run leaves no half-built
+    database where a whole one is expected, and the previous one survives it.
     """
+    if db_path.exists() and not force:
+        raise JobError(f"{db_path}: already exists, use --force to replace it")
     store = cas.ContentAddressedStorage(store_path, suffix=".eml")
     result = RebuildResult()
+    tmp_path = db_path.with_name(db_path.name + "._tmp_")
+    tmp_path.unlink(missing_ok=True)
+    try:
+        _build_db(store, store_path, tmp_path, mailbox, result)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    tmp_path.replace(db_path)
+    return result
+
+
+def _build_db(
+    store: cas.ContentAddressedStorage,
+    store_path: pathlib.Path,
+    db_path: pathlib.Path,
+    mailbox: str | None,
+    result: RebuildResult,
+) -> None:
+    """Fill a fresh database from the archive and its log."""
     with metadb.MetaDatabase(path=db_path) as db:
         mb_id = db.add_mailbox(mailbox) if mailbox else None
         # One transaction per batch, not per message. Every write method commits
@@ -608,7 +642,6 @@ def create_db(
             log.info("%s: %s message(s) read", store_path, result.messages)
 
         result.replay = _replay_metalog(db, store_path / metalog.DEFAULT_LOG_DIR)
-    return result
 
 
 def _format_archive_folder(template: str) -> str:

@@ -189,7 +189,9 @@ def run_archive(args: argparse.Namespace) -> int:
         decompressed, skipped = store.decompress_all()
         print(f"{args.source}: {decompressed:,} files decompressed, {skipped:,} already plain")
     elif cmd == "create-db":
-        result = jobs.create_db(args.source, args.database, mailbox=args.mailbox)
+        result = jobs.create_db(
+            args.source, args.database, mailbox=args.mailbox, force=args.force
+        )
         report_create_db(args.source, args.database, result)
     elif cmd == "migrate":
         report_migration(args.source, jobs.migrate_archive(args.source))

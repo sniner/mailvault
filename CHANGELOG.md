@@ -12,6 +12,13 @@
   belonging to several places simply appears in several files and is never ambiguous. Files are
   written once and never modified, so a damaged database no longer loses that record
 
+- **`mailvault archive create-db <archive> <database>` refuses an existing file** and needs
+  `--force` to replace one. Filling a database that is already there would make the result an
+  accumulation rather than the snapshot it is meant to be: rows from an earlier run stay even
+  when the archive no longer yields them, and a correction to how a header is read never
+  reaches them. `--force` replaces, it does not add. The database is built through a temporary
+  file beside the target, so an interrupted run leaves the previous one intact
+
 - **`mailvault archive bootstrap-log <archive>`** exports the locations held in an existing
   metadata database into the log, so archives created by earlier versions are protected. It
   also runs automatically at the start of the next backup when an archive has not been exported

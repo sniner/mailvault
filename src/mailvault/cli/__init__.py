@@ -15,7 +15,7 @@ import logging
 import pathlib
 import sys
 
-from mailvault import conf
+from mailvault import conf, jobs
 from mailvault.cli import commands
 
 log = logging.getLogger(__name__)
@@ -204,6 +204,9 @@ def build_parser() -> argparse.ArgumentParser:
     a_create.add_argument(
         "--mailbox", type=str, help="Mailbox identifier for messages the log does not place"
     )
+    a_create.add_argument(
+        "--force", action="store_true", help="Replace the database file if it already exists"
+    )
     a_create.add_argument("source", type=pathlib.Path, help="Email archive directory")
     a_create.add_argument("database", type=pathlib.Path, help="Database file to write")
 
@@ -253,9 +256,9 @@ def main() -> int:
     except KeyboardInterrupt:
         log.warning("Interrupted!")
         exit_code = 130
-    except conf.ConfigError as exc:
-        # A broken or missing config file is a user error, not a crash: report
-        # it as one line instead of a traceback.
+    except (conf.ConfigError, jobs.JobError) as exc:
+        # A broken config or a refused operation is a user error, not a crash:
+        # report it as one line instead of a traceback.
         log.error("%s", exc)
         exit_code = 1
     except Exception as exc:

@@ -601,6 +601,43 @@ class TestRebuildWithLog:
         with metadb.MetaDatabase(tmp_path / "out.db") as db:
             assert db.store_id_map() == {}
 
+    def test_an_existing_database_is_refused(self, tmp_path):
+        """ "create" creates; filling an existing file would make it an accumulation."""
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        store.add(DUMMY_EML)
+        target = tmp_path / "out.db"
+        jobs.create_db(tmp_path, target)
+
+        with pytest.raises(jobs.JobError, match="already exists"):
+            jobs.create_db(tmp_path, target)
+
+    def test_force_replaces_rather_than_adds(self, tmp_path):
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        store.add(DUMMY_EML)
+        target = tmp_path / "out.db"
+        jobs.create_db(tmp_path, target)
+        with metadb.MetaDatabase(target) as db:
+            db.add_message("stale", "<stale@example.com>", None, "Gone from the archive")
+
+        jobs.create_db(tmp_path, target, force=True)
+
+        with metadb.MetaDatabase(target) as db:
+            assert "stale" not in db.store_id_map()
+
+    def test_an_interrupted_build_leaves_the_previous_database_alone(self, tmp_path):
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        store.add(DUMMY_EML)
+        target = tmp_path / "out.db"
+        jobs.create_db(tmp_path, target)
+        before = target.read_bytes()
+
+        with patch("mailvault.jobs._replay_metalog", side_effect=KeyboardInterrupt):
+            with pytest.raises(KeyboardInterrupt):
+                jobs.create_db(tmp_path, target, force=True)
+
+        assert target.read_bytes() == before
+        assert not (tmp_path / "out.db._tmp_").exists()
+
     def test_rebuild_without_a_log_reports_no_files(self, tmp_path):
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
         store.add(DUMMY_EML)
