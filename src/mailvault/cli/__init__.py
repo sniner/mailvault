@@ -15,6 +15,7 @@ import logging
 import pathlib
 import sys
 
+from mailvault import conf
 from mailvault.cli import commands
 
 log = logging.getLogger(__name__)
@@ -68,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         type=pathlib.Path,
-        help="Configuration file (YAML or TOML); required by folders/backup/verify/copy",
+        help="Configuration file (TOML); required by folders/backup/verify/copy",
     )
     parser.add_argument(
         "--allow-exec",
@@ -233,6 +234,11 @@ def main() -> int:
     except KeyboardInterrupt:
         log.warning("Interrupted!")
         exit_code = 130
+    except conf.ConfigError as exc:
+        # A broken or missing config file is a user error, not a crash: report
+        # it as one line instead of a traceback.
+        log.error("%s", exc)
+        exit_code = 1
     except Exception as exc:
         log.exception("Fatal error: %s", exc)
         exit_code = 1

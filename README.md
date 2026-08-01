@@ -15,25 +15,26 @@
 After years of Python packaging being an adventure in its own right --
 virtualenvs, pip, pipx, setup.py, setuptools, poetry, and whatever else came
 and went -- [uv](https://docs.astral.sh/uv/) has finally brought sanity to the
-table. The recommended way to install `mailvault` is straight from the
-repository:
+table. The recommended way to install `mailvault` is from
+[PyPI](https://pypi.org/project/mailvault/):
 
 ```console
-$ uv tool install git+https://github.com/sniner/mailvault
+$ uv tool install mailvault
 ```
 
 This installs the `mailvault` command into an isolated environment and makes it
 available on your `PATH` -- no manual virtualenv juggling required. Support for
-Microsoft 365 mailboxes via MS Graph is built in; no extra is needed.
+Microsoft 365 mailboxes via MS Graph is built in; no extra is needed. If you
+prefer other tooling, `pipx install mailvault` or `pip install mailvault` work
+just as well.
 
-Add `@v0.6.0` to the URL to pin a specific release:
+To pin a specific release, or to install the current development state straight
+from the repository:
 
 ```console
-$ uv tool install "git+https://github.com/sniner/mailvault@v0.6.0"
+$ uv tool install mailvault==0.7.0
+$ uv tool install git+https://github.com/sniner/mailvault
 ```
-
-> **Note:** this project is not published on PyPI. Install from this repository
-> or from the release artifacts, not from PyPI.
 
 Wheels and pre-compiled Windows executables are also available on the
 [GitHub Releases](https://github.com/sniner/mailvault/releases) page.
@@ -294,10 +295,10 @@ replaced MIME multipart delimiters.
 
 ## Configuration file
 
-`mailvault` accepts configuration files in TOML or YAML format. TOML is
-recommended for new configurations. The `copy` subcommand requires TOML.
+`mailvault` reads its configuration from a TOML file. The file name is
+irrelevant -- the content is always parsed as TOML.
 
-### TOML format
+### Basic example
 
 A simple example for Google Mail:
 
@@ -379,19 +380,6 @@ compress = true
 name = "gmail.com"
 server = "imap.gmail.com"
 # ...
-```
-
-### YAML format
-
-The same Google Mail example in YAML:
-
-```yaml
-gmail.com:
-    server: "imap.gmail.com"
-    username: "john.doe@gmail.com"
-    password: "123456"
-    folders:
-        - All Mail
 ```
 
 ### Dynamic values

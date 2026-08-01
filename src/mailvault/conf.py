@@ -8,8 +8,6 @@ import re
 import subprocess
 import tomllib
 
-import yaml
-
 log = logging.getLogger(__name__)
 
 VALID_BACKENDS = ("imap", "msgraph")
@@ -164,30 +162,21 @@ class Config:
 
         return cls(jobs=jobs, **known_global)
 
-    @classmethod
-    def from_yaml(cls, data: dict, allow_exec: bool = False) -> Config:
-        # The legacy YAML format is a flat mapping of job-name -> job-config; it
-        # has no `global` section, so global options like `compress` are only
-        # available via TOML (see from_toml). Kept for backwards compatibility.
-        jobs = [
-            JobConfig.from_dict(name, content, allow_exec=allow_exec)
-            for name, content in data.items()
-        ]
-        return cls(jobs=jobs)
-
 
 def load(path: pathlib.Path | str, allow_exec: bool = False) -> Config:
-    path = pathlib.Path(path)
-    suffix = path.suffix.lower()
+    """Load a TOML configuration file.
 
-    if suffix == ".toml":
+    The file name does not matter -- the content is always parsed as TOML.
+    """
+    path = pathlib.Path(path)
+    try:
         with open(path, "rb") as f:
             data = tomllib.load(f)
-        return Config.from_toml(data, allow_exec=allow_exec)
-    else:
-        with open(path, encoding="utf-8-sig") as f:
-            data = yaml.safe_load(f)
-        return Config.from_yaml(data, allow_exec=allow_exec)
+    except OSError as exc:
+        raise ConfigError(f"{path}: cannot read configuration: {exc.strerror or exc}") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"{path}: not a valid TOML configuration: {exc}") from exc
+    return Config.from_toml(data, allow_exec=allow_exec)
 
 
 def find(configs: list[JobConfig], key: str, value: str) -> JobConfig | None:

@@ -1,16 +1,41 @@
 [project]
 name = "mailvault"
-version = "0.6.0"
+version = "0.7.0"
 description = "Back up and archive email from IMAP and Microsoft 365 (Graph) mailboxes"
 authors = [{ name = "Stefan Schönberger", email = "stefan@sniner.dev" }]
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE.md"]
+keywords = ["imap", "email", "backup", "archive", "microsoft365", "msgraph"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: System Administrators",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Email",
+    "Topic :: System :: Archiving :: Backup",
+]
 requires-python = ">=3.11"
 dependencies = [
     "imapclient",
-    "pyyaml",
     "zstandard",
     "msal",
     "httpx",
 ]
+
+[project.urls]
+Homepage = "https://github.com/sniner/mailvault"
+Repository = "https://github.com/sniner/mailvault"
+Issues = "https://github.com/sniner/mailvault/issues"
+Changelog = "https://github.com/sniner/mailvault/blob/main/CHANGELOG.md"
+
+[build-system]
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
 
 [dependency-groups]
 dev = [

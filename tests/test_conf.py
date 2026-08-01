@@ -27,26 +27,14 @@ def test_find_tolerates_none_values():
 
 
 # ---------------------------------------------------------------------------
-# YAML loading
+# Config loading
 # ---------------------------------------------------------------------------
 
 
-def test_load_yaml(tmp_path):
-    yaml_file = tmp_path / "test.yaml"
-    yaml_file.write_text("job1:\n  server: a.example.com\njob2:\n  server: b.example.com\n")
-    config = conf.load(yaml_file)
-    assert isinstance(config, conf.Config)
-    assert len(config.jobs) == 2
-    assert config.jobs[0].name == "job1"
-    assert config.jobs[0].server == "a.example.com"
-    assert config.jobs[1].name == "job2"
-    assert config.jobs[1].server == "b.example.com"
-
-
-def test_load_yaml_defaults(tmp_path):
-    yaml_file = tmp_path / "test.yaml"
-    yaml_file.write_text("job1:\n  username: user\n  password: pass\n")
-    config = conf.load(yaml_file)
+def test_load_all_job_defaults(tmp_path):
+    toml_file = tmp_path / "test.toml"
+    toml_file.write_text('[[job]]\nname = "job1"\nusername = "user"\npassword = "pass"\n')
+    config = conf.load(toml_file)
     assert config.compress is False
     job = config.jobs[0]
     assert job.server == "localhost"
@@ -64,12 +52,35 @@ def test_load_yaml_defaults(tmp_path):
     assert job.move_to_archive is False
 
 
-def test_load_yaml_unknown_fields_ignored(tmp_path):
-    yaml_file = tmp_path / "test.yaml"
-    yaml_file.write_text("job1:\n  server: test\n  unknown_field: 42\n")
-    config = conf.load(yaml_file)
+def test_load_unknown_job_fields_ignored(tmp_path):
+    toml_file = tmp_path / "test.toml"
+    toml_file.write_text('[[job]]\nname = "job1"\nserver = "test"\nunknown_field = 42\n')
+    config = conf.load(toml_file)
     assert config.jobs[0].server == "test"
     assert not hasattr(config.jobs[0], "unknown_field")
+
+
+def test_load_ignores_file_extension(tmp_path):
+    # The content is always parsed as TOML, whatever the file is called.
+    cfg_file = tmp_path / "test.conf"
+    cfg_file.write_text('[[job]]\nname = "job1"\nserver = "imap.example.com"\n')
+    config = conf.load(cfg_file)
+    assert config.jobs[0].server == "imap.example.com"
+
+
+def test_load_rejects_non_toml(tmp_path):
+    # A leftover YAML config must fail loudly, not be silently misread.
+    yaml_file = tmp_path / "test.yaml"
+    yaml_file.write_text("job1:\n  server: a.example.com\n")
+    with pytest.raises(conf.ConfigError, match="not a valid TOML"):
+        conf.load(yaml_file)
+
+
+def test_load_missing_file(tmp_path):
+    # An unreadable config is a ConfigError too, so the CLI can report both
+    # cases as a single error line instead of a traceback.
+    with pytest.raises(conf.ConfigError, match="cannot read configuration"):
+        conf.load(tmp_path / "does-not-exist.toml")
 
 
 def test_expand_env(monkeypatch):
@@ -93,48 +104,35 @@ def test_expand_env_no_pattern():
     assert conf._expand_env("plain string") == "plain string"
 
 
-def test_load_yaml_with_env_expansion(tmp_path, monkeypatch):
-    monkeypatch.setenv("TEST_PASS", "s3cret")
-    yaml_file = tmp_path / "test.yaml"
-    yaml_file.write_text('job1:\n  server: "imap.example.com"\n  password: "${TEST_PASS}"\n')
-    config = conf.load(yaml_file)
-    assert config.jobs[0].password == "s3cret"
+def _write_job(tmp_path, body: str):
+    toml_file = tmp_path / "test.toml"
+    toml_file.write_text(f'[[job]]\nname = "job1"\n{body}')
+    return toml_file
 
 
-def test_load_yaml_with_password_cmd(tmp_path):
-    yaml_file = tmp_path / "test.yaml"
-    yaml_file.write_text('job1:\n  server: "imap.example.com"\n  password_cmd: "echo s3cret"\n')
-    config = conf.load(yaml_file, allow_exec=True)
-    assert config.jobs[0].password == "s3cret"
-
-
-def test_load_yaml_password_cmd_does_not_overwrite_explicit(tmp_path):
+def test_load_password_cmd_does_not_overwrite_explicit(tmp_path):
     """If both password and password_cmd exist, password_cmd wins (it resolves later)."""
-    yaml_file = tmp_path / "test.yaml"
-    yaml_file.write_text('job1:\n  password: "old"\n  password_cmd: "echo new"\n')
-    config = conf.load(yaml_file, allow_exec=True)
+    toml_file = _write_job(tmp_path, 'password = "old"\npassword_cmd = "echo new"\n')
+    config = conf.load(toml_file, allow_exec=True)
     assert config.jobs[0].password == "new"
 
 
-def test_load_yaml_with_failing_cmd(tmp_path):
-    yaml_file = tmp_path / "test.yaml"
-    yaml_file.write_text('job1:\n  password_cmd: "false"\n')
-    config = conf.load(yaml_file, allow_exec=True)
+def test_load_with_failing_cmd(tmp_path):
+    toml_file = _write_job(tmp_path, 'password_cmd = "false"\n')
+    config = conf.load(toml_file, allow_exec=True)
     # Command fails, password stays at default (empty string)
     assert config.jobs[0].password == ""
 
 
-def test_load_yaml_password_cmd_ignored_without_allow_exec(tmp_path):
-    yaml_file = tmp_path / "test.yaml"
-    yaml_file.write_text('job1:\n  password_cmd: "echo s3cret"\n')
-    config = conf.load(yaml_file)
+def test_load_password_cmd_ignored_without_allow_exec(tmp_path):
+    toml_file = _write_job(tmp_path, 'password_cmd = "echo s3cret"\n')
+    config = conf.load(toml_file)
     assert config.jobs[0].password == ""
 
 
 def test_non_string_values_unchanged(tmp_path):
-    yaml_file = tmp_path / "test.yaml"
-    yaml_file.write_text("job1:\n  port: 993\n  tls: true\n")
-    config = conf.load(yaml_file)
+    toml_file = _write_job(tmp_path, "port = 993\ntls = true\n")
+    config = conf.load(toml_file)
     assert config.jobs[0].port == 993
     assert config.jobs[0].tls is True
 

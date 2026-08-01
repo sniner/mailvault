@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.7.0 (2026-08-01)
+
+### Breaking changes
+
+- **YAML configuration files are no longer supported.** TOML is the only configuration format;
+  `pyyaml` is gone from the dependencies. A YAML config now fails with a clear parse error
+  instead of being loaded. Migration: convert the flat `job-name: {...}` mapping into one
+  `[[job]]` table per job, with the former key as `name`
+
+### Changed
+
+- **A broken or missing configuration file now reports a single error line** naming the file
+  and the problem, instead of dumping a traceback. Errors from the mailbox connection itself
+  are still logged in full
+
+- **The configuration file name no longer matters:** its content is always parsed as TOML, so a
+  config may be called `backup.job` or anything else. `copy` previously rejected every file not
+  named `*.toml` -- that restriction is gone, and `copy` accepts the same files as every other
+  command
+
+- **`mailvault` is now on PyPI:** install it with `uv tool install mailvault` (or `pipx install`
+  / `pip install`) instead of pulling from the Git repository. The old name `imapbackup` was
+  already taken on PyPI; `mailvault` was free, which is part of why the project was renamed.
+  The package now carries the metadata a PyPI release needs (README as description,
+  GPL-3.0-or-later license, project URLs) and is built with the `uv_build` backend
+
 ## 0.6.0 (2026-08-01)
 
 ### Breaking changes

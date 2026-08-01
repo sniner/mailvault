@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
 
 from mailvault import conf, importer, jobs
 from mailvault.store import cas
@@ -79,13 +78,6 @@ def run_mailbox(args: argparse.Namespace) -> int:
 
 def run_copy(args: argparse.Namespace) -> int:
     """Copy from the source-role mailbox to the destination-role mailbox."""
-    if args.config.suffix.lower() != ".toml":
-        print(
-            f"Error: configuration file must be TOML format (.toml), got: {args.config}",
-            file=sys.stderr,
-        )
-        return 1
-
     config = conf.load(args.config, allow_exec=args.allow_exec)
     source = conf.find(config.jobs, "role", "source")
     destination = conf.find(config.jobs, "role", "destination")
