@@ -236,26 +236,6 @@ class TestWalkFolder:
 
         results = list(client._walk_folder("INBOX", [1, 2, 3]))
         assert results == []
-        conn.delete_messages.assert_not_called()
-
-    def test_delete_on_success(self):
-        conn = _make_mock_conn()
-        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
-        conn.fetch.return_value = {
-            1: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
-        }
-        client = _make_client(conn=conn)
-
-        list(client._walk_folder("INBOX", [1], delete=True))
-        conn.delete_messages.assert_called_once_with([1])
-
-    def test_no_delete_on_fetch_error(self):
-        conn = _make_mock_conn()
-        conn.fetch.side_effect = OSError("connection reset")
-        client = _make_client(conn=conn)
-
-        list(client._walk_folder("INBOX", [1], delete=True))
-        conn.delete_messages.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -176,7 +176,6 @@ class ImapClient:
         folder_name: str,
         message_ids: list[int],
         chunk_size: int = 10,
-        delete: bool = False,
         result: BackupResult | None = None,
     ) -> collections.abc.Generator[tuple[int, bytes, datetime | None], None, None]:
         for msg_ids in utils.chunks(message_ids, chunk_size):
@@ -196,10 +195,6 @@ class ImapClient:
                     # fetch() returns the whole chunk at once, so nothing of it
                     # was yielded before the failure.
                     result.failed += len(msg_ids)
-            else:
-                if delete:
-                    log.debug("%s::%s: deleting %s", self.job_name, folder_name, msg_ids_str)
-                    self.conn.delete_messages(msg_ids)
 
     def _collect_metadata(
         self, folder_name: str, msg_id: Any, store_id: str, msg: bytes
@@ -288,7 +283,7 @@ class ImapClient:
                     )
                 processed = 0
                 for msg_id, msg, msg_date in self._walk_folder(
-                    folder_name, message_ids, delete=False, result=result
+                    folder_name, message_ids, result=result
                 ):
                     yield msg_id, msg, msg_date
                     processed += 1
