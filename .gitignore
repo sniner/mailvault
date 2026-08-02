@@ -7,13 +7,24 @@
 *.egg-info/
 __pycache__/
 *.log
+
+# Job configurations carry credentials and must never reach this public repo.
+# Since 0.7.0 the filename no longer matters -- any file is parsed as TOML, so a
+# config may be called backup.job, private.conf or anything at all. This list can
+# therefore never be complete: it is a backstop, and explicit staging (never
+# `git add -A` / `git add .`) is the actual guard.
 *.toml
+*.job
+*.yaml
+*.yml
 !example.toml
 !pyproject.toml
+!.github/workflows/*.yml
+!.github/workflows/*.yaml
 
 # Editor swap/backup files -- must never be committed (a .swp of a secrets
-# file leaks the secret). Note: these are dotfiles, so /archive* and *.toml
-# above do NOT catch them.
+# file leaks the secret). Note: these are dotfiles, so /archive* and the
+# patterns above do NOT catch them.
 *.sw[a-p]
 *~
 

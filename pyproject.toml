@@ -1,6 +1,6 @@
 [project]
 name = "mailvault"
-version = "0.7.0"
+version = "0.8.0"
 description = "Back up and archive email from IMAP and Microsoft 365 (Graph) mailboxes"
 authors = [{ name = "Stefan Schönberger", email = "stefan@sniner.dev" }]
 readme = "README.md"
@@ -16,13 +16,16 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Communications :: Email",
     "Topic :: System :: Archiving :: Backup",
 ]
 requires-python = ">=3.11"
 dependencies = [
     "imapclient",
-    "zstandard",
+    # Python 3.14 ships zstd in the stdlib (PEP 784); the package is only needed
+    # before that. mailvault.store.zstd picks whichever is available.
+    "zstandard; python_version < '3.14'",
     "msal",
     "httpx",
 ]

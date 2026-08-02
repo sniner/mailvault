@@ -7,7 +7,7 @@ import logging
 import re
 import time
 import urllib.parse
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -258,7 +258,10 @@ class MSGraphClient:
             "$orderby": "receivedDateTime asc",
         }
         if since:
-            since_str = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+            # The trailing Z says UTC, so the value has to actually be UTC.
+            # `astimezone` converts an aware value and reads a naive one as local
+            # time, which is what a naive one means here.
+            since_str = since.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             params["$filter"] = f"receivedDateTime ge {since_str}"
 
         yield from self._paginate(url, params)
@@ -297,6 +300,12 @@ class MSGraphClient:
         since: datetime | None = None,
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> base.BackupResult:
+        """Store a folder's messages, recording each via `callback`.
+
+        Nothing is deleted here: the ids of successfully stored messages are
+        collected in `BackupResult.deletable`, and the caller purges them only
+        after the metadata log is sealed.
+        """
         folder_id = self._resolve_folder(folder_name)
         messages = list(self._iter_messages(folder_name, folder_id, since))
         log.info("%s::%s: found %s messages", self.job_name, folder_name, len(messages))
@@ -325,8 +334,8 @@ class MSGraphClient:
                 result=result,
                 log_ctx=log_ctx,
                 callback=callback,
-                metadata_fn=lambda sid, m=msg: mailutils.metadata(
-                    m, mailbox=self.job_name, folder=folder_name, store_id=sid
+                metadata_fn=lambda sid: mailutils.metadata(
+                    mailbox=self.job_name, folder=folder_name, store_id=sid
                 ),
             )
             if store_id is None:
@@ -341,21 +350,33 @@ class MSGraphClient:
                     len(messages),
                 )
 
+            # Not deleted here: a message is removed from the mailbox only after
+            # the folder's log is sealed (see `purge`), so its location is durable
+            # before it leaves its source.
             if self.delete_after_export:
-                try:
-                    self._graph_delete(msg_id)
-                except Exception as exc:
-                    log.error("%s: delete failed: %s", log_ctx, exc)
+                result.deletable.append(msg_id)
 
         return result
 
-    def full_backup(
-        self,
-        store: cas.ContentAddressedStorage,
-        since: datetime | None = None,
-        callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
-    ) -> None:
-        base.run_full_backup(self, store, since=since, callback=callback)
+    def purge(self, folder_name: str, msg_ids: collections.abc.Sequence[str]) -> None:
+        """Delete the given messages from the mailbox.
+
+        Called by the backup runner only after the folder's metadata log has been
+        sealed, so a message leaves its source once the record of where it was
+        seen is durable. A failed deletion is logged and does not abort the rest;
+        the message stays and is re-fetched (and deduplicated) next run.
+        """
+        for msg_id in msg_ids:
+            try:
+                self._graph_delete(msg_id)
+            except Exception as exc:
+                log.error(
+                    "%s::%s[%s]: delete failed: %s",
+                    self.job_name,
+                    folder_name,
+                    msg_id,
+                    exc,
+                )
 
     def get_messages(
         self,

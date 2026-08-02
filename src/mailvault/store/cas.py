@@ -1,3 +1,12 @@
+"""Content-addressed storage: files named by the hash of their content.
+
+The discipline underneath both the mail store (the `.eml` files) and the metadata
+log. A file's name is its own hash, so it is written once, never modified, and
+carries its own integrity check; adding the same bytes twice is a no-op. Entries
+can be transparently zstd-compressed (through `mailvault.store.zstd`), and the
+header of a stored message can be read without pulling the whole body.
+"""
+
 from __future__ import annotations
 
 import collections.abc
@@ -6,11 +15,31 @@ import io
 import logging
 import os
 import pathlib
+from typing import Any
+
+from mailvault.store import zstd
 
 log = logging.getLogger(__name__)
 
 
+def _header_end(buf: bytes | bytearray, start: int = 0) -> int | None:
+    """Index just past the blank line that ends a message's headers, or None."""
+    ends = [
+        found + len(separator)
+        for separator in (b"\r\n\r\n", b"\n\n")
+        if (found := buf.find(separator, start)) >= 0
+    ]
+    return min(ends) if ends else None
+
+
 class ContentAddressedStorage:
+    """A hash-named store under `root_dir`, sharded `depth` levels deep.
+
+    `add` writes new content, returning EXISTS for content already present;
+    `read` and `read_header` read it back, decompressing `.zst` entries
+    transparently.
+    """
+
     def __init__(
         self,
         root_dir: str | pathlib.Path = ".",
@@ -18,6 +47,7 @@ class ContentAddressedStorage:
         depth: int = 2,
         compress: bool = False,
         hashfactory: collections.abc.Callable[..., hashlib._Hash] | None = None,
+        fsync: bool = False,
     ):
         self.root_dir = pathlib.Path(root_dir)
         pathlib.Path.mkdir(self.root_dir, parents=True, exist_ok=True)
@@ -25,9 +55,15 @@ class ContentAddressedStorage:
         self.hashfactory = hashfactory if hashfactory else hashlib.sha384
         self.depth = depth if depth >= 0 else 2
         self.suffix = suffix
+        # Flush each entry to the device before it is renamed into place. Off by
+        # default: for mail a lost entry is re-fetched on the next run, and one
+        # fsync per message is a real cost over a large archive. Callers whose
+        # entries are not re-fetchable that cheaply -- the metadata log -- turn
+        # it on.
+        self.fsync = fsync
         self.blocksize = 16384
         if self.compress:
-            import zstandard  # noqa: F401 — fail fast if not installed
+            zstd.require()  # fail fast if no zstd implementation is available
 
     @property
     def suffix(self) -> str:
@@ -107,16 +143,18 @@ class ContentAddressedStorage:
         tmp_file = file.with_suffix("._tmp_")
         try:
             if self.compress:
-                import zstandard
-
-                cctx = zstandard.ZstdCompressor()
                 with open(tmp_file, "wb") as f:
-                    with cctx.stream_writer(f) as compressor:
+                    with zstd.open_writer(f) as compressor:
                         while True:
                             block = reader.read(self.blocksize)
                             if block is None or len(block) == 0:
                                 break
                             compressor.write(block)
+                    # The compressor is closed (its frame flushed into f) while f
+                    # is still open, so the fsync covers the whole compressed file.
+                    if self.fsync:
+                        f.flush()
+                        os.fsync(f.fileno())
             else:
                 with open(tmp_file, "wb") as f:
                     while True:
@@ -124,6 +162,9 @@ class ContentAddressedStorage:
                         if block is None or len(block) == 0:
                             break
                         f.write(block)
+                    if self.fsync:
+                        f.flush()
+                        os.fsync(f.fileno())
         except Exception as exc:
             log.error(f"{file}: error while writing file: {exc}")
             if tmp_file.exists():
@@ -134,15 +175,45 @@ class ContentAddressedStorage:
         log.debug(f"{file}: new entry")
         return "NEW", hashval, file
 
+    def _read_until_header_end(self, reader: Any, limit: int) -> bytes:
+        """Pull blocks off `reader` until the headers are complete."""
+        buf = bytearray()
+        while len(buf) < limit:
+            block = reader.read(self.blocksize)
+            if not block:
+                break
+            # Resume the search three bytes back so a separator split across two
+            # blocks is still found.
+            start = max(0, len(buf) - 3)
+            buf += block
+            end = _header_end(buf, start)
+            if end is not None:
+                return bytes(buf[:end])
+        return bytes(buf)
+
+    def read_header(self, path: pathlib.Path, limit: int = 1 << 20) -> bytes:
+        """Read only the header block of a stored message.
+
+        Headers are a few kilobytes; the message behind them can be tens of
+        megabytes. Anything that only needs the headers -- matching a Message-ID,
+        building a database -- would otherwise pull whole attachments off the disk
+        or over the network to throw them away. On the reference archive the
+        headers are 4.8% of the bytes.
+
+        Stops at the blank line that separates headers from body, or at `limit`
+        for a message that has no such line.
+        """
+        if path.suffix == ".zst":
+            with open(path, "rb") as f, zstd.open_reader(f) as reader:
+                return self._read_until_header_end(reader, limit)
+        with open(path, "rb") as f:
+            return self._read_until_header_end(f, limit)
+
     def read(self, path: pathlib.Path) -> bytes:
         """Read file content, decompressing transparently if needed."""
         if path.suffix == ".zst":
-            import zstandard
-
-            dctx = zstandard.ZstdDecompressor()
-            with open(path, "rb") as f:
-                with dctx.stream_reader(f) as reader:
-                    return reader.read()
+            with open(path, "rb") as f, zstd.open_reader(f) as reader:
+                return reader.read()
         else:
             return path.read_bytes()
 
@@ -188,25 +259,19 @@ class ContentAddressedStorage:
 
     def compress_all(self) -> tuple[int, int]:
         """Compress all uncompressed files in the store. Returns (compressed, skipped)."""
-        import zstandard
-
-        cctx = zstandard.ZstdCompressor()
         return self._convert_all(
             skip_suffix=".zst",
             target_fn=lambda p: p.with_suffix(p.suffix + ".zst"),
-            converter=cctx.copy_stream,
+            converter=zstd.compress_stream,
             operation="compression",
         )
 
     def decompress_all(self) -> tuple[int, int]:
         """Decompress all compressed files in the store. Returns (decompressed, skipped)."""
-        import zstandard
-
-        dctx = zstandard.ZstdDecompressor()
         return self._convert_all(
             skip_suffix=self.suffix,
             target_fn=lambda p: p.with_suffix(""),
-            converter=dctx.copy_stream,
+            converter=zstd.decompress_stream,
             operation="decompression",
         )
 

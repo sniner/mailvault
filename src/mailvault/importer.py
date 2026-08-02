@@ -1,3 +1,12 @@
+"""Import existing `.eml` collections into the content-addressed store.
+
+For pulling mail into an archive from somewhere other than a live mailbox -- a
+directory of `.eml` files, or a Docuware export where each message sits in its own
+folder. Unlike a backup, an import writes no metadata log, so which mailbox and
+folder a message came from is not recorded; rebuild a database with
+`archive create-db` afterwards if you need to query it.
+"""
+
 from __future__ import annotations
 
 import collections.abc
@@ -6,7 +15,7 @@ import os
 import pathlib
 
 from mailvault import mailutils
-from mailvault.store import cas
+from mailvault.store import cas, zstd
 
 log = logging.getLogger(__name__)
 
@@ -17,12 +26,8 @@ _EML_SUFFIXES = (".eml", ".eml.zst")
 def _read_eml(path: pathlib.Path) -> bytes:
     """Read an archived email, decompressing `.zst` files transparently."""
     if path.suffix == ".zst":
-        import zstandard
-
-        dctx = zstandard.ZstdDecompressor()
-        with open(path, "rb") as f:
-            with dctx.stream_reader(f) as reader:
-                return reader.read()
+        with open(path, "rb") as f, zstd.open_reader(f) as reader:
+            return reader.read()
     return path.read_bytes()
 
 

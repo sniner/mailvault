@@ -1,5 +1,117 @@
 # Changelog
 
+## 0.8.0 (2026-08-02)
+
+### Breaking changes
+
+- **An archive no longer contains a database.** `store.db` held the only record of which
+  mailbox and folder each message was seen in, and it is a SQLite file rewritten in place --
+  over SMB or NFS a torn write can take the whole thing with it. That record now lives in an
+  append-only log inside the archive, and a backup writes nothing that is modified in place.
+
+  Existing archives are migrated automatically at the start of the next backup, or explicitly
+  with `mailvault archive migrate <archive>`. Nothing is deleted: the database is renamed to
+  `store.db.migrated` and no longer used, so it remains as a fallback until you remove it. The
+  migration is idempotent and can be repeated.
+
+- **`archive rebuild-db` is now `archive create-db <archive> <database>`**, and the destination
+  is an argument rather than a fixed place inside the archive. It is not a rebuild -- the
+  archive has no database to restore -- it builds one wherever you want it, out of the archived
+  messages and the log. What it produces is a snapshot: accurate when built, stale from the
+  next backup onwards. Build it again when that matters.
+
+  An existing file is refused unless `--force` is given, and `--force` replaces rather than
+  adds to it. The database is built through a temporary file beside the target, so an
+  interrupted run leaves the previous one intact.
+
+- **The job option `with_db` is gone.** It existed because of the SQLite database:
+  106 MB rewritten in place on every run was worth switching off. What remains in
+  its place is a few kilobytes of immutable files, while turning it off would
+  disable incremental backups and `verify` -- which is not what anyone wants from
+  an option about metadata. A configuration that still sets it says so on load,
+  rather than having the field quietly dropped as if it were a typo
+
+### Added
+
+- **`meta/`, an append-only record of where each message was seen.** One file is one place:
+  its header names a mailbox and a folder, its lines name the messages seen there. A message
+  belonging to several places appears in several files and is never ambiguous. Like the mail
+  itself it is content-addressed, so every file carries its own integrity check -- `sha384sum`
+  against the filename settles it, with no knowledge of the format required
+
+- **`state.json`, where the next incremental run picks up.** The per-folder timestamps that
+  used to live in the database, replaced only atomically, so an interrupted or torn write
+  cannot destroy them
+
+- **`archive migrate <archive>`** moves an older archive off its database, as described above
+
+- **`archive compact`** consolidates the metadata log: it folds the many small per-folder files
+  backups leave -- with entries repeated across the incremental overlap -- into one file per
+  mailbox/folder holding each observation once. Lossless and safe to interrupt; the originals are
+  removed only after the consolidated files are written and verified
+
+- **`backup --index-db`** keeps a queryable SQLite database up to date beside the archive
+  (`index.db`), refreshed after each backup. A convenience projection, never a source of truth:
+  only the log files added since the last refresh are folded in, and a database that is missing or
+  unreadable is rebuilt from scratch. Mail added by `archive import` writes no log and is not
+  picked up -- rebuild with `archive create-db` for that. Also settable as `index_db` under
+  `[global]` in the config
+
+### Changed
+
+- **`verify` no longer needs a database.** It reads which messages are archived for a folder
+  from the log and their Message-IDs from the messages themselves
+
+- **Gmail folders are taken from `X-GM-LABELS` alone.** The IMAP folder name is a localised
+  view of what Gmail already reports canonically -- `[Google Mail]/Gesendet` is `\Sent` -- so
+  recording both stored one place twice, in a spelling that differed per account. A message
+  carrying no label of its own is now recorded as being in `\All`; previously it was archived
+  with no location at all
+
+- **Reading a message's headers no longer reads the message.** Anything that only needs headers
+  stops at the blank line, which on a real archive is one to five per cent of the bytes
+
+- **Compression** uses the standard-library `zstd` module on Python 3.14+ (PEP 784); the
+  `zstandard` package is now only required on older interpreters
+
+### Fixed
+
+- **`delete_after_export`** removed a message from the server before its location was written to
+  the log. A crash or a failed log write in that window left the archived `.eml` with no record of
+  where it was seen -- and, the server copy being gone, no way to recover it. A message is now
+  deleted only after the folder's metadata log has been sealed to disk; a seal that fails holds the
+  deletion back entirely, and the messages are re-fetched (and deduplicated) next run
+
+- **Incremental snapshots** no longer advance when the location log could not be written. A folder
+  whose downloads were clean but whose log did not reach disk is re-fetched next run and recorded
+  again, rather than being skipped for good with its locations lost
+
+- **A message whose headers could not be parsed was dropped from the metadata entirely.** An
+  exception while *reading* a field was treated as a failure to *store* the message, though it
+  was already archived -- so it got no record at all, stayed invisible to `verify`, and froze
+  the folder's snapshot in a way no retry could clear. Reading a field can no longer fail the
+  message, and the extraction of dates, subjects, Message-IDs and addresses reports and yields
+  nothing instead of raising
+
+- **Group addresses were recorded as an empty recipient.** `To: Undisclosed recipients:;` is
+  legal RFC 5322, and the classic address parser reports it as an empty address, which reached
+  the database as if it were one. Addresses are now read through the policy that understands
+  groups
+
+- **Dates that could not be parsed are recovered where that is unambiguous:** a header encoded
+  whole as an RFC 2047 word, a timezone glued to the time, a UTC offset beyond 24 hours. What
+  still cannot be read is stored as unknown rather than guessed at
+
+- **Labels added to a message were lost when nothing else was written afterwards**, because the
+  rows were left uncommitted in the expectation that a later call would commit them
+
+- **A resume timestamp without a timezone could make a Microsoft 365 job skip mail.** Older
+  versions wrote local time without saying so; the Graph filter stamped it `Z`, so it was read
+  as UTC — one or two hours later than meant, and the mail that arrived in between was passed
+  over once and never looked at again. Such a timestamp is now read as the local time it is,
+  and the filter converts to UTC before labelling it as UTC. IMAP was never affected, since it
+  compares whole days with a day to spare
+
 ## 0.7.0 (2026-08-01)
 
 ### Breaking changes

@@ -198,22 +198,16 @@ def test_normalize_message_id_matches_across_sources():
 # ---------------------------------------------------------------------------
 
 
-def test_metadata_record(dummy_eml_bytes):
-    md = mailutils.metadata(dummy_eml_bytes, mailbox="mb", folder="INBOX", store_id="deadbeef")
+def test_metadata_record():
+    md = mailutils.metadata(mailbox="mb", folder="INBOX", store_id="deadbeef")
     assert md.mailbox == "mb"
-    assert md.folder == "INBOX"
     assert md.store_id == "deadbeef"
-    assert md.labels == ["INBOX"]
-    assert md.subject == "Test Email"
-    assert "test@example.com" in md.sender
-    assert "recipient@example.com" in md.recipients
+    assert md.folders == ["INBOX"]
 
 
-def test_metadata_explicit_labels(dummy_eml_bytes):
-    md = mailutils.metadata(
-        dummy_eml_bytes, mailbox="mb", folder="INBOX", store_id="x", labels=["A", "B"]
-    )
-    assert md.labels == ["A", "B"]
+def test_metadata_explicit_folders():
+    md = mailutils.metadata(mailbox="mb", folder="INBOX", store_id="x", folders=["A", "B"])
+    assert md.folders == ["A", "B"]
 
 
 @pytest.mark.parametrize(
@@ -293,3 +287,79 @@ class TestMessageIdIndex:
         archived = _long_id()
         index = mailutils.MessageIdIndex({archived})
         assert archived + "-more" not in index
+
+
+def test_date_decodes_an_rfc2047_encoded_header():
+    """Nineties mail sometimes encodes the whole Date, comment and all."""
+    raw = (
+        b"From: a@example.com\r\n"
+        b"Date: =?iso-8859-1?Q?Thu=2C_18_Dec_1997_22=3A03=3A34_+0100_=28=28ME?="
+        b" =?iso-8859-1?Q?Z=29_Mitteleurop=E4ische_Zeit=29?=\r\n"
+        b"\r\n"
+    )
+    header = mailutils.decode_email_header(raw)
+
+    parsed = mailutils.date(header)
+
+    assert parsed is not None
+    assert parsed.year == 1997 and parsed.month == 12 and parsed.day == 18
+
+
+def test_date_returns_none_for_a_header_beyond_repair(caplog):
+    raw = b"From: a@example.com\r\nDate: yesterday afternoon\r\n\r\n"
+    header = mailutils.decode_email_header(raw)
+
+    assert mailutils.date(header) is None
+    assert "Unreadable Date header" in caplog.text
+
+
+def test_group_address_yields_no_empty_recipient():
+    """'Undisclosed recipients:;' is legal RFC 5322 and names nobody."""
+    raw = b"From: a@example.com\r\nTo: Undisclosed recipients:;\r\n\r\n"
+    header = mailutils.decode_email_header(raw)
+
+    _from_addrs, to_addrs = mailutils.addresses(header)
+
+    assert to_addrs == set()
+
+
+def test_group_members_are_collected():
+    raw = b"From: a@example.com\r\nTo: Team: b@example.com, c@example.com;\r\n\r\n"
+    header = mailutils.decode_email_header(raw)
+
+    _from_addrs, to_addrs = mailutils.addresses(header)
+
+    assert to_addrs == {"b@example.com", "c@example.com"}
+
+
+def test_date_separates_a_timezone_glued_to_the_time():
+    raw = b"From: a@example.com\r\nDate: Tue, 04 Apr 00 06:41:03EST\r\n\r\n"
+    header = mailutils.decode_email_header(raw)
+
+    parsed = mailutils.date(header)
+
+    assert parsed is not None
+    assert (parsed.year, parsed.month, parsed.day) == (2000, 4, 4)
+
+
+def test_date_drops_an_impossible_utc_offset():
+    """+9752 is not a timezone by any reading; the local time still is one."""
+    raw = b"From: a@example.com\r\nDate: Fri, 8 Aug 7048 10:02:45 +9752\r\n\r\n"
+    header = mailutils.decode_email_header(raw)
+
+    parsed = mailutils.date(header)
+
+    assert parsed is not None
+    assert (parsed.year, parsed.hour) == (7048, 10)
+
+
+def test_date_keeps_a_valid_offset_untouched():
+    raw = b"From: a@example.com\r\nDate: Wed, 20 Feb 2026 12:00:00 -0500\r\n\r\n"
+    header = mailutils.decode_email_header(raw)
+
+    parsed = mailutils.date(header)
+
+    assert parsed is not None
+    offset = parsed.utcoffset()
+    assert offset is not None
+    assert offset.total_seconds() == -5 * 3600

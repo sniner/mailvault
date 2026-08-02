@@ -126,6 +126,18 @@ def test_cas_compress_add(tmp_path):
     assert path.stat().st_size < len(data)
 
 
+def test_cas_compress_add_with_fsync(tmp_path):
+    """A compressed store with fsync on still writes a valid, readable file."""
+    store = cas.ContentAddressedStorage(
+        root_dir=tmp_path / "cas", suffix=".eml", compress=True, fsync=True
+    )
+    data = b"compressible " * 100
+    status, _hashval, path = store.add(data)
+    assert status == "NEW"
+    assert path.name.endswith(".eml.zst")
+    assert store.read(path) == data
+
+
 def test_cas_compress_read(tmp_path):
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml", compress=True)
     data = b"read me back compressed"

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
-from datetime import UTC
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -157,3 +157,39 @@ class TestRequestRetry:
         h = _make_client(monkeypatch, [httpx.Response(401), httpx.Response(401)])
         assert h.client._request("GET", "https://example.invalid/msg").status_code == 401
         assert h.request.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# The $filter timestamp
+# ---------------------------------------------------------------------------
+
+
+class TestSinceFilter:
+    """The trailing Z says UTC, so what precedes it has to be UTC."""
+
+    @staticmethod
+    def _filter_for(monkeypatch, since):
+        harness = _make_client(monkeypatch, [])
+        harness.client._user = "user@example.org"
+        with patch.object(harness.client, "_paginate", return_value=iter([])) as paginate:
+            list(harness.client._iter_messages("INBOX", "folder-id", since=since))
+        return paginate.call_args[0][1]["$filter"]
+
+    def test_an_aware_timestamp_is_converted(self, monkeypatch):
+        berlin = timezone(timedelta(hours=2))
+        since = datetime(2026, 8, 2, 12, 0, tzinfo=berlin)
+
+        assert (
+            self._filter_for(monkeypatch, since) == "receivedDateTime ge 2026-08-02T10:00:00Z"
+        )
+
+    def test_a_naive_timestamp_is_read_as_local_time(self, monkeypatch):
+        """Snapshots from older versions carry no zone and mean local time.
+
+        Stamping such a value `Z` unchanged would ask for mail from one or two
+        hours later than intended, and that window is then skipped for good.
+        """
+        naive = datetime(2026, 8, 2, 12, 0)
+        expected = naive.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        assert self._filter_for(monkeypatch, naive) == f"receivedDateTime ge {expected}"

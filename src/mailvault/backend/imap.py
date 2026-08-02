@@ -1,3 +1,12 @@
+"""The IMAP mailbox backend.
+
+Implements the `MailboxClient` interface over `imapclient`: listing folders,
+reading a folder read-only for backup, indexing messages by Message-ID for
+`verify`, and -- separately from the read pass -- purging archived messages once
+their location is durable. It also carries the Gmail-specific label handling and
+the Exchange-journal unwrapping path.
+"""
+
 from __future__ import annotations
 
 import collections.abc
@@ -33,16 +42,26 @@ from mailvault.store import cas
 
 log = logging.getLogger(__name__)
 
+# Stands in for Gmail's "All Mail", which holds every message that is not in
+# Trash or Spam and is therefore the place a message is in when it carries no
+# label of its own. Gmail has no canonical name for it -- the IMAP folder is
+# localised (`[Gmail]/All Mail`, `[Google Mail]/Alle Nachrichten`) -- so this
+# name follows the convention of the system labels it sits next to. Gmail never
+# reports a user label with a leading backslash, so it cannot collide with one.
+GMAIL_ALL_MAIL = "\\All"
+
 
 class MailboxError(Exception):
     pass
 
 
-# Index page size for message_index(); only headers are fetched, no bodies.
+# Index page size for message_index(); only envelope metadata is fetched, no bodies.
 INDEX_CHUNK_SIZE = 500
 
 
 class ImapClient:
+    """The IMAP implementation of `MailboxClient`, wrapping an `imapclient` connection."""
+
     def __init__(self, conn: imapclient.IMAPClient, job: conf.JobConfig):
         self.job = job
         self.conn = conn
@@ -157,7 +176,6 @@ class ImapClient:
         folder_name: str,
         message_ids: list[int],
         chunk_size: int = 10,
-        delete: bool = False,
         result: BackupResult | None = None,
     ) -> collections.abc.Generator[tuple[int, bytes, datetime | None], None, None]:
         for msg_ids in utils.chunks(message_ids, chunk_size):
@@ -177,27 +195,30 @@ class ImapClient:
                     # fetch() returns the whole chunk at once, so nothing of it
                     # was yielded before the failure.
                     result.failed += len(msg_ids)
-            else:
-                if delete:
-                    log.debug("%s::%s: deleting %s", self.job_name, folder_name, msg_ids_str)
-                    self.conn.delete_messages(msg_ids)
 
     def _collect_metadata(
-        self, folder_name: str, msg_id: Any, store_id: str, msg: bytes
+        self, folder_name: str, msg_id: Any, store_id: str
     ) -> mailutils.MessageMetadata:
         if self.gmail:
-            labels = self.conn.get_gmail_labels(msg_id)
-            labels = labels.get(msg_id, [])
-            if not folder_name.startswith("[Google Mail]"):
-                labels = [folder_name] + labels
+            # X-GM-LABELS reports every folder the message is in, in canonical
+            # form (`\Sent`). The IMAP folder name is a localised view of the
+            # same thing -- `[Google Mail]/Gesendet` on a German account,
+            # `[Gmail]/Sent Mail` on an English one -- so taking it as well would
+            # record one place twice, once in a spelling that differs per
+            # account. Hence Gmail's own list is the only source here.
+            folders = self.conn.get_gmail_labels(msg_id).get(msg_id, [])
+            if not folders:
+                # "All Mail" is not a label, so a message filed nowhere else
+                # reports nothing at all. Name that place instead of leaving the
+                # message without one -- it is where the message actually is.
+                folders = [GMAIL_ALL_MAIL]
         else:
-            labels = [folder_name]
+            folders = [folder_name]
         return mailutils.metadata(
-            msg,
             mailbox=self.job_name,
             folder=folder_name,
             store_id=store_id,
-            labels=labels,
+            folders=folders,
         )
 
     def _clear_folder(self, folder_name: str) -> None:
@@ -230,22 +251,17 @@ class ImapClient:
         folder_name: str,
         since: datetime | None = None,
         result: BackupResult | None = None,
-        auto_delete: bool = True,
     ) -> collections.abc.Generator[tuple[int, bytes, datetime | None], None, None]:
-        """Select folder, search and yield messages, handle cleanup.
+        """Select the folder read-only, search and yield its messages.
 
-        With `auto_delete` (the default) each yielded message is deleted right
-        after the caller processed it, if delete_after_export is configured.
-        Callers that must only delete messages they actually archived (e.g. the
-        exchange_journal path, which skips non-journal items) pass
-        `auto_delete=False` and delete successfully handled messages themselves.
-        On successful completion, deleted messages are expunged. The folder is
-        always unselected on exit.
+        A read-only pass: nothing is deleted here. Messages are removed from the
+        server later, by `purge`, and only once their archival has been made
+        durable -- so the folder is opened read-only even when the job deletes
+        after export, and a torn run can never remove mail whose location was
+        never written down. The folder is always unselected on exit.
         """
         with self.lock:
-            folder_info = self.conn.select_folder(
-                folder_name, readonly=not self.delete_after_export
-            )
+            folder_info = self.conn.select_folder(folder_name, readonly=True)
             try:
                 items_in_folder = folder_info[b"EXISTS"]
                 message_ids = self._search_folder(since)
@@ -266,7 +282,7 @@ class ImapClient:
                     )
                 processed = 0
                 for msg_id, msg, msg_date in self._walk_folder(
-                    folder_name, message_ids, delete=False, result=result
+                    folder_name, message_ids, result=result
                 ):
                     yield msg_id, msg, msg_date
                     processed += 1
@@ -278,14 +294,9 @@ class ImapClient:
                             processed,
                             items_found,
                         )
-                    if self.delete_after_export and auto_delete:
-                        self.conn.delete_messages(msg_id)
             except Exception as exc:
                 log.error("%s::%s: %s", self.job_name, folder_name, exc)
                 raise
-            else:
-                if self.delete_after_export:
-                    self.conn.expunge()
             finally:
                 self.conn.unselect_folder()
 
@@ -320,15 +331,14 @@ class ImapClient:
         since: datetime | None = None,
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> BackupResult:
+        """Store a folder's messages read-only, recording each via `callback`.
+
+        Nothing is deleted here: the ids of successfully stored messages are
+        collected in `BackupResult.deletable`, and the caller purges them only
+        after the metadata log is sealed.
+        """
         result = BackupResult()
-        # In journal mode the non-journal items are skipped, so deletion must be
-        # tied to a successful archive run instead of the generic per-message
-        # auto-delete -- otherwise a skipped item would be removed from the
-        # server unarchived.
-        auto_delete = not self.exchange_journal
-        for msg_id, msg, _ in self._iter_folder(
-            folder_name, since, result=result, auto_delete=auto_delete
-        ):
+        for msg_id, msg, _ in self._iter_folder(folder_name, since, result=result):
             if self.exchange_journal:
                 msg = mailutils.unwrap_exchange_journal_item(msg)
                 if msg is None:
@@ -340,27 +350,39 @@ class ImapClient:
                 result=result,
                 log_ctx=f"{self.job_name}::{folder_name}[{msg_id}]",
                 callback=callback,
-                metadata_fn=lambda sid, mid=msg_id, m=msg: self._collect_metadata(
-                    folder_name=folder_name, msg_id=mid, store_id=sid, msg=m
+                metadata_fn=lambda sid, mid=msg_id: self._collect_metadata(
+                    folder_name=folder_name, msg_id=mid, store_id=sid
                 ),
             )
             if store_id is None:
                 continue
-            if not auto_delete and self.delete_after_export:
-                # Journal path: delete only now that the item is archived. The
-                # generic auto-delete was disabled for this run.
-                self.conn.delete_messages(msg_id)
+            # Not deleted here: a message is removed from the server only after
+            # the folder's log is sealed. A non-journal item skipped above never
+            # reaches this point, so it can never be deleted unarchived.
+            if self.delete_after_export:
+                result.deletable.append(msg_id)
         if self.gmail and self.trash_folder:
             self._clear_folder(self.trash_folder)
         return result
 
-    def full_backup(
-        self,
-        store: cas.ContentAddressedStorage,
-        since: datetime | None = None,
-        callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
-    ) -> None:
-        base.run_full_backup(self, store, since=since, callback=callback)
+    def purge(self, folder_name: str, msg_ids: collections.abc.Sequence[int]) -> None:
+        """Delete the given messages from the server and expunge them.
+
+        The folder is opened read-write only here, and only the backup runner
+        calls it -- after the metadata log for the folder has been sealed. So a
+        message is removed from its source only once the record of where it was
+        seen is durable; a run interrupted before this point leaves every message
+        in place, to be re-fetched (and deduplicated) next time.
+        """
+        if not msg_ids:
+            return
+        with self.lock:
+            self.conn.select_folder(folder_name, readonly=False)
+            try:
+                self.conn.delete_messages(list(msg_ids))
+                self.conn.expunge()
+            finally:
+                self.conn.unselect_folder()
 
     def get_messages(
         self, folder_name: str, since: datetime | None = None

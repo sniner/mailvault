@@ -1,3 +1,13 @@
+"""The queryable SQLite database built from the archive.
+
+The archive itself no longer holds a database -- its metadata lives in the
+append-only log under `meta/`. This module turns that log plus the messages into
+a database you can run SQL against: the legacy `store.db` a migration reads out
+of, and the `index.db` projection built beside a current archive. It owns the
+schema (`setup()`), a reentrant transaction discipline, and the lookup-table
+interning; `jobs.storedb` drives it.
+"""
+
 from __future__ import annotations
 
 import collections.abc
@@ -9,11 +19,10 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
-from mailvault import mailutils
-
 log = logging.getLogger(__name__)
 
-# Default filename of the metadata database inside a store directory.
+# The legacy database filename. Archives no longer keep a database inside them;
+# this is the name the migration looks for and renames to `store.db.migrated`.
 DEFAULT_DB_NAME = "store.db"
 
 
@@ -22,16 +31,28 @@ class RollbackException(Exception):
 
 
 class MetaDatabase:
-    def __init__(self, path: pathlib.Path | str):
+    """Open a database as a context manager, running `setup()` on entry.
+
+    `with MetaDatabase(path) as db:` yields a `MetaDatabaseConnection` and closes
+    the connection on exit.
+    """
+
+    def __init__(self, path: pathlib.Path | str, setup: bool = True):
         self.dbconn = None
         self.client = None
         self.path = path or DEFAULT_DB_NAME
+        # Run setup() on entry to create the schema. Turned off when a legacy
+        # store.db is opened purely to read it during migration: setup() writes
+        # DDL, and a database that is only being read -- and is about to be
+        # renamed aside -- should not be written to, nor require write access.
+        self._setup = setup
 
     def __enter__(self) -> MetaDatabaseConnection:
         self.dbconn = sqlite3.connect(self.path, check_same_thread=False)
         self.dbconn.row_factory = sqlite3.Row
         self.client = MetaDatabaseConnection(self.dbconn)
-        self.client.setup()
+        if self._setup:
+            self.client.setup()
         return self.client
 
     def __exit__(
@@ -44,6 +65,13 @@ class MetaDatabase:
 
 
 class DatabaseConnection:
+    """A SQLite connection with a reentrant `transaction()` block.
+
+    Nested `transaction()` calls share one outermost commit, so each write helper
+    can wrap itself in a transaction and still batch when a caller wraps a whole
+    run in one. `rollback()` aborts the enclosing block by raising.
+    """
+
     def __init__(self, dbconn: sqlite3.Connection):
         self.dbconn = dbconn
         self.lock = threading.RLock()
@@ -90,6 +118,13 @@ class DatabaseConnection:
 
 
 class MetaDatabaseConnection(DatabaseConnection):
+    """The archive's schema and the operations that fill and query it.
+
+    `setup()` creates the tables and the `v_messages` / `v_duplicates` views; the
+    rest insert messages, addresses, subjects and locations, interning the
+    lookup-table values through per-instance id caches.
+    """
+
     def __init__(self, dbconn: sqlite3.Connection):
         super().__init__(dbconn)
         # Per-instance id caches for the lookup tables. These map a value (folder
@@ -326,69 +361,51 @@ class MetaDatabaseConnection(DatabaseConnection):
                 (message_id, mailbox_id),
             )
 
-    def get_known_message_ids(self, mailbox_id: int, label_id: int) -> set[str]:
-        """Return the normalised Message-IDs archived for this mailbox and folder.
+    def iter_messages(self) -> collections.abc.Iterator[tuple[int, str]]:
+        """Yield (message_id, store_id) for every archived message."""
+        for row in self.execute("SELECT message_id, store_id FROM message"):
+            yield row[0], row[1]
 
-        Messages without a usable Message-ID are omitted: they cannot serve as a
-        comparison key and must count as "not present" so that a verify run
-        re-fetches them (which is harmless, the storage deduplicates by content).
+    def store_id_map(self) -> dict[str, int]:
+        """Map every store_id to its message_id.
+
+        Built in one query because the alternative -- one lookup per log entry
+        while replaying -- costs a round trip per message over the whole archive.
         """
-        rows = self.execute(
-            """
-            SELECT DISTINCT msg.email_id FROM message msg
-            JOIN message_label USING (message_id)
-            JOIN message_mailbox USING (message_id)
-            WHERE message_label.label_id=? AND message_mailbox.mailbox_id=?
-            """,
-            (label_id, mailbox_id),
-        ).fetchall()
-        known = {mailutils.normalize_message_id(row[0]) for row in rows}
-        known.discard("")
-        return known
+        return {store_id: message_id for message_id, store_id in self.iter_messages()}
 
-    def get_message_labels(self, message_id: int) -> list[str]:
-        return [
-            row[0]
-            for row in self.execute(
-                """
-            SELECT label.name from message_label JOIN label USING (label_id) WHERE message_id=?
-            """,
-                (message_id,),
-            ).fetchall()
-        ]
+    def message_mailboxes(self) -> dict[int, list[str]]:
+        """Map message_id to the mailboxes it was seen in."""
+        return self._attribution(
+            "SELECT mm.message_id, mb.name FROM message_mailbox mm "
+            "JOIN mailbox mb USING (mailbox_id)"
+        )
 
-    def get_message_label_ids(self, message_id: int) -> list[int]:
-        return [
-            row[0]
-            for row in self.execute(
-                "SELECT label_id from message_label WHERE message_id=?", (message_id,)
-            ).fetchall()
-        ]
+    def message_labels(self) -> dict[int, list[str]]:
+        """Map message_id to the labels it carries."""
+        return self._attribution(
+            "SELECT ml.message_id, l.name FROM message_label ml JOIN label l USING (label_id)"
+        )
+
+    def _attribution(self, statement: str) -> dict[int, list[str]]:
+        """Collect a (message_id, name) query into a mapping of lists."""
+        result: dict[int, list[str]] = {}
+        for message_id, name in self.execute(statement):
+            result.setdefault(message_id, []).append(name)
+        return result
 
     def add_message_labels(self, message_id: int, *label_names: str) -> None:
-        for label in label_names:
-            label_id = self.add_label(label)
-            self.execute(
-                "INSERT OR IGNORE INTO message_label(message_id, label_id) VALUES (?, ?)",
-                (message_id, label_id),
-            )
-
-    def update_message_labels(self, message_id: int, *label_names: str) -> None:
+        # The transaction is what commits these rows. Without it the inserts sat
+        # in the connection until some later call happened to commit them, and
+        # the labels added last -- with nothing following -- were lost when the
+        # connection closed. Every sibling method here is wrapped the same way.
         with self.transaction():
-            current = set()
             for label in label_names:
                 label_id = self.add_label(label)
-                current.add(label_id)
                 self.execute(
                     "INSERT OR IGNORE INTO message_label(message_id, label_id) VALUES (?, ?)",
                     (message_id, label_id),
                 )
-            for label_id in self.get_message_label_ids(message_id):
-                if label_id not in current:
-                    self.execute(
-                        "DELETE FROM message_label WHERE message_id=? AND label_id=?",
-                        (message_id, label_id),
-                    )
 
     def add_message_sender(self, message_id: int, *sender: str) -> None:
         with self.transaction():
@@ -410,11 +427,24 @@ class MetaDatabaseConnection(DatabaseConnection):
                     (message_id, addr_id),
                 )
 
-    def get_snapshot(self, mailbox_id: int, label_id: int) -> dict | None:
-        row = self.execute(
-            "SELECT * FROM snapshot WHERE mailbox_id=? AND label_id=?", (mailbox_id, label_id)
-        ).fetchone()
-        return dict(row) if row else None
+    def all_snapshots(self) -> list[tuple[str, str, str]]:
+        """Return (mailbox, folder, timestamp) for every snapshot in the database.
+
+        Used once per archive to carry the timestamps of a legacy archive over
+        into the state file. `setup()` always creates the table, but a database
+        built by a current version never fills it -- resume timestamps live in
+        `state.json` now -- so here it simply returns nothing. The guard against a
+        missing table is defensive, for a database old enough to predate it.
+        """
+        try:
+            rows = self.execute(
+                "SELECT mb.name, l.name, s.date FROM snapshot s "
+                "JOIN mailbox mb USING (mailbox_id) JOIN label l USING (label_id)"
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            log.debug("No snapshot table to read: %s", exc)
+            return []
+        return [(row[0], row[1], row[2]) for row in rows]
 
     def set_snapshot(
         self, mailbox_id: int, label_id: int, date: datetime | None = None
@@ -428,22 +458,3 @@ class MetaDatabaseConnection(DatabaseConnection):
                 "INSERT INTO snapshot(mailbox_id, label_id, date) VALUES (?, ?, ?)",
                 (mailbox_id, label_id, isodate),
             )
-
-    def delete_snapshot(self, mailbox_id: int, label_id: int | None = None) -> None:
-        with self.transaction():
-            if label_id:
-                self.execute(
-                    "DELETE FROM snapshot WHERE mailbox_id=? AND label_id=?",
-                    (mailbox_id, label_id),
-                )
-            else:
-                self.execute("DELETE FROM snapshot WHERE mailbox_id=?", (mailbox_id,))
-
-    def get_snapshot_date(
-        self, mailbox_id: int, label_id: int, default: datetime | None = None
-    ) -> datetime | None:
-        s = self.get_snapshot(mailbox_id, label_id)
-        if s:
-            return datetime.fromisoformat(s["date"])
-        else:
-            return default

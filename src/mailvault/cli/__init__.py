@@ -15,7 +15,7 @@ import logging
 import pathlib
 import sys
 
-from mailvault import conf
+from mailvault import conf, jobs
 from mailvault.cli import commands
 
 log = logging.getLogger(__name__)
@@ -98,6 +98,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_backup.add_argument(
         "--compress", action="store_true", help="Compress stored emails with zstd"
+    )
+    p_backup.add_argument(
+        "--index-db",
+        action="store_true",
+        help="Maintain an index.db alongside the archive, refreshed after the backup",
     )
     p_backup.add_argument("destination", type=pathlib.Path, help="Destination base directory")
 
@@ -191,15 +196,50 @@ def build_parser() -> argparse.ArgumentParser:
     )
     a_decomp.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
-    a_rebuild = asub.add_parser(
-        "rebuild-db",
-        help="Rebuild the metadata database from the archive",
-        description="Rebuild the metadata database by reading all archive items.",
+    a_create = asub.add_parser(
+        "create-db",
+        help="Build a queryable database from the archive",
+        description=(
+            "Build an SQLite database from the archived messages and the metadata"
+            " log, for querying with SQL. The archive itself holds no database:"
+            " what this writes is a snapshot, accurate for the moment it was built"
+            " and stale from the next backup onwards."
+        ),
     )
-    a_rebuild.add_argument(
-        "--mailbox", type=str, help="Mailbox identifier (matching a config entry)"
+    a_create.add_argument(
+        "--mailbox", type=str, help="Mailbox identifier for messages the log does not place"
     )
-    a_rebuild.add_argument("source", type=pathlib.Path, help="Email archive directory")
+    a_create.add_argument(
+        "--force", action="store_true", help="Replace the database file if it already exists"
+    )
+    a_create.add_argument("source", type=pathlib.Path, help="Email archive directory")
+    a_create.add_argument("database", type=pathlib.Path, help="Database file to write")
+
+    a_migrate = asub.add_parser(
+        "migrate",
+        help="Move an older archive off its metadata database",
+        description=(
+            "Move the resume timestamps and the mailbox/folder locations out of an"
+            " archive's store.db and into state.json and the metadata log. The"
+            " database is not deleted, it is renamed to store.db.migrated and no"
+            " longer used. Runs automatically at the start of a backup; this"
+            " command only lets you do it deliberately."
+        ),
+    )
+    a_migrate.add_argument("source", type=pathlib.Path, help="Email archive directory")
+
+    a_compact = asub.add_parser(
+        "compact",
+        help="Consolidate the metadata log, dropping duplicate entries",
+        description=(
+            "Merge the many small metadata-log files an archive accumulates -- one"
+            " per folder per backup, with entries repeated across the incremental"
+            " overlap -- into one file per mailbox/folder holding each observation"
+            " once. Lossless and safe to run at any time; the originals are removed"
+            " only after the consolidated files are written and verified."
+        ),
+    )
+    a_compact.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
     return parser
 
@@ -234,9 +274,9 @@ def main() -> int:
     except KeyboardInterrupt:
         log.warning("Interrupted!")
         exit_code = 130
-    except conf.ConfigError as exc:
-        # A broken or missing config file is a user error, not a crash: report
-        # it as one line instead of a traceback.
+    except (conf.ConfigError, jobs.JobError) as exc:
+        # A broken config or a refused operation is a user error, not a crash:
+        # report it as one line instead of a traceback.
         log.error("%s", exc)
         exit_code = 1
     except Exception as exc:

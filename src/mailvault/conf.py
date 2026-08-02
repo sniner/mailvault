@@ -1,3 +1,11 @@
+"""Loading the TOML configuration into `Config` and `JobConfig`.
+
+Parses the `[global]` options and the `[[job]]` list, expands `${VAR}` and
+`_cmd` values (the latter only with `--allow-exec`), and drops fields that were
+retired in an earlier version with a warning rather than silently restoring a
+default.
+"""
+
 from __future__ import annotations
 
 import dataclasses
@@ -78,6 +86,16 @@ def _resolve_values(data: dict, allow_exec: bool = False) -> dict:
     return resolved
 
 
+# Fields that no longer exist, and what to say about each. An unknown field is
+# only warned about and dropped, which for a boolean would silently restore a
+# default -- someone who deliberately turned something off would find it back on.
+# These are therefore named explicitly.
+RETIRED_FIELDS = {
+    "with_db": "metadata is always recorded now, and there is no database to have",
+    "with_metadata": "metadata is always recorded now",
+}
+
+
 @dataclasses.dataclass
 class JobConfig:
     name: str = "."
@@ -95,7 +113,6 @@ class JobConfig:
     exchange_journal: bool = False
     trash_folder: str | None = None
     error_folder: str | None = None
-    with_db: bool = True
     incremental: bool = True
     role: str | None = None
     move_to_archive: bool = False
@@ -127,6 +144,7 @@ class JobConfig:
     @classmethod
     def from_dict(cls, name: str, data: dict, allow_exec: bool = False) -> JobConfig:
         resolved = _resolve_values(data, allow_exec=allow_exec)
+        resolved = cls._drop_retired_fields(name, resolved)
         fields = {f.name for f in dataclasses.fields(cls)}
         known = {k: v for k, v in resolved.items() if k in fields}
         unknown = set(resolved.keys()) - fields
@@ -134,11 +152,26 @@ class JobConfig:
             log.warning("Unknown config fields in '%s': %s", name, ", ".join(sorted(unknown)))
         return cls(name=name, **known)
 
+    @staticmethod
+    def _drop_retired_fields(name: str, data: dict) -> dict:
+        """Report fields that no longer exist, rather than ignoring them quietly.
+
+        A dropped field is otherwise indistinguishable from a typo, and a reader
+        of the configuration would go on believing it still does something.
+        """
+        remaining = dict(data)
+        for field, reason in RETIRED_FIELDS.items():
+            if field in remaining:
+                remaining.pop(field)
+                log.warning("%s: '%s' no longer exists -- %s", name, field, reason)
+        return remaining
+
 
 @dataclasses.dataclass
 class Config:
     jobs: list[JobConfig] = dataclasses.field(default_factory=list)
     compress: bool = False
+    index_db: bool = False
 
     @classmethod
     def from_toml(cls, data: dict, allow_exec: bool = False) -> Config:
@@ -180,6 +213,11 @@ def load(path: pathlib.Path | str, allow_exec: bool = False) -> Config:
 
 
 def find(configs: list[JobConfig], key: str, value: str) -> JobConfig | None:
+    """Return the first job whose `key` attribute equals `value`, case-insensitively.
+
+    Used to resolve the `source`/`destination` roles for `copy`. Returns None when
+    no job matches.
+    """
     _value = value.casefold()
     return next(
         (c for c in configs if (getattr(c, key, "") or "").casefold() == _value),

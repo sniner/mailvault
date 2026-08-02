@@ -27,11 +27,20 @@ class BackupResult:
     stored locally. A run with failures is incomplete, so the caller must not
     advance the incremental snapshot — otherwise those messages would fall
     outside the date filter of every future run and stay lost for good.
+
+    `deletable` lists the backend message ids that were stored successfully and
+    may be removed from the server -- but only once the metadata log for this
+    folder is sealed, so a message is never deleted from its source before the
+    record of where it was seen is durable. It is populated only when the job
+    deletes after export; the backup runner drives the deletion through `purge`,
+    after the seal. A skipped or failed message is never listed, so it is never
+    deleted unarchived.
     """
 
     total: int = 0
     stored: int = 0
     failed: int = 0
+    deletable: list[Any] = dataclasses.field(default_factory=list)
 
     @property
     def complete(self) -> bool:
@@ -69,7 +78,22 @@ class MailboxClient(Protocol):
         store: cas.ContentAddressedStorage,
         since: datetime | None = ...,
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = ...,
-    ) -> BackupResult: ...
+    ) -> BackupResult:
+        """Store a folder's messages, recording each via `callback`.
+
+        Deletes nothing; the ids of stored messages go into
+        `BackupResult.deletable` for the caller to `purge` after the log is sealed.
+        """
+        ...
+
+    def purge(self, folder_name: str, msg_ids: collections.abc.Sequence[Any]) -> None:
+        """Delete the given messages from the server.
+
+        Called by the backup runner only after the folder's metadata log has been
+        sealed, so a message leaves its source only once the record of where it
+        was seen is durable. A no-op for an empty `msg_ids`.
+        """
+        ...
 
     def message_index(
         self,
@@ -78,13 +102,6 @@ class MailboxClient(Protocol):
     ) -> collections.abc.Generator[MessageRef, None, None]: ...
 
     def fetch_message(self, msg_id: Any, folder_name: str) -> bytes: ...
-
-    def full_backup(
-        self,
-        store: cas.ContentAddressedStorage,
-        since: datetime | None = ...,
-        callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = ...,
-    ) -> None: ...
 
     def get_messages(
         self,
@@ -119,41 +136,39 @@ def store_message(
 
     The shared tail of every backend's ``folder_backup``: store the bytes, log
     the outcome, and -- if a callback is given -- build and hand over the
-    metadata. ``result.stored`` is incremented on success, ``result.failed`` on a
-    callback error. ``log_ctx`` is the ``mailbox::folder[id]`` prefix the caller
-    would otherwise repeat in every log line.
+    metadata. ``result.stored`` is incremented on success, ``result.failed`` when
+    the location could not be built or recorded. ``log_ctx`` is the
+    ``mailbox::folder[id]`` prefix the caller would otherwise repeat in every log
+    line.
 
-    Returns the store id on success, or ``None`` when the message could not be
-    recorded. A ``None`` return means the caller must not treat the message as
-    archived -- in particular it must not be deleted from the server.
+    Returns the store id on success, or ``None`` when the message's location
+    could not be recorded. A ``None`` return means the caller must not treat the
+    message as archived -- in particular it must not be deleted from the server.
     """
     status, store_id, _path = store.add(msg)
     log.info("%s: %s: id=%s", log_ctx, status, store_id)
     if callback is not None and metadata_fn is not None:
         try:
-            callback(metadata_fn(store_id))
+            metadata = metadata_fn(store_id)
         except Exception as exc:
-            log.exception("%s: error in callback: %s", log_ctx, exc)
+            # Building the location can fail on its own -- for Gmail it fetches
+            # the message's labels over the network. The message is stored, but
+            # its location is not, so it must not be treated as archived: a
+            # non-None return here would let the caller delete it from the server
+            # with no record of where it was seen -- the one fact the archive
+            # cannot reconstruct. Fail closed: count it failed so the snapshot
+            # holds, and let the next run re-fetch (the storage deduplicates the
+            # message) and record the location then.
+            log.warning("%s: metadata could not be extracted: %s", log_ctx, exc)
+            result.failed += 1
+            return None
+        try:
+            callback(metadata)
+        except Exception as exc:
+            # Same reasoning: the message is archived but its location was not
+            # written down, so a rerun -- never a deletion -- is what fixes it.
+            log.exception("%s: recording the metadata failed: %s", log_ctx, exc)
             result.failed += 1
             return None
     result.stored += 1
     return store_id
-
-
-def run_full_backup(
-    client: MailboxClient,
-    store: cas.ContentAddressedStorage,
-    since: datetime | None = None,
-    callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
-) -> None:
-    """Back up every folder of a mailbox, logging and skipping folders that fail.
-
-    The default whole-mailbox backup shared by all backends: iterate
-    ``client.folders()`` and delegate each to ``client.folder_backup``. A folder
-    that raises is logged and skipped so the remaining folders still run.
-    """
-    for folder in client.folders():
-        try:
-            client.folder_backup(folder, store, since=since, callback=callback)
-        except Exception as exc:
-            log.error("%s::%s: backup failed: %s", client.job_name, folder, exc)

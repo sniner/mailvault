@@ -236,26 +236,6 @@ class TestWalkFolder:
 
         results = list(client._walk_folder("INBOX", [1, 2, 3]))
         assert results == []
-        conn.delete_messages.assert_not_called()
-
-    def test_delete_on_success(self):
-        conn = _make_mock_conn()
-        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
-        conn.fetch.return_value = {
-            1: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
-        }
-        client = _make_client(conn=conn)
-
-        list(client._walk_folder("INBOX", [1], delete=True))
-        conn.delete_messages.assert_called_once_with([1])
-
-    def test_no_delete_on_fetch_error(self):
-        conn = _make_mock_conn()
-        conn.fetch.side_effect = OSError("connection reset")
-        client = _make_client(conn=conn)
-
-        list(client._walk_folder("INBOX", [1], delete=True))
-        conn.delete_messages.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +283,9 @@ class TestIterFolder:
             list(client._iter_folder("INBOX"))
         conn.unselect_folder.assert_called_once()
 
-    def test_delete_after_export(self):
+    def test_read_only_even_when_deleting(self):
+        # The read pass never deletes and never opens read-write, even under
+        # delete_after_export: removal happens later, in purge, after the seal.
         conn = _make_mock_conn()
         msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         conn.select_folder.return_value = {b"EXISTS": 1}
@@ -314,9 +296,9 @@ class TestIterFolder:
         client = _make_client(delete_after_export=True, conn=conn)
 
         list(client._iter_folder("INBOX"))
-        conn.select_folder.assert_called_with("INBOX", readonly=False)
-        conn.delete_messages.assert_called_once_with(1)
-        conn.expunge.assert_called_once()
+        conn.select_folder.assert_called_with("INBOX", readonly=True)
+        conn.delete_messages.assert_not_called()
+        conn.expunge.assert_not_called()
 
     def test_no_expunge_without_delete(self):
         conn = _make_mock_conn()
@@ -376,11 +358,9 @@ class TestFolderBackup:
 
         assert len(collected) == 1
         md = collected[0]
-        assert md.folder == "INBOX"
-        assert md.email_id == "<abc123@example.com>"
-        assert "sender@example.com" in md.sender
-        assert "recipient@example.com" in md.recipients
-        assert md.subject == "Hello World"
+        assert md.mailbox == "test-mailbox"
+        assert md.store_id
+        assert md.folders == ["INBOX"]
 
     def test_callback_error_continues(self, tmp_path):
         conn = _make_mock_conn()
@@ -498,14 +478,19 @@ class TestFolderBackup:
 
         result = client.folder_backup("INBOX", store)
         assert result.stored == 1
-        # An archived journal item is deleted from the server.
-        conn.delete_messages.assert_called_once_with(1)
+        # folder_backup does not delete -- it marks the archived item deletable,
+        # and the runner removes it later, through purge, once the log is sealed.
+        assert result.deletable == [1]
+        conn.delete_messages.assert_not_called()
+
+        client.purge("INBOX", result.deletable)
+        conn.delete_messages.assert_called_once_with([1])
         conn.expunge.assert_called_once()
 
-    def test_exchange_journal_non_journal_not_deleted(self, tmp_path):
+    def test_exchange_journal_non_journal_not_deletable(self, tmp_path):
         # Regression: a non-journal item under delete_after_export must NOT be
-        # deleted from the server while it is being skipped -- otherwise it is
-        # lost unarchived. No MOVE capability, so no error_folder is configured.
+        # eligible for deletion while it is being skipped -- otherwise it is lost
+        # unarchived. No MOVE capability, so no error_folder is configured.
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1"])
         msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         conn.select_folder.return_value = {b"EXISTS": 1}
@@ -518,6 +503,7 @@ class TestFolderBackup:
 
         result = client.folder_backup("INBOX", store)
         assert result.stored == 0
+        assert result.deletable == []
         conn.delete_messages.assert_not_called()
 
     def test_gmail_clears_trash(self, tmp_path):
@@ -541,51 +527,31 @@ class TestFolderBackup:
 
 
 # ---------------------------------------------------------------------------
-# full_backup
+# purge
 # ---------------------------------------------------------------------------
 
 
-class TestFullBackup:
-    def test_iterates_all_folders(self, tmp_path):
-        folders = [
-            ([b"\\HasNoChildren"], b"/", "INBOX"),
-            ([b"\\HasNoChildren"], b"/", "Sent"),
-        ]
-        conn = _make_mock_conn(folders=folders)
-        conn.select_folder.return_value = {b"EXISTS": 0}
-        conn.search.return_value = []
-        client = _make_client(conn=conn)
-        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+class TestPurge:
+    def test_empty_list_is_a_no_op(self):
+        conn = _make_mock_conn()
+        client = _make_client(delete_after_export=True, conn=conn)
 
-        client.full_backup(store)
+        client.purge("INBOX", [])
 
-        # Should have selected both folders
-        folder_calls = [c[0][0] for c in conn.select_folder.call_args_list]
-        assert "INBOX" in folder_calls
-        assert "Sent" in folder_calls
+        conn.select_folder.assert_not_called()
+        conn.delete_messages.assert_not_called()
+        conn.expunge.assert_not_called()
 
-    def test_continues_on_folder_error(self, tmp_path):
-        folders = [
-            ([b"\\HasNoChildren"], b"/", "INBOX"),
-            ([b"\\HasNoChildren"], b"/", "Sent"),
-        ]
-        conn = _make_mock_conn(folders=folders)
-        call_count = [0]
+    def test_deletes_the_batch_read_write_and_expunges(self):
+        conn = _make_mock_conn()
+        client = _make_client(delete_after_export=True, conn=conn)
 
-        def select_side_effect(name, readonly=True):
-            call_count[0] += 1
-            if name == "INBOX":
-                raise Exception("folder error")
-            return {b"EXISTS": 0}
+        client.purge("INBOX", [1, 2, 3])
 
-        conn.select_folder.side_effect = select_side_effect
-        conn.search.return_value = []
-        client = _make_client(conn=conn)
-        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
-
-        # Should not raise despite INBOX error
-        client.full_backup(store)
-        assert call_count[0] >= 2  # both folders attempted
+        conn.select_folder.assert_called_once_with("INBOX", readonly=False)
+        conn.delete_messages.assert_called_once_with([1, 2, 3])
+        conn.expunge.assert_called_once()
+        conn.unselect_folder.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -684,35 +650,41 @@ class TestCollectMetadata:
         conn = _make_mock_conn()
         client = _make_client(conn=conn)
 
-        md = client._collect_metadata("INBOX", 1, "hash123", DUMMY_EML)
+        md = client._collect_metadata("INBOX", 1, "hash123")
         assert md.mailbox == "test-mailbox"
-        assert md.folder == "INBOX"
         assert md.store_id == "hash123"
-        assert md.email_id == "<abc123@example.com>"
-        assert md.labels == ["INBOX"]
-        assert "sender@example.com" in md.sender
-        assert "recipient@example.com" in md.recipients
-        assert md.subject == "Hello World"
+        assert md.folders == ["INBOX"]
 
-    def test_gmail_labels(self):
+    def test_gmail_reports_its_own_folders_only(self):
+        """The IMAP folder name is a localised view of what X-GM-LABELS already
+        says, so taking both would record one place twice."""
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
         conn.get_gmail_labels.return_value = {1: [b"\\Important", b"Work"]}
         client = _make_client(conn=conn)
 
-        md = client._collect_metadata("INBOX", 1, "hash123", DUMMY_EML)
-        assert "INBOX" in md.labels
-        assert b"\\Important" in md.labels
-        assert b"Work" in md.labels
+        md = client._collect_metadata("INBOX", 1, "hash123")
 
-    def test_gmail_labels_google_mail_prefix(self):
+        assert md.folders == [b"\\Important", b"Work"]
+        assert "INBOX" not in md.folders
+
+    def test_gmail_localised_pseudo_folder_is_not_recorded(self):
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
         conn.get_gmail_labels.return_value = {1: [b"\\Sent"]}
         client = _make_client(conn=conn)
 
-        md = client._collect_metadata("[Google Mail]/Sent", 1, "hash123", DUMMY_EML)
-        # folder_name starting with [Google Mail] should not be prepended
-        assert "[Google Mail]/Sent" not in md.labels
-        assert md.labels == [b"\\Sent"]
+        md = client._collect_metadata("[Google Mail]/Sent", 1, "hash123")
+
+        assert md.folders == [b"\\Sent"]
+
+    def test_gmail_message_without_labels_lands_in_all_mail(self):
+        """A message filed nowhere else is in All Mail, which is a place too."""
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
+        conn.get_gmail_labels.return_value = {}
+        client = _make_client(conn=conn)
+
+        md = client._collect_metadata("[Google Mail]/Alle Nachrichten", 1, "hash123")
+
+        assert md.folders == [imap.GMAIL_ALL_MAIL]
 
 
 # ---------------------------------------------------------------------------

@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import pathlib
 
 from mailvault import conf, importer, jobs
-from mailvault.store import cas
+from mailvault.store import cas, metalog
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +45,8 @@ def _run_job(job: conf.JobConfig, args: argparse.Namespace, config: conf.Config)
         jobs.folder_list(job)
     elif args.command == "backup":
         compress = args.compress or config.compress
-        jobs.backup(job, args.destination, compress=compress)
+        index_db = args.index_db or config.index_db
+        jobs.backup(job, args.destination, compress=compress, index_db=index_db)
     elif args.command == "verify":
         compress = args.compress or config.compress
         results = jobs.verify(job, args.destination, repair=args.repair, compress=compress)
@@ -115,8 +117,75 @@ def _human_size(size: int) -> str:
     return f"{value:.1f} {unit}"
 
 
+def report_migration(source: pathlib.Path, result: jobs.MigrationResult) -> None:
+    """Say what was moved out of the database and what became of it."""
+    if not result.needed:
+        print(f"{source}: no metadata database, nothing to migrate")
+        return
+    if not result.verified:
+        print(f"{source}: the written log files did not verify, database left alone")
+        return
+    print(
+        f"{source}: {result.messages:,} message(s) moved into "
+        f"{result.places:,} mailbox/folder place(s)"
+    )
+    if result.snapshots:
+        print(f"{source}: {result.snapshots:,} resume timestamp(s) moved into state.json")
+    if result.placeless:
+        print(
+            f"{source}: {result.placeless:,} of them recorded without a folder -- the old "
+            f"database did not store which folder of which mailbox"
+        )
+    if result.undecidable:
+        print(
+            f"{source}: {result.undecidable:,} folder name(s) fit more than one mailbox "
+            f"and were left out rather than guessed"
+        )
+    if result.renamed_to is not None:
+        print(f"{source}: the database is now {result.renamed_to.name} and is no longer used")
+        print(f"{source}: delete it once you are satisfied with the archive")
+
+
+def report_create_db(
+    source: pathlib.Path, target: pathlib.Path, result: jobs.RebuildResult
+) -> None:
+    """Say what went into the database, and name what could not."""
+    replay = result.replay
+    print(f"{source}: {result.messages:,} message(s) read from the archive")
+    if replay.files:
+        print(
+            f"{source}: metadata log: {replay.files:,} file(s), "
+            f"{replay.applied:,} of {replay.entries:,} location(s) applied"
+        )
+        if replay.unknown:
+            print(
+                f"{source}: {replay.unknown:,} log entry/entries name messages that are "
+                f"not in the archive, ignored"
+            )
+    else:
+        print(f"{source}: no metadata log found, mailbox and folder are NOT in the database")
+    print(f"{target}: written -- a snapshot, stale from the next backup onwards")
+
+
+def report_compact(source: pathlib.Path, result: metalog.CompactResult) -> None:
+    """Say how much the log shrank and how many duplicate entries went."""
+    if result.files_before == 0:
+        print(f"{source}: no metadata log to compact")
+        return
+    if not result.verified:
+        print(f"{source}: consolidated files did not verify, nothing was removed")
+        return
+    print(
+        f"{source}: {result.files_before:,} log file(s) -> {result.files_after:,} "
+        f"across {result.places:,} place(s)"
+    )
+    dropped = result.entries_before - result.entries_after
+    if dropped:
+        print(f"{source}: {dropped:,} duplicate observation(s) dropped")
+
+
 def run_archive(args: argparse.Namespace) -> int:
-    """Run an `archive` subcommand (stats/import/addresses/compress/decompress/rebuild-db)."""
+    """Run an `archive` subcommand (stats/import/addresses/compress/create-db/...)."""
     cmd = args.archive_command
 
     if cmd == "stats":
@@ -139,7 +208,14 @@ def run_archive(args: argparse.Namespace) -> int:
         store = cas.ContentAddressedStorage(args.source, suffix=".eml")
         decompressed, skipped = store.decompress_all()
         print(f"{args.source}: {decompressed:,} files decompressed, {skipped:,} already plain")
-    elif cmd == "rebuild-db":
-        jobs.rebuild_metadb(args.source, mailbox=args.mailbox)
+    elif cmd == "create-db":
+        result = jobs.create_db(
+            args.source, args.database, mailbox=args.mailbox, force=args.force
+        )
+        report_create_db(args.source, args.database, result)
+    elif cmd == "migrate":
+        report_migration(args.source, jobs.migrate_archive(args.source))
+    elif cmd == "compact":
+        report_compact(args.source, metalog.compact(args.source / metalog.DEFAULT_LOG_DIR))
 
     return 0
