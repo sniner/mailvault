@@ -291,8 +291,8 @@ def read_log(path: pathlib.Path) -> LogFile | None:
         return None
     if header.get("version") != LOG_VERSION:
         log.warning(
-            "%s: log version %r is not %d, skipped -- re-run 'archive bootstrap-log'"
-            " to regenerate it",
+            "%s: log version %r is not %d, skipped -- it was written by a different"
+            " mailvault version; upgrade mailvault to read it",
             path,
             header.get("version"),
             LOG_VERSION,

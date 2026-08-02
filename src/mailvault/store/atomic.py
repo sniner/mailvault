@@ -1,9 +1,12 @@
 """Atomic file replacement -- the write discipline the archive metadata relies on.
 
-Everything mailvault writes outside the content-addressed storage goes through
-here: the snapshot state and the metadata log. The rule is the same in both
-cases, and it is the reason the archive tolerates a network share that does not
-honour fsync the way a local filesystem does.
+The snapshot state (`state.json`) is written through here: a small file the
+archive replaces on every run, where a torn write over SMB or NFS would take the
+record of what has already been fetched with it. The metadata log does not go
+through here -- it is a content-addressed store now, so each of its files is
+written once under its own hash and never rewritten in place. This is the reason
+the archive tolerates a network share that does not honour fsync the way a local
+filesystem does.
 
 Write the new content to a temporary file in the *same* directory, flush it all
 the way to the device, then rename it onto the destination. A rename within one
