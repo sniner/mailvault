@@ -213,19 +213,18 @@ class TestDiscovery:
         assert len(found) == 2
         assert all(p.parent.parent == root for p in found)
 
-    def test_transient_files_and_the_marker_are_ignored(self, tmp_path):
+    def test_transient_and_non_log_files_are_ignored(self, tmp_path):
         root = tmp_path / "meta"
         _write(root)
         (root / "aa").mkdir(exist_ok=True)
         (root / "aa" / "half._tmp_").write_text("half", encoding="utf-8")
-        (root / metalog.BOOTSTRAP_MARKER).write_text("x", encoding="utf-8")
+        (root / ".hidden").write_text("x", encoding="utf-8")
 
         assert len(metalog.log_files(root)) == 1
 
     def test_missing_directory_is_not_an_error(self, tmp_path):
         assert metalog.log_files(tmp_path / "nope") == []
         assert metalog.has_logs(tmp_path / "nope") is False
-        assert metalog.bootstrap_done(tmp_path / "nope") is False
 
     def test_read_all_skips_unusable_files(self, tmp_path):
         root = tmp_path / "meta"
@@ -234,17 +233,3 @@ class TestDiscovery:
         (root / "ff" / "ff00.jsonl").write_text("broken", encoding="utf-8")
 
         assert len(list(metalog.read_all(root))) == 1
-
-
-class TestBootstrapMarker:
-    def test_marker_is_separate_from_the_log_files(self, tmp_path):
-        root = tmp_path / "meta"
-        _write(root)
-
-        assert metalog.has_logs(root) is True
-        assert metalog.bootstrap_done(root) is False
-
-        metalog.mark_bootstrap_done(root, WHEN)
-
-        assert metalog.bootstrap_done(root) is True
-        assert len(metalog.log_files(root)) == 1

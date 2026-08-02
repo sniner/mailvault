@@ -372,14 +372,6 @@ class MSGraphClient:
                     exc,
                 )
 
-    def full_backup(
-        self,
-        store: cas.ContentAddressedStorage,
-        since: datetime | None = None,
-        callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
-    ) -> None:
-        base.run_full_backup(self, store, since=since, callback=callback)
-
     def get_messages(
         self,
         folder_name: str,

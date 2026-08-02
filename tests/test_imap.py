@@ -577,54 +577,6 @@ class TestPurge:
 
 
 # ---------------------------------------------------------------------------
-# full_backup
-# ---------------------------------------------------------------------------
-
-
-class TestFullBackup:
-    def test_iterates_all_folders(self, tmp_path):
-        folders = [
-            ([b"\\HasNoChildren"], b"/", "INBOX"),
-            ([b"\\HasNoChildren"], b"/", "Sent"),
-        ]
-        conn = _make_mock_conn(folders=folders)
-        conn.select_folder.return_value = {b"EXISTS": 0}
-        conn.search.return_value = []
-        client = _make_client(conn=conn)
-        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
-
-        client.full_backup(store)
-
-        # Should have selected both folders
-        folder_calls = [c[0][0] for c in conn.select_folder.call_args_list]
-        assert "INBOX" in folder_calls
-        assert "Sent" in folder_calls
-
-    def test_continues_on_folder_error(self, tmp_path):
-        folders = [
-            ([b"\\HasNoChildren"], b"/", "INBOX"),
-            ([b"\\HasNoChildren"], b"/", "Sent"),
-        ]
-        conn = _make_mock_conn(folders=folders)
-        call_count = [0]
-
-        def select_side_effect(name, readonly=True):
-            call_count[0] += 1
-            if name == "INBOX":
-                raise Exception("folder error")
-            return {b"EXISTS": 0}
-
-        conn.select_folder.side_effect = select_side_effect
-        conn.search.return_value = []
-        client = _make_client(conn=conn)
-        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
-
-        # Should not raise despite INBOX error
-        client.full_backup(store)
-        assert call_count[0] >= 2  # both folders attempted
-
-
-# ---------------------------------------------------------------------------
 # get_messages
 # ---------------------------------------------------------------------------
 

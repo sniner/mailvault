@@ -62,18 +62,12 @@ import logging
 import pathlib
 from datetime import datetime
 
-from mailvault.store import atomic, cas
+from mailvault.store import cas
 
 log = logging.getLogger(__name__)
 
 # Default directory of the metadata log inside a store directory.
 DEFAULT_LOG_DIR = "meta"
-
-# Marker written once the bootstrap export has finished. Its absence -- not the
-# absence of log files -- is what makes the export run: an export interrupted
-# halfway leaves files behind, and "some files exist" would then be read as
-# "nothing to do", freezing the archive at partial coverage forever.
-BOOTSTRAP_MARKER = ".bootstrap"
 
 # Payload format version. Readers reject what they do not know rather than
 # misread it; a file with an unknown version is skipped with a warning.
@@ -122,7 +116,7 @@ def log_files(root: pathlib.Path) -> list[pathlib.Path]:
     Sorted by path so a run is reproducible, not because the order carries
     meaning -- folders only accumulate, so a replay gives the same result in any
     order, and the chronology lives in each file's `date` header. Transient files
-    and the bootstrap marker do not match the pattern and are skipped.
+    do not match the `*/*.jsonl` pattern and are skipped.
     """
     if not root.is_dir():
         return []
@@ -142,16 +136,6 @@ def verify_file(path: pathlib.Path) -> bool:
         log.warning("%s: unreadable: %s", path, exc)
         return False
     return hashlib.sha384(raw).hexdigest() == path.name.removesuffix(".jsonl")
-
-
-def bootstrap_done(root: pathlib.Path) -> bool:
-    """True when a bootstrap export has run to completion for this archive."""
-    return (root / BOOTSTRAP_MARKER).exists()
-
-
-def mark_bootstrap_done(root: pathlib.Path, date: datetime) -> None:
-    """Record that the bootstrap export finished, after every file was sealed."""
-    atomic.write_text(root / BOOTSTRAP_MARKER, date.isoformat() + "\n")
 
 
 class LogWriter:

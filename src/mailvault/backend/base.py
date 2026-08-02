@@ -97,13 +97,6 @@ class MailboxClient(Protocol):
 
     def fetch_message(self, msg_id: Any, folder_name: str) -> bytes: ...
 
-    def full_backup(
-        self,
-        store: cas.ContentAddressedStorage,
-        since: datetime | None = ...,
-        callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = ...,
-    ) -> None: ...
-
     def get_messages(
         self,
         folder_name: str,
@@ -170,22 +163,3 @@ def store_message(
             return None
     result.stored += 1
     return store_id
-
-
-def run_full_backup(
-    client: MailboxClient,
-    store: cas.ContentAddressedStorage,
-    since: datetime | None = None,
-    callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
-) -> None:
-    """Back up every folder of a mailbox, logging and skipping folders that fail.
-
-    The default whole-mailbox backup shared by all backends: iterate
-    ``client.folders()`` and delegate each to ``client.folder_backup``. A folder
-    that raises is logged and skipped so the remaining folders still run.
-    """
-    for folder in client.folders():
-        try:
-            client.folder_backup(folder, store, since=since, callback=callback)
-        except Exception as exc:
-            log.error("%s::%s: backup failed: %s", client.job_name, folder, exc)
