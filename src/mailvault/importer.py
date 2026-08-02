@@ -6,7 +6,7 @@ import os
 import pathlib
 
 from mailvault import mailutils
-from mailvault.store import cas
+from mailvault.store import cas, zstd
 
 log = logging.getLogger(__name__)
 
@@ -17,12 +17,8 @@ _EML_SUFFIXES = (".eml", ".eml.zst")
 def _read_eml(path: pathlib.Path) -> bytes:
     """Read an archived email, decompressing `.zst` files transparently."""
     if path.suffix == ".zst":
-        import zstandard
-
-        dctx = zstandard.ZstdDecompressor()
-        with open(path, "rb") as f:
-            with dctx.stream_reader(f) as reader:
-                return reader.read()
+        with open(path, "rb") as f, zstd.open_reader(f) as reader:
+            return reader.read()
     return path.read_bytes()
 
 

@@ -8,6 +8,8 @@ import os
 import pathlib
 from typing import Any
 
+from mailvault.store import zstd
+
 log = logging.getLogger(__name__)
 
 
@@ -45,7 +47,7 @@ class ContentAddressedStorage:
         self.fsync = fsync
         self.blocksize = 16384
         if self.compress:
-            import zstandard  # noqa: F401 — fail fast if not installed
+            zstd.require()  # fail fast if no zstd implementation is available
 
     @property
     def suffix(self) -> str:
@@ -125,16 +127,12 @@ class ContentAddressedStorage:
         tmp_file = file.with_suffix("._tmp_")
         try:
             if self.compress:
-                import zstandard
-
-                cctx = zstandard.ZstdCompressor()
-                with open(tmp_file, "wb") as f:
-                    with cctx.stream_writer(f) as compressor:
-                        while True:
-                            block = reader.read(self.blocksize)
-                            if block is None or len(block) == 0:
-                                break
-                            compressor.write(block)
+                with open(tmp_file, "wb") as f, zstd.open_writer(f) as compressor:
+                    while True:
+                        block = reader.read(self.blocksize)
+                        if block is None or len(block) == 0:
+                            break
+                        compressor.write(block)
             else:
                 with open(tmp_file, "wb") as f:
                     while True:
@@ -184,10 +182,7 @@ class ContentAddressedStorage:
         for a message that has no such line.
         """
         if path.suffix == ".zst":
-            import zstandard
-
-            dctx = zstandard.ZstdDecompressor()
-            with open(path, "rb") as f, dctx.stream_reader(f) as reader:
+            with open(path, "rb") as f, zstd.open_reader(f) as reader:
                 return self._read_until_header_end(reader, limit)
         with open(path, "rb") as f:
             return self._read_until_header_end(f, limit)
@@ -195,12 +190,8 @@ class ContentAddressedStorage:
     def read(self, path: pathlib.Path) -> bytes:
         """Read file content, decompressing transparently if needed."""
         if path.suffix == ".zst":
-            import zstandard
-
-            dctx = zstandard.ZstdDecompressor()
-            with open(path, "rb") as f:
-                with dctx.stream_reader(f) as reader:
-                    return reader.read()
+            with open(path, "rb") as f, zstd.open_reader(f) as reader:
+                return reader.read()
         else:
             return path.read_bytes()
 
@@ -246,25 +237,19 @@ class ContentAddressedStorage:
 
     def compress_all(self) -> tuple[int, int]:
         """Compress all uncompressed files in the store. Returns (compressed, skipped)."""
-        import zstandard
-
-        cctx = zstandard.ZstdCompressor()
         return self._convert_all(
             skip_suffix=".zst",
             target_fn=lambda p: p.with_suffix(p.suffix + ".zst"),
-            converter=cctx.copy_stream,
+            converter=zstd.compress_stream,
             operation="compression",
         )
 
     def decompress_all(self) -> tuple[int, int]:
         """Decompress all compressed files in the store. Returns (decompressed, skipped)."""
-        import zstandard
-
-        dctx = zstandard.ZstdDecompressor()
         return self._convert_all(
             skip_suffix=self.suffix,
             target_fn=lambda p: p.with_suffix(""),
-            converter=dctx.copy_stream,
+            converter=zstd.decompress_stream,
             operation="decompression",
         )
 

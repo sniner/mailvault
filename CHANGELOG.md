@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- **Compression** uses the standard-library `zstd` module on Python 3.14+ (PEP 784); the
+  `zstandard` package is now only required on older interpreters
+
 ### Fixed
 
 - **`delete_after_export`** removed a message from the server before its location was written to
