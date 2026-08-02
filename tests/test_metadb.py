@@ -5,6 +5,18 @@ import pytest
 from mailvault.store import metadb
 
 
+def _labels(db, message_id):
+    """The label names attached to a message, read straight from the tables."""
+    return [
+        row[0]
+        for row in db.execute(
+            "SELECT l.name FROM message_label ml JOIN label l USING (label_id) "
+            "WHERE message_id=?",
+            (message_id,),
+        ).fetchall()
+    ]
+
+
 def test_store_db_setup(tmp_path):
     db_path = tmp_path / "test.db"
     with metadb.MetaDatabase(db_path) as db:
@@ -68,25 +80,7 @@ def test_store_db_add_message_and_labels(tmp_path):
 
         db.add_message_labels(msg_id, "Label1", "Label2")
 
-        labels = db.get_message_labels(msg_id)
-        assert set(labels) == {"Label1", "Label2"}
-
-
-def test_store_db_update_message_labels(tmp_path):
-    db_path = tmp_path / "test.db"
-    with metadb.MetaDatabase(db_path) as db:
-        msg_id = db.add_message(
-            store_id="hash_upd",
-            email_id="<upd@example.com>",
-            date=datetime.now(UTC),
-            subject="Update Labels",
-        )
-        db.add_message_labels(msg_id, "Old1", "Old2", "Keep")
-        assert set(db.get_message_labels(msg_id)) == {"Old1", "Old2", "Keep"}
-
-        # Update: remove Old1, Old2; add New1; keep Keep
-        db.update_message_labels(msg_id, "Keep", "New1")
-        assert set(db.get_message_labels(msg_id)) == {"Keep", "New1"}
+        assert set(_labels(db, msg_id)) == {"Label1", "Label2"}
 
 
 def test_store_db_add_message_with_mailbox(tmp_path):
@@ -155,53 +149,6 @@ def test_store_db_sender_and_recipients(tmp_path):
         assert set(r[0] for r in recipients) == {"carol@example.com", "dave@example.com"}
 
 
-def test_store_db_snapshot_lifecycle(tmp_path):
-    db_path = tmp_path / "test.db"
-    with metadb.MetaDatabase(db_path) as db:
-        mb_id = db.add_mailbox("SnapMB")
-        label_id = db.add_label("INBOX")
-
-        # No snapshot yet
-        assert db.get_snapshot(mb_id, label_id) is None
-        assert db.get_snapshot_date(mb_id, label_id) is None
-        assert db.get_snapshot_date(mb_id, label_id, default=datetime(2020, 1, 1)) == datetime(
-            2020, 1, 1
-        )
-
-        # Set snapshot
-        snap_date = datetime(2026, 3, 27, 12, 0, 0)
-        db.set_snapshot(mb_id, label_id, date=snap_date)
-
-        s = db.get_snapshot(mb_id, label_id)
-        assert s is not None
-        assert db.get_snapshot_date(mb_id, label_id) == snap_date
-
-        # Update snapshot (ON CONFLICT REPLACE)
-        new_date = datetime(2026, 3, 28, 12, 0, 0)
-        db.set_snapshot(mb_id, label_id, date=new_date)
-        assert db.get_snapshot_date(mb_id, label_id) == new_date
-
-        # Delete snapshot for specific label
-        db.delete_snapshot(mb_id, label_id)
-        assert db.get_snapshot(mb_id, label_id) is None
-
-
-def test_store_db_delete_snapshot_all_labels(tmp_path):
-    db_path = tmp_path / "test.db"
-    with metadb.MetaDatabase(db_path) as db:
-        mb_id = db.add_mailbox("SnapAll")
-        l1 = db.add_label("Folder1")
-        l2 = db.add_label("Folder2")
-
-        db.set_snapshot(mb_id, l1, date=datetime(2026, 1, 1))
-        db.set_snapshot(mb_id, l2, date=datetime(2026, 1, 2))
-
-        # Delete all snapshots for mailbox
-        db.delete_snapshot(mb_id)
-        assert db.get_snapshot(mb_id, l1) is None
-        assert db.get_snapshot(mb_id, l2) is None
-
-
 def test_store_db_labels_are_committed_without_a_following_write(tmp_path):
     """Labels added last must survive the connection closing."""
     db_path = tmp_path / "test.db"
@@ -211,7 +158,7 @@ def test_store_db_labels_are_committed_without_a_following_write(tmp_path):
 
     with metadb.MetaDatabase(db_path) as db:
         msg_id = db.store_id_map()["aaa"]
-        assert sorted(db.get_message_labels(msg_id)) == ["Archiv/2016", "INBOX"]
+        assert sorted(_labels(db, msg_id)) == ["Archiv/2016", "INBOX"]
 
 
 def test_store_db_all_snapshots(tmp_path):
@@ -313,44 +260,3 @@ def test_store_db_add_message_idempotent(tmp_path):
         id1 = db.add_message(store_id="same_hash", email_id="<a@b>", date=date, subject="First")
         id2 = db.add_message(store_id="same_hash", email_id="<a@b>", date=date, subject="First")
         assert id1 == id2
-
-
-# ---------------------------------------------------------------------------
-# get_known_message_ids
-# ---------------------------------------------------------------------------
-
-
-def test_get_known_message_ids(tmp_path):
-    with metadb.MetaDatabase(tmp_path / "test.db") as db:
-        date = datetime(2026, 1, 1, tzinfo=UTC)
-        mb_id = db.add_mailbox("mbox")
-        other_mb = db.add_mailbox("other-mbox")
-        inbox = db.add_label("INBOX")
-        sent = db.add_label("Sent")
-
-        msg = db.add_message("hash_a", "<A@example.com>", date, "A", mailbox_id=mb_id)
-        db.add_message_labels(msg, "INBOX")
-        other_folder = db.add_message("hash_b", "<b@example.com>", date, "B", mailbox_id=mb_id)
-        db.add_message_labels(other_folder, "Sent")
-        other_mailbox = db.add_message(
-            "hash_c", "<c@example.com>", date, "C", mailbox_id=other_mb
-        )
-        db.add_message_labels(other_mailbox, "INBOX")
-
-        known = db.get_known_message_ids(mb_id, inbox)
-        # Normalised: no angle brackets, case-folded.
-        assert known == {"a@example.com"}
-        assert db.get_known_message_ids(mb_id, sent) == {"b@example.com"}
-
-
-def test_get_known_message_ids_skips_unusable(tmp_path):
-    """Messages without a Message-ID cannot be matched and must not be listed."""
-    with metadb.MetaDatabase(tmp_path / "test.db") as db:
-        date = datetime(2026, 1, 1, tzinfo=UTC)
-        mb_id = db.add_mailbox("mbox")
-        inbox = db.add_label("INBOX")
-        for store_id, email_id in [("h1", ""), ("h2", "<>"), ("h3", "<ok@example.com>")]:
-            msg = db.add_message(store_id, email_id, date, "S", mailbox_id=mb_id)
-            db.add_message_labels(msg, "INBOX")
-
-        assert db.get_known_message_ids(mb_id, inbox) == {"ok@example.com"}

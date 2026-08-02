@@ -366,7 +366,7 @@ dependencies = [
     { name = "httpx" },
     { name = "imapclient" },
     { name = "msal" },
-    { name = "zstandard" },
+    { name = "zstandard", marker = "python_full_version < '3.14'" },
 ]
 
 [package.dev-dependencies]
@@ -382,7 +382,7 @@ requires-dist = [
     { name = "httpx" },
     { name = "imapclient" },
     { name = "msal" },
-    { name = "zstandard" },
+    { name = "zstandard", marker = "python_full_version < '3.14'" },
 ]
 
 [package.metadata.requires-dev]

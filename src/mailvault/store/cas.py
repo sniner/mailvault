@@ -143,12 +143,18 @@ class ContentAddressedStorage:
         tmp_file = file.with_suffix("._tmp_")
         try:
             if self.compress:
-                with open(tmp_file, "wb") as f, zstd.open_writer(f) as compressor:
-                    while True:
-                        block = reader.read(self.blocksize)
-                        if block is None or len(block) == 0:
-                            break
-                        compressor.write(block)
+                with open(tmp_file, "wb") as f:
+                    with zstd.open_writer(f) as compressor:
+                        while True:
+                            block = reader.read(self.blocksize)
+                            if block is None or len(block) == 0:
+                                break
+                            compressor.write(block)
+                    # The compressor is closed (its frame flushed into f) while f
+                    # is still open, so the fsync covers the whole compressed file.
+                    if self.fsync:
+                        f.flush()
+                        os.fsync(f.fileno())
             else:
                 with open(tmp_file, "wb") as f:
                     while True:

@@ -212,7 +212,9 @@ def migrate_archive(store_path: pathlib.Path) -> MigrationResult:
     log_root = store_path / metalog.DEFAULT_LOG_DIR
     snapshot_state = state.SnapshotState.load(store_path / state.DEFAULT_STATE_NAME)
     date = datetime.now(UTC)
-    with metadb.MetaDatabase(path=legacy) as db:
+    # Read-only: the legacy database is only queried here and then renamed aside,
+    # so setup() must not write DDL into it (nor demand write access to read it).
+    with metadb.MetaDatabase(path=legacy, setup=False) as db:
         result.snapshots = _adopt_database_snapshots(snapshot_state, db)
         written = _export_metalog(db, log_root, date, result)
 

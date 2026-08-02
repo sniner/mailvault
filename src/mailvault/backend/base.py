@@ -136,13 +136,14 @@ def store_message(
 
     The shared tail of every backend's ``folder_backup``: store the bytes, log
     the outcome, and -- if a callback is given -- build and hand over the
-    metadata. ``result.stored`` is incremented on success, ``result.failed`` on a
-    callback error. ``log_ctx`` is the ``mailbox::folder[id]`` prefix the caller
-    would otherwise repeat in every log line.
+    metadata. ``result.stored`` is incremented on success, ``result.failed`` when
+    the location could not be built or recorded. ``log_ctx`` is the
+    ``mailbox::folder[id]`` prefix the caller would otherwise repeat in every log
+    line.
 
-    Returns the store id on success, or ``None`` when the message could not be
-    recorded. A ``None`` return means the caller must not treat the message as
-    archived -- in particular it must not be deleted from the server.
+    Returns the store id on success, or ``None`` when the message's location
+    could not be recorded. A ``None`` return means the caller must not treat the
+    message as archived -- in particular it must not be deleted from the server.
     """
     status, store_id, _path = store.add(msg)
     log.info("%s: %s: id=%s", log_ctx, status, store_id)
@@ -150,20 +151,22 @@ def store_message(
         try:
             metadata = metadata_fn(store_id)
         except Exception as exc:
-            # Building the location record can still fail on its own -- for Gmail
-            # it fetches the message's labels over the network. That is not the
-            # same as failing to archive the message, which by this point is
-            # stored; counting it as a failure would freeze the folder's snapshot
-            # and drop the message out of the metadata. The location reaches the
-            # log on a later run instead.
+            # Building the location can fail on its own -- for Gmail it fetches
+            # the message's labels over the network. The message is stored, but
+            # its location is not, so it must not be treated as archived: a
+            # non-None return here would let the caller delete it from the server
+            # with no record of where it was seen -- the one fact the archive
+            # cannot reconstruct. Fail closed: count it failed so the snapshot
+            # holds, and let the next run re-fetch (the storage deduplicates the
+            # message) and record the location then.
             log.warning("%s: metadata could not be extracted: %s", log_ctx, exc)
-            result.stored += 1
-            return store_id
+            result.failed += 1
+            return None
         try:
             callback(metadata)
         except Exception as exc:
-            # Recording is a different matter: the message is archived but its
-            # location was not written down, and a rerun does fix that.
+            # Same reasoning: the message is archived but its location was not
+            # written down, so a rerun -- never a deletion -- is what fixes it.
             log.exception("%s: recording the metadata failed: %s", log_ctx, exc)
             result.failed += 1
             return None

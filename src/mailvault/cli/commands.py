@@ -146,7 +146,9 @@ def report_migration(source: pathlib.Path, result: jobs.MigrationResult) -> None
         print(f"{source}: delete it once you are satisfied with the archive")
 
 
-def report_create_db(source: pathlib.Path, target: pathlib.Path, result) -> None:
+def report_create_db(
+    source: pathlib.Path, target: pathlib.Path, result: jobs.RebuildResult
+) -> None:
     """Say what went into the database, and name what could not."""
     replay = result.replay
     print(f"{source}: {result.messages:,} message(s) read from the archive")
@@ -165,7 +167,7 @@ def report_create_db(source: pathlib.Path, target: pathlib.Path, result) -> None
     print(f"{target}: written -- a snapshot, stale from the next backup onwards")
 
 
-def report_compact(source: pathlib.Path, result) -> None:
+def report_compact(source: pathlib.Path, result: metalog.CompactResult) -> None:
     """Say how much the log shrank and how many duplicate entries went."""
     if result.files_before == 0:
         print(f"{source}: no metadata log to compact")

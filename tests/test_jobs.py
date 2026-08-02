@@ -374,6 +374,76 @@ def _fake_folder_backup(*store_ids: str, failed: int = 0):
     return run
 
 
+class TestStoreMessage:
+    """A message whose location was not recorded must not be reported as archived:
+    a non-None return lets the caller delete it from the server, and the location
+    is the one fact the archive cannot reconstruct."""
+
+    @staticmethod
+    def _store(tmp_path):
+        return cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+
+    def test_metadata_failure_holds_and_is_not_deletable(self, tmp_path):
+        result = base.BackupResult()
+        recorded: list = []
+
+        def failing_metadata(_store_id):
+            raise RuntimeError("label fetch failed")
+
+        store_id = base.store_message(
+            self._store(tmp_path),
+            DUMMY_EML,
+            result=result,
+            log_ctx="test-job::INBOX[1]",
+            callback=recorded.append,
+            metadata_fn=failing_metadata,
+        )
+
+        # Stored on disk, but its location was never handed to the callback, so
+        # it must count as failed (snapshot holds) and never become deletable.
+        assert store_id is None
+        assert result.failed == 1
+        assert result.stored == 0
+        assert recorded == []
+
+    def test_recording_failure_holds(self, tmp_path):
+        result = base.BackupResult()
+
+        def failing_callback(_metadata):
+            raise RuntimeError("disk full")
+
+        store_id = base.store_message(
+            self._store(tmp_path),
+            DUMMY_EML,
+            result=result,
+            log_ctx="test-job::INBOX[1]",
+            callback=failing_callback,
+            metadata_fn=lambda sid: mailutils.metadata("test-job", "INBOX", sid),
+        )
+
+        assert store_id is None
+        assert result.failed == 1
+        assert result.stored == 0
+
+    def test_success_records_and_returns_the_store_id(self, tmp_path):
+        result = base.BackupResult()
+        recorded: list = []
+
+        store_id = base.store_message(
+            self._store(tmp_path),
+            DUMMY_EML,
+            result=result,
+            log_ctx="test-job::INBOX[1]",
+            callback=recorded.append,
+            metadata_fn=lambda sid: mailutils.metadata("test-job", "INBOX", sid),
+        )
+
+        assert store_id is not None
+        assert result.stored == 1
+        assert result.failed == 0
+        assert [m.store_id for m in recorded] == [store_id]
+
+
 class TestDeleteAfterExport:
     """Deletion is gated on a durable log: purge runs only after a good seal."""
 
@@ -555,6 +625,20 @@ class TestMigration:
         assert not (tmp_path / "store.db").exists()
         assert (tmp_path / "store.db.migrated").exists()
 
+    def test_the_legacy_database_is_not_written_to(self, tmp_path):
+        """Migration only reads store.db, so the renamed file is byte-identical."""
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+            msg_id = db.add_message("aaa", "<a@example.com>", None, "Subject")
+            db.assign_message_to_mailbox(msg_id, db.add_mailbox("job-a"))
+            db.add_message_labels(msg_id, "INBOX")
+        before = (tmp_path / "store.db").read_bytes()
+
+        result = jobs.migrate_archive(tmp_path)
+
+        assert result.needed is True
+        # setup() is skipped for the read, so not one byte of it changed.
+        assert (tmp_path / "store.db.migrated").read_bytes() == before
+
     def test_a_second_run_has_nothing_to_do(self, tmp_path):
         """The absence of store.db is what says "already migrated"."""
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
@@ -668,7 +752,15 @@ class TestRebuildWithLog:
         with metadb.MetaDatabase(tmp_path / "out.db") as db:
             msg_id = db.store_id_map()[store_id]
             assert db.message_mailboxes()[msg_id] == ["mail.example.org"]
-            assert sorted(db.get_message_labels(msg_id)) == ["INBOX", "\\Sent"]
+            labels = [
+                row[0]
+                for row in db.execute(
+                    "SELECT l.name FROM message_label ml JOIN label l USING (label_id) "
+                    "WHERE message_id=?",
+                    (msg_id,),
+                ).fetchall()
+            ]
+            assert sorted(labels) == ["INBOX", "\\Sent"]
 
     def test_replay_restores_a_message_held_in_several_mailboxes(self, tmp_path):
         store_id = self._archive_with_log(
@@ -903,8 +995,7 @@ class TestVerify:
             jobs.verify(job, tmp_path)
 
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
-            mb_id = db.add_mailbox("test-job")
-            assert db.get_snapshot_date(mb_id, db.add_label("INBOX")) == old_snapshot
+            assert db.all_snapshots() == [("test-job", "INBOX", old_snapshot.isoformat())]
 
     def test_rejects_exchange_journal(self, tmp_path):
         job = _make_job(exchange_journal=True, folders=["INBOX"])
