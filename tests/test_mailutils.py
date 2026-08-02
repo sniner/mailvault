@@ -198,21 +198,15 @@ def test_normalize_message_id_matches_across_sources():
 # ---------------------------------------------------------------------------
 
 
-def test_metadata_record(dummy_eml_bytes):
-    md = mailutils.metadata(dummy_eml_bytes, mailbox="mb", folder="INBOX", store_id="deadbeef")
+def test_metadata_record():
+    md = mailutils.metadata(mailbox="mb", folder="INBOX", store_id="deadbeef")
     assert md.mailbox == "mb"
-    assert md.folder == "INBOX"
     assert md.store_id == "deadbeef"
     assert md.folders == ["INBOX"]
-    assert md.subject == "Test Email"
-    assert "test@example.com" in md.sender
-    assert "recipient@example.com" in md.recipients
 
 
-def test_metadata_explicit_folders(dummy_eml_bytes):
-    md = mailutils.metadata(
-        dummy_eml_bytes, mailbox="mb", folder="INBOX", store_id="x", folders=["A", "B"]
-    )
+def test_metadata_explicit_folders():
+    md = mailutils.metadata(mailbox="mb", folder="INBOX", store_id="x", folders=["A", "B"])
     assert md.folders == ["A", "B"]
 
 

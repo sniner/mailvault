@@ -169,14 +169,8 @@ class TestBackup:
                 callback(
                     mailutils.MessageMetadata(
                         mailbox="test-job",
-                        folder="INBOX",
                         store_id="abc123",
-                        email_id="<test@example.com>",
-                        date=datetime(2026, 2, 20, tzinfo=UTC),
-                        subject="Test",
                         folders=["INBOX"],
-                        sender={"sender@example.com"},
-                        recipients={"recipient@example.com"},
                     )
                 )
             return base.BackupResult(total=1, stored=1)
@@ -369,14 +363,8 @@ def _fake_folder_backup(*store_ids: str, failed: int = 0):
                 callback(
                     mailutils.MessageMetadata(
                         mailbox="test-job",
-                        folder=folder_name,
                         store_id=store_id,
-                        email_id=f"<{store_id}@example.com>",
-                        date=datetime(2026, 2, 20, tzinfo=UTC),
-                        subject="Test",
                         folders=[folder_name],
-                        sender={"sender@example.com"},
-                        recipients={"recipient@example.com"},
                     )
                 )
         return base.BackupResult(
@@ -400,14 +388,8 @@ class TestDeleteAfterExport:
                     callback(
                         mailutils.MessageMetadata(
                             mailbox="test-job",
-                            folder=folder_name,
                             store_id=sid,
-                            email_id=f"<{sid}@example.com>",
-                            date=datetime(2026, 2, 20, tzinfo=UTC),
-                            subject="Test",
                             folders=[folder_name],
-                            sender={"sender@example.com"},
-                            recipients={"recipient@example.com"},
                         )
                     )
             return base.BackupResult(
@@ -1176,14 +1158,8 @@ def _storing_backup(eml: bytes):
             callback(
                 mailutils.MessageMetadata(
                     mailbox="test-job",
-                    folder=folder_name,
                     store_id=store_id,
-                    email_id="<a@example.com>",
-                    date=datetime(2026, 2, 20, tzinfo=UTC),
-                    subject="Subject",
                     folders=[folder_name],
-                    sender={"sender@example.com"},
-                    recipients={"recipient@example.com"},
                 )
             )
         return base.BackupResult(total=1, stored=1)

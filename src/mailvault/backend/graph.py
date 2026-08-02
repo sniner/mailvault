@@ -334,8 +334,8 @@ class MSGraphClient:
                 result=result,
                 log_ctx=log_ctx,
                 callback=callback,
-                metadata_fn=lambda sid, m=msg: mailutils.metadata(
-                    m, mailbox=self.job_name, folder=folder_name, store_id=sid
+                metadata_fn=lambda sid: mailutils.metadata(
+                    mailbox=self.job_name, folder=folder_name, store_id=sid
                 ),
             )
             if store_id is None:

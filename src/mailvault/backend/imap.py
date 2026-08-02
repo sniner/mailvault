@@ -197,7 +197,7 @@ class ImapClient:
                     result.failed += len(msg_ids)
 
     def _collect_metadata(
-        self, folder_name: str, msg_id: Any, store_id: str, msg: bytes
+        self, folder_name: str, msg_id: Any, store_id: str
     ) -> mailutils.MessageMetadata:
         if self.gmail:
             # X-GM-LABELS reports every folder the message is in, in canonical
@@ -215,7 +215,6 @@ class ImapClient:
         else:
             folders = [folder_name]
         return mailutils.metadata(
-            msg,
             mailbox=self.job_name,
             folder=folder_name,
             store_id=store_id,
@@ -351,8 +350,8 @@ class ImapClient:
                 result=result,
                 log_ctx=f"{self.job_name}::{folder_name}[{msg_id}]",
                 callback=callback,
-                metadata_fn=lambda sid, mid=msg_id, m=msg: self._collect_metadata(
-                    folder_name=folder_name, msg_id=mid, store_id=sid, msg=m
+                metadata_fn=lambda sid, mid=msg_id: self._collect_metadata(
+                    folder_name=folder_name, msg_id=mid, store_id=sid
                 ),
             )
             if store_id is None:

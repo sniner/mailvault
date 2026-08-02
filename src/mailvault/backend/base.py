@@ -150,12 +150,12 @@ def store_message(
         try:
             metadata = metadata_fn(store_id)
         except Exception as exc:
-            # Reading a field out of a message is not the same as failing to
-            # archive it -- by this point the message is stored. Counting it as
-            # a failure would freeze the folder's snapshot over a header that no
-            # retry will parse any better, and drop the message out of the
-            # metadata entirely. That is how 110 messages of the reference
-            # archive came to sit in the storage with no record anywhere.
+            # Building the location record can still fail on its own -- for Gmail
+            # it fetches the message's labels over the network. That is not the
+            # same as failing to archive the message, which by this point is
+            # stored; counting it as a failure would freeze the folder's snapshot
+            # and drop the message out of the metadata. The location reaches the
+            # log on a later run instead.
             log.warning("%s: metadata could not be extracted: %s", log_ctx, exc)
             result.stored += 1
             return store_id
