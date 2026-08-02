@@ -10,13 +10,10 @@ from datetime import UTC, datetime
 
 from mailvault import conf, mailutils, utils
 from mailvault.backend import base, imap, session
+from mailvault.jobs.common import JobError, _seal_log
 from mailvault.store import cas, metadb, metalog, state
 
 log = logging.getLogger(__name__)
-
-
-class JobError(Exception):
-    pass
 
 
 @dataclasses.dataclass
@@ -28,28 +25,6 @@ class VerifyResult:
     missing: int = 0
     restored: int = 0
     failed: int = 0
-
-
-def _seal_log(writer: metalog.LogWriter, date: datetime) -> bool:
-    """Write out a pass over a folder; return whether the log is now durable.
-
-    A log that cannot be written is reported but does not abort the run -- the
-    messages themselves are archived, and a failed seal simply does not advance
-    what depends on it. In particular it gates deletion: a job that deletes after
-    export must not remove a message from the server whose location was not
-    recorded, so a False return keeps those messages in place to be re-fetched
-    next run. An empty pass records nothing and is durable by definition, so it
-    returns True.
-    """
-    recorded, places = len(writer), writer.places
-    try:
-        paths = writer.seal(date)
-    except OSError as exc:
-        log.error("%s: metadata log not written: %s", writer.root, exc)
-        return False
-    if paths:
-        log.info("%s: %s message(s) recorded in %s place(s)", writer.root, recorded, places)
-    return True
 
 
 # What a migrated database is renamed to. Not deleted: renaming says "the log is
