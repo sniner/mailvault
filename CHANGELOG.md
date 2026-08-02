@@ -1,38 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Added
-
-- **`archive compact`** consolidates the metadata log: it folds the many small per-folder files
-  backups leave -- with entries repeated across the incremental overlap -- into one file per
-  mailbox/folder holding each observation once. Lossless and safe to interrupt; the originals are
-  removed only after the consolidated files are written and verified
-
-- **`backup --index-db`** keeps a queryable SQLite database up to date beside the archive
-  (`index.db`), refreshed after each backup. A convenience projection, never a source of truth:
-  only the log files added since the last refresh are folded in, and a database that is missing or
-  unreadable is rebuilt from scratch. Mail added by `archive import` writes no log and is not
-  picked up -- rebuild with `archive create-db` for that. Also settable as `index_db` under
-  `[global]` in the config
-
-### Changed
-
-- **Compression** uses the standard-library `zstd` module on Python 3.14+ (PEP 784); the
-  `zstandard` package is now only required on older interpreters
-
-### Fixed
-
-- **`delete_after_export`** removed a message from the server before its location was written to
-  the log. A crash or a failed log write in that window left the archived `.eml` with no record of
-  where it was seen -- and, the server copy being gone, no way to recover it. A message is now
-  deleted only after the folder's metadata log has been sealed to disk; a seal that fails holds the
-  deletion back entirely, and the messages are re-fetched (and deduplicated) next run
-
-- **Incremental snapshots** no longer advance when the location log could not be written. A folder
-  whose downloads were clean but whose log did not reach disk is re-fetched next run and recorded
-  again, rather than being skipped for good with its locations lost
-
 ## 0.8.0 (2026-08-02)
 
 ### Breaking changes
@@ -78,6 +45,18 @@
 
 - **`archive migrate <archive>`** moves an older archive off its database, as described above
 
+- **`archive compact`** consolidates the metadata log: it folds the many small per-folder files
+  backups leave -- with entries repeated across the incremental overlap -- into one file per
+  mailbox/folder holding each observation once. Lossless and safe to interrupt; the originals are
+  removed only after the consolidated files are written and verified
+
+- **`backup --index-db`** keeps a queryable SQLite database up to date beside the archive
+  (`index.db`), refreshed after each backup. A convenience projection, never a source of truth:
+  only the log files added since the last refresh are folded in, and a database that is missing or
+  unreadable is rebuilt from scratch. Mail added by `archive import` writes no log and is not
+  picked up -- rebuild with `archive create-db` for that. Also settable as `index_db` under
+  `[global]` in the config
+
 ### Changed
 
 - **`verify` no longer needs a database.** It reads which messages are archived for a folder
@@ -92,7 +71,20 @@
 - **Reading a message's headers no longer reads the message.** Anything that only needs headers
   stops at the blank line, which on a real archive is one to five per cent of the bytes
 
+- **Compression** uses the standard-library `zstd` module on Python 3.14+ (PEP 784); the
+  `zstandard` package is now only required on older interpreters
+
 ### Fixed
+
+- **`delete_after_export`** removed a message from the server before its location was written to
+  the log. A crash or a failed log write in that window left the archived `.eml` with no record of
+  where it was seen -- and, the server copy being gone, no way to recover it. A message is now
+  deleted only after the folder's metadata log has been sealed to disk; a seal that fails holds the
+  deletion back entirely, and the messages are re-fetched (and deduplicated) next run
+
+- **Incremental snapshots** no longer advance when the location log could not be written. A folder
+  whose downloads were clean but whose log did not reach disk is re-fetched next run and recorded
+  again, rather than being skipped for good with its locations lost
 
 - **A message whose headers could not be parsed was dropped from the metadata entirely.** An
   exception while *reading* a field was treated as a failure to *store* the message, though it
