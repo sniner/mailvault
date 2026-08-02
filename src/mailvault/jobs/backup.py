@@ -63,15 +63,15 @@ def _backup_to_log(
     store: cas.ContentAddressedStorage,
     job: conf.JobConfig,
     store_path: pathlib.Path,
+    incremental: bool = True,
 ) -> None:
     """Back up the selected folders, recording locations and resume state."""
-    migrate_archive(store_path)
     snapshot_state = state.SnapshotState.load(store_path / state.DEFAULT_STATE_NAME)
     log_root = store_path / metalog.DEFAULT_LOG_DIR
     folders = job.folders if job.folders else mb.folders()
     for folder in folders:
         try:
-            _backup_folder(mb, store, job, folder, snapshot_state, log_root)
+            _backup_folder(mb, store, job, folder, snapshot_state, log_root, incremental)
         except Exception as exc:
             # One folder that cannot be read must not cost the remaining ones;
             # its snapshot simply does not advance and the next run tries again.
@@ -85,9 +85,10 @@ def _backup_folder(
     folder: str,
     snapshot_state: state.SnapshotState,
     log_root: pathlib.Path,
+    incremental: bool = True,
 ) -> None:
     """Back up one folder, recording where its messages were seen."""
-    start_date = snapshot_state.get_date(job.name, folder) if job.incremental else None
+    start_date = snapshot_state.get_date(job.name, folder) if incremental else None
     snapshot_date = datetime.now(UTC)
     log_writer = metalog.LogWriter(log_root)
     result = mb.folder_backup(
@@ -160,15 +161,24 @@ def backup(
     store_path: pathlib.Path,
     compress: bool = False,
     index_db: bool = False,
+    incremental: bool = True,
 ) -> None:
     """Back up one job's folders into the archive at `store_path`.
 
     `compress` stores the messages zstd-compressed; `index_db` refreshes the
-    queryable `index.db` projection beside the archive once the backup is done.
+    queryable `index.db` projection beside the archive once the backup is done;
+    `incremental` resumes each folder from its snapshot instead of re-fetching it.
+
+    Migrating a legacy archive happens first, before the mailbox is opened: it is
+    a purely local operation that can take a while on a large `store.db`, and
+    there is no reason to hold a server connection open across it. Doing it here
+    also puts the "migrating, this may take a moment" line right after the job
+    starts, rather than after a silent connect.
     """
+    migrate_archive(store_path)
     with session.open_mailbox(job) as mb:
         store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
-        _backup_to_log(mb, store, job, store_path)
+        _backup_to_log(mb, store, job, store_path, incremental=incremental)
     if index_db:
         _refresh_query_db(store_path)
 

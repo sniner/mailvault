@@ -209,6 +209,15 @@ def migrate_archive(store_path: pathlib.Path) -> MigrationResult:
         return result
     result.needed = True
 
+    # Said before the work, not after: reading the whole legacy database and
+    # writing the log can take a minute on a large archive, and without this the
+    # run looks stuck between the job starting and the "migrated" line below.
+    log.info(
+        "%s: migrating an archive from an earlier version onto the log -- "
+        "this happens once and may take a moment",
+        store_path,
+    )
+
     log_root = store_path / metalog.DEFAULT_LOG_DIR
     snapshot_state = state.SnapshotState.load(store_path / state.DEFAULT_STATE_NAME)
     date = datetime.now(UTC)

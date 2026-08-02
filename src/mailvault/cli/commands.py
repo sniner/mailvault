@@ -46,7 +46,13 @@ def _run_job(job: conf.JobConfig, args: argparse.Namespace, config: conf.Config)
     elif args.command == "backup":
         compress = args.compress or config.compress
         index_db = args.index_db or config.index_db
-        jobs.backup(job, args.destination, compress=compress, index_db=index_db)
+        jobs.backup(
+            job,
+            args.destination,
+            compress=compress,
+            index_db=index_db,
+            incremental=config.incremental,
+        )
     elif args.command == "verify":
         compress = args.compress or config.compress
         results = jobs.verify(job, args.destination, repair=args.repair, compress=compress)

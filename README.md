@@ -505,11 +505,14 @@ have IMAP-style flags.
 
 ### Global options
 
-Global options can be set in a `[global]` section:
+Some options apply to the whole run rather than to a single mailbox and are set
+in a `[global]` section: `compress`, `index_db`, and `incremental`. They are
+marked *(global option)* in the tables below.
 
 ```toml
 [global]
 compress = true
+incremental = true   # the default; set to false to re-fetch every folder in full
 
 [[job]]
 name = "gmail.com"
@@ -571,8 +574,8 @@ with a warning.
 | `tls_verify_cert` | `true` | Verify the TLS certificate |
 | `exchange_journal` | `false` | Extract original emails from MS Exchange journal messages |
 | `delete_after_export` | `false` | Delete emails from the server after export (use with caution) |
-| `incremental` | `true` | Only download messages added since the last backup run |
 | `max_retries` | `5` | Retries for failed MS Graph requests (throttling, gateway and connection errors) |
+| `incremental` | `true` | Only download messages added since the last backup run (global option) |
 | `compress` | `false` | Compress stored emails with zstd (global option) |
 | `index_db` | `false` | Maintain a queryable `index.db` alongside the archive, refreshed after each backup (global option) |
 

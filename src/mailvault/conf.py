@@ -93,6 +93,7 @@ def _resolve_values(data: dict, allow_exec: bool = False) -> dict:
 RETIRED_FIELDS = {
     "with_db": "metadata is always recorded now, and there is no database to have",
     "with_metadata": "metadata is always recorded now",
+    "incremental": "it is a global option now -- set it once under [global], not per job",
 }
 
 
@@ -113,7 +114,6 @@ class JobConfig:
     exchange_journal: bool = False
     trash_folder: str | None = None
     error_folder: str | None = None
-    incremental: bool = True
     role: str | None = None
     move_to_archive: bool = False
     archive_folder: str | None = None
@@ -172,6 +172,7 @@ class Config:
     jobs: list[JobConfig] = dataclasses.field(default_factory=list)
     compress: bool = False
     index_db: bool = False
+    incremental: bool = True
 
     @classmethod
     def from_toml(cls, data: dict, allow_exec: bool = False) -> Config:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -124,7 +125,7 @@ class TestBackup:
         assert s.get_date("test-job", "INBOX") is not None
 
     def test_backup_incremental_uses_snapshot(self, tmp_path):
-        job = _make_job(folders=["INBOX"], incremental=True)
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
 
@@ -139,14 +140,14 @@ class TestBackup:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
-            jobs.backup(job, tmp_path)
+            jobs.backup(job, tmp_path, incremental=True)
 
         call_kwargs = mock_client.folder_backup.call_args
         since = call_kwargs.kwargs.get("since") or call_kwargs[1].get("since")
         assert since == snapshot_date
 
     def test_backup_non_incremental_ignores_snapshot(self, tmp_path):
-        job = _make_job(folders=["INBOX"], incremental=False)
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
 
@@ -154,7 +155,7 @@ class TestBackup:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
-            jobs.backup(job, tmp_path)
+            jobs.backup(job, tmp_path, incremental=False)
 
         call_kwargs = mock_client.folder_backup.call_args
         since = call_kwargs.kwargs.get("since") or call_kwargs[1].get("since")
@@ -265,7 +266,7 @@ class TestSnapshotStateFile:
 
     def test_state_file_takes_precedence_over_database(self, tmp_path):
         """The state file is the durable copy, so it decides where a run resumes."""
-        job = _make_job(folders=["INBOX"], incremental=True)
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
 
@@ -283,7 +284,7 @@ class TestSnapshotStateFile:
 
     def test_database_snapshot_is_adopted_when_state_file_is_absent(self, tmp_path):
         """Upgrading an existing archive must not trigger a full re-fetch."""
-        job = _make_job(folders=["INBOX"], incremental=True)
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
 
@@ -299,7 +300,7 @@ class TestSnapshotStateFile:
 
     def test_all_database_snapshots_are_adopted_at_once(self, tmp_path):
         """One run must carry over every folder, not just the ones it visits."""
-        job = _make_job(folders=["INBOX"], incremental=True)
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
 
@@ -320,7 +321,7 @@ class TestSnapshotStateFile:
         assert inbox_date > untouched
 
     def test_adoption_never_overwrites_an_existing_state_file(self, tmp_path):
-        job = _make_job(folders=["INBOX"], incremental=True)
+        job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
 
@@ -652,6 +653,25 @@ class TestMigration:
 
         assert result.needed is False
         assert len(metalog.log_files(tmp_path / "meta")) == 1
+
+    def test_it_announces_the_migration_before_doing_it(self, tmp_path, caplog):
+        """The slow work must not look like a hang: say it is happening first."""
+        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+            msg_id = db.add_message("aaa", "<a@example.com>", None, "Subject")
+            db.assign_message_to_mailbox(msg_id, db.add_mailbox("job-a"))
+
+        with caplog.at_level(logging.INFO):
+            jobs.migrate_archive(tmp_path)
+
+        assert "may take a moment" in caplog.text
+
+    def test_nothing_to_migrate_says_nothing(self, tmp_path, caplog):
+        """No legacy database, no announcement -- the common case stays quiet."""
+        with caplog.at_level(logging.INFO):
+            result = jobs.migrate_archive(tmp_path)
+
+        assert result.needed is False
+        assert "may take a moment" not in caplog.text
 
     def test_an_interrupted_migration_is_simply_repeated(self, tmp_path):
         """store.db still there means not done -- exporting twice is harmless."""

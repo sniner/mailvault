@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.1 (2026-08-02)
+
+### Breaking changes
+
+- **`incremental` is a global option now, set once under `[global]` rather than per job.** It
+  decides how a run resumes, not how one mailbox is reached, so a value per job only invited the
+  two to disagree. The default is unchanged (`true`). A job that still sets `incremental` says so
+  on load and the line is dropped, rather than being quietly obeyed for that one mailbox -- move
+  it into `[global]`
+
+### Changed
+
+- **A legacy archive is migrated before the mailbox is opened, and says so.** The first backup of
+  a pre-0.8 archive has to move `store.db` onto the log, which on a large archive takes a moment;
+  it used to happen silently after the job's first line, so the run looked stuck. It now prints
+  that it is migrating and that this happens once, and it does the work -- which is purely local
+  -- before connecting to the server, so no mailbox connection is held open across it
+
 ## 0.8.0 (2026-08-02)
 
 ### Breaking changes

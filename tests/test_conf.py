@@ -36,6 +36,7 @@ def test_load_all_job_defaults(tmp_path):
     toml_file.write_text('[[job]]\nname = "job1"\nusername = "user"\npassword = "pass"\n')
     config = conf.load(toml_file)
     assert config.compress is False
+    assert config.incremental is True
     job = config.jobs[0]
     assert job.server == "localhost"
     assert job.port == 993
@@ -47,7 +48,6 @@ def test_load_all_job_defaults(tmp_path):
     assert job.ignore_folder_names == []
     assert job.delete_after_export is False
     assert job.exchange_journal is False
-    assert job.incremental is True
     assert job.move_to_archive is False
 
 
@@ -204,10 +204,17 @@ class TestTomlConfig:
         toml_file.write_text('[[job]]\nname = "test"\n')
         config = conf.load(toml_file)
         assert config.compress is False
+        assert config.incremental is True
         job = config.jobs[0]
         assert job.server == "localhost"
         assert job.port == 993
         assert job.tls is True
+
+    def test_load_toml_global_incremental(self, tmp_path):
+        toml_file = tmp_path / "test.toml"
+        toml_file.write_text('[global]\nincremental = false\n\n[[job]]\nname = "test"\n')
+        config = conf.load(toml_file)
+        assert config.incremental is False
 
     def test_load_toml_no_global(self, tmp_path):
         toml_file = tmp_path / "test.toml"
@@ -234,7 +241,6 @@ class TestTomlConfig:
             "tls = false\n"
             'folders = ["INBOX", "Sent"]\n'
             'ignore_folder_flags = ["Junk"]\n'
-            "incremental = false\n"
         )
         config = conf.load(toml_file)
         job = config.jobs[0]
@@ -243,7 +249,6 @@ class TestTomlConfig:
         assert job.tls is False
         assert job.folders == ["INBOX", "Sent"]
         assert job.ignore_folder_flags == ["Junk"]
-        assert job.incremental is False
 
     def test_load_toml_env_expansion(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TEST_PASS", "s3cret")
@@ -313,3 +318,21 @@ def test_the_later_name_is_reported_too(tmp_path, caplog):
     conf.load(path)
 
     assert "'with_metadata' no longer exists" in caplog.text
+
+
+def test_per_job_incremental_is_reported_as_global_now(tmp_path, caplog):
+    """It moved to [global]; a per-job setting is dropped, not silently obeyed."""
+    path = tmp_path / "old.toml"
+    path.write_text(
+        '[[job]]\nname = "j"\nserver = "s"\nusername = "u"\npassword = "p"\n'
+        "incremental = false\n",
+        encoding="utf-8",
+    )
+
+    config = conf.load(path)
+
+    assert "'incremental' no longer exists" in caplog.text
+    assert "global option now" in caplog.text
+    # Dropped from the job, and the global default is unaffected by the stray line.
+    assert not hasattr(config.jobs[0], "incremental")
+    assert config.incremental is True
