@@ -360,4 +360,6 @@ def test_date_keeps_a_valid_offset_untouched():
     parsed = mailutils.date(header)
 
     assert parsed is not None
-    assert parsed.utcoffset().total_seconds() == -5 * 3600
+    offset = parsed.utcoffset()
+    assert offset is not None
+    assert offset.total_seconds() == -5 * 3600

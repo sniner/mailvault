@@ -315,7 +315,9 @@ class TestSnapshotStateFile:
         assert s.get_date("test-job", "Sent") == untouched
         assert s.get_date("test-job", "Archiv/2016") == untouched
         # The visited folder advanced, the others kept the adopted timestamp.
-        assert s.get_date("test-job", "INBOX") > untouched
+        inbox_date = s.get_date("test-job", "INBOX")
+        assert inbox_date is not None
+        assert inbox_date > untouched
 
     def test_adoption_never_overwrites_an_existing_state_file(self, tmp_path):
         job = _make_job(folders=["INBOX"], incremental=True)

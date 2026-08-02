@@ -44,6 +44,7 @@ class TestWriting:
         path.write_text(body.replace("bbbb", "cccc"), encoding="utf-8")
 
         logfile = metalog.read_log(path)
+        assert logfile is not None
 
         assert "damaged" in caplog.text
         assert logfile.store_ids == ["aaaa", "cccc"]
@@ -82,13 +83,17 @@ class TestWriting:
         """Names like 'Archiv/2016' must never become path components."""
         (path,) = _write(tmp_path / "meta", folder="Archiv/2016")
 
+        logfile = metalog.read_log(path)
+        assert logfile is not None
         assert "/" not in path.name
-        assert metalog.read_log(path).folder == "Archiv/2016"
+        assert logfile.folder == "Archiv/2016"
 
     def test_backslash_folder_survives(self, tmp_path):
         (path,) = _write(tmp_path / "meta", folder="\\Sent")
 
-        assert metalog.read_log(path).folder == "\\Sent"
+        logfile = metalog.read_log(path)
+        assert logfile is not None
+        assert logfile.folder == "\\Sent"
 
     def test_byte_folder_names_are_decoded(self, tmp_path):
         """Gmail reports its folder names as raw bytes, which JSON cannot hold."""
@@ -97,7 +102,9 @@ class TestWriting:
 
         (path,) = writer.seal(WHEN)
 
-        assert metalog.read_log(path).folder == "\\Sent"
+        logfile = metalog.read_log(path)
+        assert logfile is not None
+        assert logfile.folder == "\\Sent"
 
     def test_message_without_a_folder_is_recorded_against_the_mailbox(self, tmp_path):
         """Knowing less is not the same as knowing nothing."""
@@ -107,6 +114,7 @@ class TestWriting:
         (path,) = writer.seal(WHEN)
 
         logfile = metalog.read_log(path)
+        assert logfile is not None
         assert logfile.mailbox == "job"
         assert logfile.folder is None
         assert logfile.store_ids == [STORE_ID]
@@ -143,6 +151,7 @@ class TestReading:
         )
 
         logfile = metalog.read_log(path)
+        assert logfile is not None
 
         assert logfile.mailbox == "mail.example.org"
         assert logfile.folder == "INBOX"
@@ -154,7 +163,9 @@ class TestReading:
         body = path.read_text(encoding="utf-8")
         path.write_text(body[: body.rindex("\n") - 12], encoding="utf-8")
 
-        assert metalog.read_log(path).store_ids == ["aaa"]
+        logfile = metalog.read_log(path)
+        assert logfile is not None
+        assert logfile.store_ids == ["aaa"]
 
     def test_truncation_on_a_line_boundary_is_reported(self, tmp_path, caplog):
         """A file cut at a newline parses cleanly and is still short."""
@@ -163,6 +174,7 @@ class TestReading:
         path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
 
         logfile = metalog.read_log(path)
+        assert logfile is not None
 
         assert logfile.store_ids == ["aaa", "bbb"]
         assert "header declares 3 message(s) but 2 were readable" in caplog.text
@@ -199,7 +211,9 @@ class TestReading:
             encoding="utf-8",
         )
 
-        assert metalog.read_log(path).store_ids == ["ok"]
+        logfile = metalog.read_log(path)
+        assert logfile is not None
+        assert logfile.store_ids == ["ok"]
         assert "no usable store_id" in caplog.text
 
 
