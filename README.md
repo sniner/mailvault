@@ -171,9 +171,8 @@ message and the server's journal envelope carry different `Message-ID`s.
 
 `verify` is a last resort, not routine. A folder whose downloads partly failed
 does not advance its snapshot, so the next ordinary backup fetches it again by
-itself. What is left for `verify` are archives from older versions, jobs that
-keep no metadata, and mail moved into a folder with an internal date older than
-the snapshot.
+itself. What is left for `verify` are archives from older versions and mail moved
+into a folder with an internal date older than the snapshot.
 
 
 ## Managing the archive

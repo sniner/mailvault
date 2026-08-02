@@ -1,3 +1,5 @@
+"""Small general-purpose helpers with no mailvault-specific knowledge."""
+
 from __future__ import annotations
 
 import collections.abc

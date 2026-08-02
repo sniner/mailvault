@@ -1,9 +1,11 @@
 """Back up the selected folders, recording where each message was seen.
 
-A backup writes only the message (into the content-addressed storage) and its
-location (into the log). Everything else a query might want -- sender, subject,
-date -- stays in the message itself. Deletion after export is gated on the log
-being sealed, so a message leaves the server only once its location is durable.
+A backup writes the message (into the content-addressed storage) and its location
+(into the log); everything else a query might want -- sender, subject, date --
+stays in the message itself. Deletion after export is gated on the log being
+sealed, so a message leaves the server only once its location is durable. With
+`--index-db` it also refreshes a queryable `index.db` projection afterwards
+(see `storedb`).
 """
 
 from __future__ import annotations
@@ -45,9 +47,9 @@ def _location_writer(
 ) -> collections.abc.Callable[[mailutils.MessageMetadata], None]:
     """Build the callback that records where a message was seen.
 
-    That is all a backup writes about a message now. Subject, sender and date are
-    in the message itself, so anything that wants them reads them back out of the
-    archive -- there is no database to keep up to date any more.
+    A backup records only the location; subject, sender and date are in the
+    message itself, so anything that wants them reads them back out of the archive
+    rather than from a row kept in step with it.
     """
 
     def _record(email: mailutils.MessageMetadata) -> None:
@@ -159,6 +161,11 @@ def backup(
     compress: bool = False,
     index_db: bool = False,
 ) -> None:
+    """Back up one job's folders into the archive at `store_path`.
+
+    `compress` stores the messages zstd-compressed; `index_db` refreshes the
+    queryable `index.db` projection beside the archive once the backup is done.
+    """
     with session.open_mailbox(job) as mb:
         store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
         _backup_to_log(mb, store, job, store_path)

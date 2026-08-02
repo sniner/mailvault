@@ -1,3 +1,13 @@
+"""The queryable SQLite database built from the archive.
+
+The archive itself no longer holds a database -- its metadata lives in the
+append-only log under `meta/`. This module turns that log plus the messages into
+a database you can run SQL against: the legacy `store.db` a migration reads out
+of, and the `index.db` projection built beside a current archive. It owns the
+schema (`setup()`), a reentrant transaction discipline, and the lookup-table
+interning; `jobs.storedb` drives it.
+"""
+
 from __future__ import annotations
 
 import collections.abc
@@ -13,7 +23,8 @@ from mailvault import mailutils
 
 log = logging.getLogger(__name__)
 
-# Default filename of the metadata database inside a store directory.
+# The legacy database filename. Archives no longer keep a database inside them;
+# this is the name the migration looks for and renames to `store.db.migrated`.
 DEFAULT_DB_NAME = "store.db"
 
 
@@ -22,6 +33,12 @@ class RollbackException(Exception):
 
 
 class MetaDatabase:
+    """Open a database as a context manager, running `setup()` on entry.
+
+    `with MetaDatabase(path) as db:` yields a `MetaDatabaseConnection` and closes
+    the connection on exit.
+    """
+
     def __init__(self, path: pathlib.Path | str):
         self.dbconn = None
         self.client = None
@@ -44,6 +61,13 @@ class MetaDatabase:
 
 
 class DatabaseConnection:
+    """A SQLite connection with a reentrant `transaction()` block.
+
+    Nested `transaction()` calls share one outermost commit, so each write helper
+    can wrap itself in a transaction and still batch when a caller wraps a whole
+    run in one. `rollback()` aborts the enclosing block by raising.
+    """
+
     def __init__(self, dbconn: sqlite3.Connection):
         self.dbconn = dbconn
         self.lock = threading.RLock()
@@ -90,6 +114,13 @@ class DatabaseConnection:
 
 
 class MetaDatabaseConnection(DatabaseConnection):
+    """The archive's schema and the operations that fill and query it.
+
+    `setup()` creates the tables and the `v_messages` / `v_duplicates` views; the
+    rest insert messages, addresses, subjects and locations, interning the
+    lookup-table values through per-instance id caches.
+    """
+
     def __init__(self, dbconn: sqlite3.Connection):
         super().__init__(dbconn)
         # Per-instance id caches for the lookup tables. These map a value (folder
@@ -457,10 +488,11 @@ class MetaDatabaseConnection(DatabaseConnection):
     def all_snapshots(self) -> list[tuple[str, str, str]]:
         """Return (mailbox, folder, timestamp) for every snapshot in the database.
 
-        Used once per archive to carry the timestamps of an older archive over
-        into the state file. A missing table is not an error: it only exists in
-        databases written before the state file did, and a database rebuilt by a
-        current version no longer creates one.
+        Used once per archive to carry the timestamps of a legacy archive over
+        into the state file. `setup()` always creates the table, but a database
+        built by a current version never fills it -- resume timestamps live in
+        `state.json` now -- so here it simply returns nothing. The guard against a
+        missing table is defensive, for a database old enough to predate it.
         """
         try:
             rows = self.execute(

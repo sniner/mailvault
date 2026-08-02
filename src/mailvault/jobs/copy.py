@@ -97,6 +97,12 @@ def _idle_copy(
 
 
 def copy(source: conf.JobConfig, destination: conf.JobConfig, idle: bool = False) -> None:
+    """Copy mail from the source mailbox to the destination.
+
+    With `move_to_archive` set, each copied message is also filed into the source's
+    dated `archive_folder`. `idle` keeps an IMAP connection open and copies new
+    INBOX mail as it arrives, reconnecting on failure.
+    """
     if source.move_to_archive:
         if source.archive_folder:
             archive_folder = source.archive_folder

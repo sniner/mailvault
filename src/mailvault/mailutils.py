@@ -1,3 +1,12 @@
+"""Reading fields out of a raw email: headers, dates, addresses, Message-ID.
+
+Everything the rest of mailvault needs to know about a message is parsed here,
+from bytes -- subject, sender and recipients, date, Message-ID -- along with the
+`MessageMetadata` record a backup carries and the unwrapping of Exchange journal
+envelopes. The archive stores the message itself, so these are read back out of
+it on demand rather than kept in a database.
+"""
+
 from __future__ import annotations
 
 import bisect
@@ -252,12 +261,12 @@ def subject(msg: email.message.EmailMessage) -> str:
 
 @dataclasses.dataclass(frozen=True)
 class MessageMetadata:
-    """The metadata record extracted from a message and fed to the store database.
+    """The metadata record a backend extracts from a message when archiving it.
 
-    Produced by :func:`metadata` in the backends and consumed by the store
-    callback in ``jobs``. Being a dataclass rather than a bare dict, a mistyped
-    field name is caught statically instead of surfacing as a runtime KeyError in
-    the middle of a backup run.
+    Produced by :func:`metadata` in the backends and handed to the backup's
+    callback, which records the message's location in the metadata log. Being a
+    dataclass rather than a bare dict, a mistyped field name is caught statically
+    instead of surfacing as a runtime KeyError in the middle of a backup run.
 
     ``folder`` is where the message was looked for; ``folders`` is where it
     actually turned out to be. The two differ for Gmail, which reports every
@@ -287,7 +296,7 @@ def metadata(
     store_id: str,
     folders: list | None = None,
 ) -> MessageMetadata:
-    """Extract the metadata record that the storage database is fed with."""
+    """Extract the metadata record a backend hands to the backup callback."""
     header = decode_email_header(msg)
     from_addrs, to_addrs = addresses(header)
     return MessageMetadata(

@@ -1,3 +1,11 @@
+"""Loading the TOML configuration into `Config` and `JobConfig`.
+
+Parses the `[global]` options and the `[[job]]` list, expands `${VAR}` and
+`_cmd` values (the latter only with `--allow-exec`), and drops fields that were
+retired in an earlier version with a warning rather than silently restoring a
+default.
+"""
+
 from __future__ import annotations
 
 import dataclasses
@@ -205,6 +213,11 @@ def load(path: pathlib.Path | str, allow_exec: bool = False) -> Config:
 
 
 def find(configs: list[JobConfig], key: str, value: str) -> JobConfig | None:
+    """Return the first job whose `key` attribute equals `value`, case-insensitively.
+
+    Used to resolve the `source`/`destination` roles for `copy`. Returns None when
+    no job matches.
+    """
     _value = value.casefold()
     return next(
         (c for c in configs if (getattr(c, key, "") or "").casefold() == _value),

@@ -78,7 +78,13 @@ class MailboxClient(Protocol):
         store: cas.ContentAddressedStorage,
         since: datetime | None = ...,
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = ...,
-    ) -> BackupResult: ...
+    ) -> BackupResult:
+        """Store a folder's messages, recording each via `callback`.
+
+        Deletes nothing; the ids of stored messages go into
+        `BackupResult.deletable` for the caller to `purge` after the log is sealed.
+        """
+        ...
 
     def purge(self, folder_name: str, msg_ids: collections.abc.Sequence[Any]) -> None:
         """Delete the given messages from the server.

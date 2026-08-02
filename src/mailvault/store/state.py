@@ -1,12 +1,13 @@
 """Where the next incremental run picks up, kept as a small JSON file.
 
 The per-folder snapshot timestamps decide where the next incremental run picks
-up. They also live in the metadata database, but that database is a SQLite file
-rewritten in place -- over SMB or NFS a torn write can take the whole file with
-it, and with it the record of what has already been fetched.
+up. They used to live in a SQLite database inside the archive -- a file rewritten
+in place, where over SMB or NFS a torn write can take the whole file with it, and
+with it the record of what has already been fetched. That is why they are kept
+here instead.
 
-This module keeps the same handful of timestamps in `state.json` in the archive
-and only ever replaces that file atomically: write a temporary file,
+This module keeps that handful of timestamps in `state.json` in the archive and
+only ever replaces that file atomically: write a temporary file,
 flush it to disk, then rename it over the old one. A rename within a directory
 is atomic on every filesystem in practical use, so a reader sees either the
 previous state or the new one, never a half-written mixture. The worst case is

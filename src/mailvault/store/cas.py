@@ -1,3 +1,12 @@
+"""Content-addressed storage: files named by the hash of their content.
+
+The discipline underneath both the mail store (the `.eml` files) and the metadata
+log. A file's name is its own hash, so it is written once, never modified, and
+carries its own integrity check; adding the same bytes twice is a no-op. Entries
+can be transparently zstd-compressed (through `mailvault.store.zstd`), and the
+header of a stored message can be read without pulling the whole body.
+"""
+
 from __future__ import annotations
 
 import collections.abc
@@ -24,6 +33,13 @@ def _header_end(buf: bytes | bytearray, start: int = 0) -> int | None:
 
 
 class ContentAddressedStorage:
+    """A hash-named store under `root_dir`, sharded `depth` levels deep.
+
+    `add` writes new content, returning EXISTS for content already present;
+    `read` and `read_header` read it back, decompressing `.zst` entries
+    transparently.
+    """
+
     def __init__(
         self,
         root_dir: str | pathlib.Path = ".",

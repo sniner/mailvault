@@ -300,6 +300,12 @@ class MSGraphClient:
         since: datetime | None = None,
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> base.BackupResult:
+        """Store a folder's messages, recording each via `callback`.
+
+        Nothing is deleted here: the ids of successfully stored messages are
+        collected in `BackupResult.deletable`, and the caller purges them only
+        after the metadata log is sealed.
+        """
         folder_id = self._resolve_folder(folder_name)
         messages = list(self._iter_messages(folder_name, folder_id, since))
         log.info("%s::%s: found %s messages", self.job_name, folder_name, len(messages))

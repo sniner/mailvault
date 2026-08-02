@@ -1,3 +1,12 @@
+"""Import existing `.eml` collections into the content-addressed store.
+
+For pulling mail into an archive from somewhere other than a live mailbox -- a
+directory of `.eml` files, or a Docuware export where each message sits in its own
+folder. Unlike a backup, an import writes no metadata log, so which mailbox and
+folder a message came from is not recorded; rebuild a database with
+`archive create-db` afterwards if you need to query it.
+"""
+
 from __future__ import annotations
 
 import collections.abc

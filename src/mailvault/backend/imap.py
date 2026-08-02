@@ -1,3 +1,12 @@
+"""The IMAP mailbox backend.
+
+Implements the `MailboxClient` interface over `imapclient`: listing folders,
+reading a folder read-only for backup, indexing messages by Message-ID for
+`verify`, and -- separately from the read pass -- purging archived messages once
+their location is durable. It also carries the Gmail-specific label handling and
+the Exchange-journal unwrapping path.
+"""
+
 from __future__ import annotations
 
 import collections.abc
@@ -46,11 +55,13 @@ class MailboxError(Exception):
     pass
 
 
-# Index page size for message_index(); only headers are fetched, no bodies.
+# Index page size for message_index(); only envelope metadata is fetched, no bodies.
 INDEX_CHUNK_SIZE = 500
 
 
 class ImapClient:
+    """The IMAP implementation of `MailboxClient`, wrapping an `imapclient` connection."""
+
     def __init__(self, conn: imapclient.IMAPClient, job: conf.JobConfig):
         self.job = job
         self.conn = conn
@@ -326,6 +337,12 @@ class ImapClient:
         since: datetime | None = None,
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> BackupResult:
+        """Store a folder's messages read-only, recording each via `callback`.
+
+        Nothing is deleted here: the ids of successfully stored messages are
+        collected in `BackupResult.deletable`, and the caller purges them only
+        after the metadata log is sealed.
+        """
         result = BackupResult()
         for msg_id, msg, _ in self._iter_folder(folder_name, since, result=result):
             if self.exchange_journal:

@@ -7,6 +7,7 @@ from mailvault.backend import session
 
 
 def folder_list(job: conf.JobConfig) -> None:
+    """Print each of the job's folders as `job::folder`."""
     with session.open_mailbox(job) as mb:
         for folder in mb.folders():
             print(f"{job.name}::{folder}")
