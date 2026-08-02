@@ -4,6 +4,11 @@
 
 ### Added
 
+- **`archive compact`** consolidates the metadata log: it folds the many small per-folder files
+  backups leave -- with entries repeated across the incremental overlap -- into one file per
+  mailbox/folder holding each observation once. Lossless and safe to interrupt; the originals are
+  removed only after the consolidated files are written and verified
+
 - **`backup --index-db`** keeps a queryable SQLite database up to date beside the archive
   (`index.db`), refreshed after each backup. A convenience projection, never a source of truth:
   only the log files added since the last refresh are folded in, and a database that is missing or

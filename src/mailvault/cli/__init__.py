@@ -228,6 +228,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     a_migrate.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
+    a_compact = asub.add_parser(
+        "compact",
+        help="Consolidate the metadata log, dropping duplicate entries",
+        description=(
+            "Merge the many small metadata-log files an archive accumulates -- one"
+            " per folder per backup, with entries repeated across the incremental"
+            " overlap -- into one file per mailbox/folder holding each observation"
+            " once. Lossless and safe to run at any time; the originals are removed"
+            " only after the consolidated files are written and verified."
+        ),
+    )
+    a_compact.add_argument("source", type=pathlib.Path, help="Email archive directory")
+
     return parser
 
 

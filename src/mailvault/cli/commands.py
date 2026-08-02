@@ -12,7 +12,7 @@ import logging
 import pathlib
 
 from mailvault import conf, importer, jobs
-from mailvault.store import cas
+from mailvault.store import cas, metalog
 
 log = logging.getLogger(__name__)
 
@@ -165,6 +165,23 @@ def report_create_db(source: pathlib.Path, target: pathlib.Path, result) -> None
     print(f"{target}: written -- a snapshot, stale from the next backup onwards")
 
 
+def report_compact(source: pathlib.Path, result) -> None:
+    """Say how much the log shrank and how many duplicate entries went."""
+    if result.files_before == 0:
+        print(f"{source}: no metadata log to compact")
+        return
+    if not result.verified:
+        print(f"{source}: consolidated files did not verify, nothing was removed")
+        return
+    print(
+        f"{source}: {result.files_before:,} log file(s) -> {result.files_after:,} "
+        f"across {result.places:,} place(s)"
+    )
+    dropped = result.entries_before - result.entries_after
+    if dropped:
+        print(f"{source}: {dropped:,} duplicate observation(s) dropped")
+
+
 def run_archive(args: argparse.Namespace) -> int:
     """Run an `archive` subcommand (stats/import/addresses/compress/create-db/...)."""
     cmd = args.archive_command
@@ -196,5 +213,7 @@ def run_archive(args: argparse.Namespace) -> int:
         report_create_db(args.source, args.database, result)
     elif cmd == "migrate":
         report_migration(args.source, jobs.migrate_archive(args.source))
+    elif cmd == "compact":
+        report_compact(args.source, metalog.compact(args.source / metalog.DEFAULT_LOG_DIR))
 
     return 0

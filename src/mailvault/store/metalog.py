@@ -138,6 +138,26 @@ def verify_file(path: pathlib.Path) -> bool:
     return hashlib.sha384(raw).hexdigest() == path.name.removesuffix(".jsonl")
 
 
+def _serialize(
+    mailbox: str | None, folder: str | None, date: str | None, store_ids: list[str]
+) -> bytes:
+    """Serialize one place's observations into the on-disk JSONL form.
+
+    Shared by `LogWriter.seal` and `compact` so the two produce byte-identical
+    files for the same content -- which is what makes compaction idempotent.
+    """
+    header = {
+        "version": LOG_VERSION,
+        "mailbox": mailbox,
+        "folder": folder,
+        "date": date,
+        "messages": len(store_ids),
+    }
+    body = json.dumps(header, ensure_ascii=False) + "\n"
+    body += "".join(json.dumps({"store_id": s}, ensure_ascii=False) + "\n" for s in store_ids)
+    return body.encode("utf-8")
+
+
 class LogWriter:
     """Collects observations and seals them into one file per (mailbox, folder).
 
@@ -195,18 +215,9 @@ class LogWriter:
         for (mailbox, folder), store_ids in sorted(
             self._places.items(), key=lambda item: (item[0][0] or "", item[0][1] or "")
         ):
-            header = {
-                "version": LOG_VERSION,
-                "mailbox": mailbox,
-                "folder": folder,
-                "date": date.isoformat(),
-                "messages": len(store_ids),
-            }
-            body = json.dumps(header, ensure_ascii=False) + "\n"
-            body += "".join(
-                json.dumps({"store_id": s}, ensure_ascii=False) + "\n" for s in store_ids
+            _status, _hashval, path = store.add(
+                _serialize(mailbox, folder, date.isoformat(), store_ids)
             )
-            _status, _hashval, path = store.add(body.encode("utf-8"))
             log.debug("%s: %s message(s) in %s::%s", path, len(store_ids), mailbox, folder)
             written.append(path)
         self._places = {}
@@ -319,3 +330,83 @@ def read_all(root: pathlib.Path) -> collections.abc.Iterator[LogFile]:
         entry = read_log(path)
         if entry is not None:
             yield entry
+
+
+@dataclasses.dataclass
+class CompactResult:
+    """Outcome of consolidating the log."""
+
+    files_before: int = 0
+    files_after: int = 0
+    places: int = 0
+    entries_before: int = 0
+    entries_after: int = 0
+    verified: bool = True
+
+
+def compact(root: pathlib.Path) -> CompactResult:
+    """Consolidate the log into one file per place, dropping duplicate entries.
+
+    Incremental backups overlap -- each run re-records the messages in its lookback
+    window -- so a place accumulates many small files whose store ids repeat across
+    them. This reads them all, writes one file per (mailbox, folder) holding the
+    sorted union of that place's store ids, verifies the new files landed, and only
+    then removes the originals.
+
+    Crash-safe by ordering: on an interrupt the originals are still there, a read
+    takes the union regardless so nothing is lost, and a rerun finishes the job. A
+    file that cannot be read is left in place rather than folded away, so damaged
+    data is never silently dropped. Producing byte-identical files for the same
+    content (via `_serialize`) makes a second run a no-op.
+    """
+    result = CompactResult()
+    originals = log_files(root)
+    result.files_before = len(originals)
+    if not originals:
+        return result
+
+    # Union each place's store ids, keeping the newest date it was seen.
+    places: dict[tuple[str | None, str | None], set[str]] = {}
+    dates: dict[tuple[str | None, str | None], str] = {}
+    consumed: list[pathlib.Path] = []
+    for path in originals:
+        entry = read_log(path)
+        if entry is None:
+            continue
+        consumed.append(path)
+        key = (entry.mailbox, entry.folder)
+        result.entries_before += len(entry.store_ids)
+        places.setdefault(key, set()).update(entry.store_ids)
+        existing = dates.get(key)
+        if entry.date is not None and (existing is None or entry.date > existing):
+            dates[key] = entry.date
+    if not places:
+        return result
+    result.places = len(places)
+
+    store = open_store(root)
+    written: set[pathlib.Path] = set()
+    for key in sorted(places, key=lambda k: (k[0] or "", k[1] or "")):
+        mailbox, folder = key
+        store_ids = sorted(places[key])
+        result.entries_after += len(store_ids)
+        _status, _hashval, path = store.add(
+            _serialize(mailbox, folder, dates.get(key), store_ids)
+        )
+        written.add(path)
+
+    # Verify the consolidated files landed before removing anything.
+    if not all(verify_file(path) for path in written):
+        log.error("%s: consolidated files did not verify, originals left in place", root)
+        result.verified = False
+        result.files_after = len(log_files(root))
+        return result
+
+    # Drop the originals we consolidated, but never one byte-identical to a file
+    # just written (an already-compact place produces the same hash).
+    for path in consumed:
+        if path not in written:
+            path.unlink(missing_ok=True)
+
+    result.files_after = len(log_files(root))
+    return result

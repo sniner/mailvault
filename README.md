@@ -286,6 +286,26 @@ back until you remove it yourself. Running the command again on a migrated
 archive does nothing, and an interrupted migration is simply repeated.
 
 
+### Consolidating the metadata log
+
+Every backup writes a small file into `meta/` for each folder that received mail,
+and because incremental runs overlap, the same messages are recorded again in
+each run's file. Over months these add up, and everything that reads the log --
+`create-db`, `verify`, `--index-db` -- reads all of them. `compact` folds them
+back down:
+
+```console
+$ mailvault archive compact ./backup
+./backup: 1,204 log file(s) -> 59 across 59 mailbox/folder place(s)
+./backup: 41,388 duplicate observation(s) dropped
+```
+
+It rewrites one file per mailbox/folder holding each observation once, verifies
+the new files, and only then removes the originals -- so it is lossless and safe
+to interrupt: a half-done run just leaves both, and the next one finishes. Run it
+occasionally; there is no hurry, but do not put it off for years.
+
+
 ## Copying between mailboxes
 
 > [!WARNING]

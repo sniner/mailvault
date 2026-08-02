@@ -233,3 +233,85 @@ class TestDiscovery:
         (root / "ff" / "ff00.jsonl").write_text("broken", encoding="utf-8")
 
         assert len(list(metalog.read_all(root))) == 1
+
+
+class TestCompact:
+    @staticmethod
+    def _write(root, store_ids, mailbox="job", folder="INBOX", when=WHEN):
+        writer = metalog.LogWriter(root)
+        for store_id in store_ids:
+            writer.add(mailbox, [folder], store_id)
+        writer.seal(when)
+
+    def test_consolidates_and_deduplicates_a_place(self, tmp_path):
+        root = tmp_path / "meta"
+        self._write(root, ["a", "b"])
+        self._write(root, ["b", "c"])  # 'b' repeats across the overlap
+        self._write(root, ["c", "d"])  # 'c' repeats
+        assert len(metalog.log_files(root)) == 3
+
+        result = metalog.compact(root)
+
+        assert result.files_before == 3
+        assert result.files_after == 1
+        assert result.places == 1
+        assert result.entries_before == 6
+        assert result.entries_after == 4  # a, b, c, d
+        (logfile,) = list(metalog.read_all(root))
+        assert set(logfile.store_ids) == {"a", "b", "c", "d"}
+
+    def test_separate_places_stay_separate(self, tmp_path):
+        root = tmp_path / "meta"
+        self._write(root, ["a"], folder="INBOX")
+        self._write(root, ["b"], folder="Sent")
+
+        result = metalog.compact(root)
+
+        assert result.files_after == 2
+        assert result.places == 2
+        places = {(lf.mailbox, lf.folder): set(lf.store_ids) for lf in metalog.read_all(root)}
+        assert places == {("job", "INBOX"): {"a"}, ("job", "Sent"): {"b"}}
+
+    def test_is_idempotent(self, tmp_path):
+        root = tmp_path / "meta"
+        self._write(root, ["a", "b"])
+        self._write(root, ["b", "c"])
+        metalog.compact(root)
+        files = set(metalog.log_files(root))
+
+        result = metalog.compact(root)
+
+        assert set(metalog.log_files(root)) == files  # nothing rewritten or removed
+        assert result.files_before == result.files_after
+        assert result.entries_before == result.entries_after  # nothing left to dedupe
+
+    def test_keeps_the_newest_date(self, tmp_path):
+        root = tmp_path / "meta"
+        self._write(root, ["a"], when=datetime(2026, 8, 1, tzinfo=UTC))
+        self._write(root, ["b"], when=datetime(2026, 8, 3, tzinfo=UTC))
+        self._write(root, ["c"], when=datetime(2026, 8, 2, tzinfo=UTC))
+
+        metalog.compact(root)
+
+        (logfile,) = list(metalog.read_all(root))
+        assert logfile.date == datetime(2026, 8, 3, tzinfo=UTC).isoformat()
+
+    def test_empty_log_is_a_no_op(self, tmp_path):
+        result = metalog.compact(tmp_path / "meta")
+
+        assert result.files_before == 0
+        assert result.files_after == 0
+
+    def test_an_unreadable_file_is_kept_not_folded_away(self, tmp_path):
+        root = tmp_path / "meta"
+        self._write(root, ["a", "b"])
+        (root / "ff").mkdir(exist_ok=True)
+        broken = root / "ff" / "ff00.jsonl"
+        broken.write_text("broken", encoding="utf-8")
+
+        result = metalog.compact(root)
+
+        assert broken.exists()  # left in place, its contents not lost
+        assert result.entries_after == 2
+        places = {(lf.mailbox, lf.folder): set(lf.store_ids) for lf in metalog.read_all(root)}
+        assert places[("job", "INBOX")] == {"a", "b"}
