@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- **`backup --index-db`** keeps a queryable SQLite database up to date beside the archive
+  (`index.db`), refreshed after each backup. A convenience projection, never a source of truth:
+  only the log files added since the last refresh are folded in, and a database that is missing or
+  unreadable is rebuilt from scratch. Mail added by `archive import` writes no log and is not
+  picked up -- rebuild with `archive create-db` for that. Also settable as `index_db` under
+  `[global]` in the config
+
 ### Changed
 
 - **Compression** uses the standard-library `zstd` module on Python 3.14+ (PEP 784); the

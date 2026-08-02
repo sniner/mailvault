@@ -11,10 +11,11 @@
 > until you are satisfied and remove it yourself.
 >
 > **If you queried that database with SQL, read this.** There is no longer a
-> database inside the archive to point your tools at. You now build one wherever
-> you want it, from the archive, whenever you need it — see
-> [Querying an archive with SQL](#querying-an-archive-with-sql). What you get is
-> a snapshot of the moment you built it.
+> database inside the archive to point your tools at. You build one from the
+> archive whenever you need it, wherever you want it — or set `--index-db` (or
+> `index_db = true` in the config) to maintain a fresh `index.db` beside the
+> archive after every backup. Either way it is a snapshot of the archive, not
+> part of it — see [Querying an archive with SQL](#querying-an-archive-with-sql).
 >
 > See the [CHANGELOG](CHANGELOG.md) for the full list.
 
@@ -235,9 +236,18 @@ $ mailvault archive create-db ./backup ./backup.db
 
 It is assembled from the messages -- which carry their own subject, sender,
 recipients and date -- and from the archive's record of where each message was
-seen. It goes wherever you say; it is not part of the archive, and nothing keeps
-it up to date. **It is a snapshot:** correct for the moment it was built, out of
-date from the next backup onwards. Build it again when that matters.
+seen. It goes wherever you say and is not part of the archive. **It is a
+snapshot:** correct for the moment it was built, out of date from the next backup
+onwards. Build it again when that matters -- or have one maintained for you.
+
+**Maintaining an `index.db`.** Pass `--index-db` to `backup` (or set
+`index_db = true` in the `[global]` config) and mailvault keeps a queryable
+`index.db` beside the archive, refreshed after every backup. The refresh is
+incremental -- only the log files added since the last one are folded in -- and it
+stays a projection, never a source of truth: a database that is missing or
+unreadable is rebuilt from scratch, so you can delete it at any time. Mail added
+by `archive import` writes no log and is not picked up this way; rebuild with
+`create-db` when that matters.
 
 An existing file is refused unless you pass `--force`, which replaces it rather
 than adding to it -- merging two runs into one file would give you neither
@@ -545,6 +555,7 @@ with a warning.
 | `incremental` | `true` | Only download messages added since the last backup run |
 | `max_retries` | `5` | Retries for failed MS Graph requests (throttling, gateway and connection errors) |
 | `compress` | `false` | Compress stored emails with zstd (global option) |
+| `index_db` | `false` | Maintain a queryable `index.db` alongside the archive, refreshed after each backup (global option) |
 
 
 ## Metadata

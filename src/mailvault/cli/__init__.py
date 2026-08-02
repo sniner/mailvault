@@ -99,6 +99,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_backup.add_argument(
         "--compress", action="store_true", help="Compress stored emails with zstd"
     )
+    p_backup.add_argument(
+        "--index-db",
+        action="store_true",
+        help="Maintain an index.db alongside the archive, refreshed after the backup",
+    )
     p_backup.add_argument("destination", type=pathlib.Path, help="Destination base directory")
 
     p_verify = sub.add_parser(

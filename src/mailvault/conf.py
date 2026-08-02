@@ -163,6 +163,7 @@ class JobConfig:
 class Config:
     jobs: list[JobConfig] = dataclasses.field(default_factory=list)
     compress: bool = False
+    index_db: bool = False
 
     @classmethod
     def from_toml(cls, data: dict, allow_exec: bool = False) -> Config:

@@ -11,6 +11,7 @@ import pytest
 from mailvault import conf, jobs, mailutils
 from mailvault.backend import base
 from mailvault.jobs.copy import _format_archive_folder
+from mailvault.jobs.storedb import DEFAULT_QUERY_DB_NAME, refresh_db
 from mailvault.jobs.verification import _archived_message_ids, _places_from_log
 from mailvault.store import cas, metadb, metalog, state
 
@@ -1108,3 +1109,114 @@ class TestFormatArchiveFolder:
     def test_plain_string(self):
         result = _format_archive_folder("Archive/Fixed")
         assert result == "Archive/Fixed"
+
+
+# ---------------------------------------------------------------------------
+# refresh_db (the kept-fresh projection)
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshDb:
+    """Incremental, self-healing, rebuildable -- never a source of truth."""
+
+    def test_absent_database_is_built_from_scratch(self, tmp_path):
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+
+        result = refresh_db(tmp_path, db_path)
+
+        assert result.rebuilt is True
+        assert result.messages == 1
+        assert db_path.exists()
+
+    def test_only_new_logs_are_applied_on_a_refresh(self, tmp_path):
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+        refresh_db(tmp_path, db_path)  # initial full build
+
+        _archive_message(tmp_path, "job", "Archive", _eml("<b@example.com>", "Second"))
+        result = refresh_db(tmp_path, db_path)
+
+        assert result.rebuilt is False
+        assert result.files == 1  # only the new log file was read
+        assert result.messages == 1  # only the new message was inserted
+        with metadb.MetaDatabase(db_path) as db:
+            assert len(db.store_id_map()) == 2
+
+    def test_an_up_to_date_database_is_left_untouched(self, tmp_path):
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+        refresh_db(tmp_path, db_path)
+
+        result = refresh_db(tmp_path, db_path)
+
+        assert result.rebuilt is False
+        assert result.files == 0
+        assert result.messages == 0
+
+    def test_an_unreadable_database_is_rebuilt(self, tmp_path):
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+        db_path.write_bytes(b"this is not a sqlite database at all")
+
+        result = refresh_db(tmp_path, db_path)
+
+        assert result.rebuilt is True
+        assert result.messages == 1
+        with metadb.MetaDatabase(db_path) as db:
+            assert len(db.store_id_map()) == 1
+
+
+def _storing_backup(eml: bytes):
+    """A folder_backup stand-in that stores an eml and logs it, like a real run."""
+
+    def run(folder_name, store, since=None, callback=None):
+        _status, store_id, _path = store.add(eml)
+        if callback:
+            callback(
+                mailutils.MessageMetadata(
+                    mailbox="test-job",
+                    folder=folder_name,
+                    store_id=store_id,
+                    email_id="<a@example.com>",
+                    date=datetime(2026, 2, 20, tzinfo=UTC),
+                    subject="Subject",
+                    folders=[folder_name],
+                    sender={"sender@example.com"},
+                    recipients={"recipient@example.com"},
+                )
+            )
+        return base.BackupResult(total=1, stored=1)
+
+    return run
+
+
+class TestBackupIndexDb:
+    """--index-db refreshes a queryable projection beside the archive, opt-in."""
+
+    @staticmethod
+    def _run(mock_client, tmp_path, index_db):
+        job = _make_job(folders=["INBOX"])
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+            jobs.backup(job, tmp_path, index_db=index_db)
+
+    def test_index_db_builds_the_projection(self, tmp_path):
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = _storing_backup(_eml("<a@example.com>"))
+
+        self._run(mock_client, tmp_path, index_db=True)
+
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+        assert db_path.exists()
+        with metadb.MetaDatabase(db_path) as db:
+            assert len(db.store_id_map()) == 1
+
+    def test_backup_writes_no_projection_by_default(self, tmp_path):
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = _storing_backup(_eml("<a@example.com>"))
+
+        self._run(mock_client, tmp_path, index_db=False)
+
+        assert not (tmp_path / DEFAULT_QUERY_DB_NAME).exists()

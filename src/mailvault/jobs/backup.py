@@ -17,6 +17,7 @@ from mailvault import conf, mailutils
 from mailvault.backend import base, session
 from mailvault.jobs.common import _seal_log
 from mailvault.jobs.migration import migrate_archive
+from mailvault.jobs.storedb import DEFAULT_QUERY_DB_NAME, refresh_db
 from mailvault.store import cas, metalog, state
 
 log = logging.getLogger(__name__)
@@ -152,7 +153,39 @@ def _purge_after_seal(
         log.error("%s::%s: purge failed: %s", job.name, folder, exc)
 
 
-def backup(job: conf.JobConfig, store_path: pathlib.Path, compress: bool = False) -> None:
+def backup(
+    job: conf.JobConfig,
+    store_path: pathlib.Path,
+    compress: bool = False,
+    index_db: bool = False,
+) -> None:
     with session.open_mailbox(job) as mb:
         store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
         _backup_to_log(mb, store, job, store_path)
+    if index_db:
+        _refresh_query_db(store_path)
+
+
+def _refresh_query_db(store_path: pathlib.Path) -> None:
+    """Keep the queryable projection beside the archive up to date, tolerantly.
+
+    A convenience only: a failure to update it is logged and never allowed to
+    fail the backup, whose real output -- the messages and the log -- is already
+    written. `refresh_db` itself rebuilds the projection when it is missing or
+    unreadable.
+    """
+    db_path = store_path / DEFAULT_QUERY_DB_NAME
+    try:
+        result = refresh_db(store_path, db_path)
+    except Exception as exc:
+        log.error("%s: query database not updated: %s", db_path, exc)
+        return
+    if result.rebuilt:
+        log.info("%s: query database rebuilt, %s message(s)", db_path, result.messages)
+    else:
+        log.info(
+            "%s: query database updated, %s new message(s) from %s log file(s)",
+            db_path,
+            result.messages,
+            result.files,
+        )
