@@ -13,21 +13,32 @@ close it: the caller's own ``with open(...)`` owns that.
 from __future__ import annotations
 
 import shutil
+import sys
 import typing
 
 _zstd: typing.Any
 _BACKEND: str | None
 
-try:
-    from compression import zstd as _zstd  # Python 3.14+ (PEP 784)
+# PEP 784 put a zstd codec in the standard library in 3.14. Gate the import on
+# the version rather than catching ImportError, so a type checker analysing an
+# older interpreter does not try to resolve a module that only exists from 3.14
+# on (nor the `zstandard` package, which is not installed there). Below 3.14 the
+# third-party package is used instead -- matching the dependency marker in
+# pyproject.toml.
+if sys.version_info >= (3, 14):
+    try:
+        from compression import zstd as _zstd  # PEP 784
 
-    _BACKEND = "stdlib"
-except ImportError:  # pragma: no cover - depends on the interpreter version
+        _BACKEND = "stdlib"
+    except ImportError:  # pragma: no cover - a 3.14 built without zstd support
+        _zstd = None
+        _BACKEND = None
+else:
     try:
         import zstandard as _zstd
 
         _BACKEND = "package"
-    except ImportError:
+    except ImportError:  # pragma: no cover - zstandard not installed
         _zstd = None
         _BACKEND = None
 
