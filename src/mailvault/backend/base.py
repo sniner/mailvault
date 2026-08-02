@@ -27,11 +27,20 @@ class BackupResult:
     stored locally. A run with failures is incomplete, so the caller must not
     advance the incremental snapshot — otherwise those messages would fall
     outside the date filter of every future run and stay lost for good.
+
+    `deletable` lists the backend message ids that were stored successfully and
+    may be removed from the server -- but only once the metadata log for this
+    folder is sealed, so a message is never deleted from its source before the
+    record of where it was seen is durable. It is populated only when the job
+    deletes after export; the backup runner drives the deletion through `purge`,
+    after the seal. A skipped or failed message is never listed, so it is never
+    deleted unarchived.
     """
 
     total: int = 0
     stored: int = 0
     failed: int = 0
+    deletable: list[Any] = dataclasses.field(default_factory=list)
 
     @property
     def complete(self) -> bool:
@@ -70,6 +79,15 @@ class MailboxClient(Protocol):
         since: datetime | None = ...,
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = ...,
     ) -> BackupResult: ...
+
+    def purge(self, folder_name: str, msg_ids: collections.abc.Sequence[Any]) -> None:
+        """Delete the given messages from the server.
+
+        Called by the backup runner only after the folder's metadata log has been
+        sealed, so a message leaves its source only once the record of where it
+        was seen is durable. A no-op for an empty `msg_ids`.
+        """
+        ...
 
     def message_index(
         self,

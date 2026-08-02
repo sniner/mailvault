@@ -383,6 +383,96 @@ def _fake_folder_backup(*store_ids: str, failed: int = 0):
     return run
 
 
+class TestDeleteAfterExport:
+    """Deletion is gated on a durable log: purge runs only after a good seal."""
+
+    @staticmethod
+    def _backup_with_deletable(*store_ids: str, deletable: list):
+        """A folder_backup stand-in that records the messages and reports which
+        server ids may be deleted once the log is sealed."""
+
+        def run(folder_name, store, since=None, callback=None):
+            for sid in store_ids:
+                if callback:
+                    callback(
+                        mailutils.MessageMetadata(
+                            mailbox="test-job",
+                            folder=folder_name,
+                            store_id=sid,
+                            email_id=f"<{sid}@example.com>",
+                            date=datetime(2026, 2, 20, tzinfo=UTC),
+                            subject="Test",
+                            folders=[folder_name],
+                            sender={"sender@example.com"},
+                            recipients={"recipient@example.com"},
+                        )
+                    )
+            return base.BackupResult(
+                total=len(store_ids), stored=len(store_ids), deletable=list(deletable)
+            )
+
+        return run
+
+    @staticmethod
+    def _run(job, mock_client, tmp_path) -> None:
+        with patch("mailvault.jobs.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+            jobs.backup(job, tmp_path)
+
+    def test_purges_after_a_successful_seal(self, tmp_path):
+        job = _make_job(folders=["INBOX"], delete_after_export=True)
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = self._backup_with_deletable(
+            "aaa", deletable=[1, 2]
+        )
+
+        # Capture, at the moment purge runs, whether the log is already durable.
+        # This is the ordering the fix is about: the location reaches disk before
+        # the message is removed from the server.
+        log_present_at_purge = []
+
+        def record_purge(folder, ids):
+            log_present_at_purge.append(bool(list(metalog.read_all(tmp_path / "meta"))))
+
+        mock_client.purge.side_effect = record_purge
+
+        self._run(job, mock_client, tmp_path)
+
+        mock_client.purge.assert_called_once_with("INBOX", [1, 2])
+        assert log_present_at_purge == [True]
+
+    def test_does_not_purge_when_the_seal_fails(self, tmp_path, monkeypatch):
+        job = _make_job(folders=["INBOX"], delete_after_export=True)
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = self._backup_with_deletable(
+            "aaa", deletable=[1, 2]
+        )
+
+        def boom(self, date):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(metalog.LogWriter, "seal", boom)
+
+        self._run(job, mock_client, tmp_path)
+
+        # A message must never leave the server when its location was not written.
+        mock_client.purge.assert_not_called()
+
+    def test_does_not_purge_without_delete_after_export(self, tmp_path):
+        # The caller-side gate: a populated deletable list is ignored when the
+        # job does not delete after export.
+        job = _make_job(folders=["INBOX"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = self._backup_with_deletable(
+            "aaa", deletable=[1, 2]
+        )
+
+        self._run(job, mock_client, tmp_path)
+
+        mock_client.purge.assert_not_called()
+
+
 class TestMetadataLog:
     """The attribution the .eml files cannot carry has to reach the log."""
 

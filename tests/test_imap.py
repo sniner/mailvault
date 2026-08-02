@@ -303,7 +303,9 @@ class TestIterFolder:
             list(client._iter_folder("INBOX"))
         conn.unselect_folder.assert_called_once()
 
-    def test_delete_after_export(self):
+    def test_read_only_even_when_deleting(self):
+        # The read pass never deletes and never opens read-write, even under
+        # delete_after_export: removal happens later, in purge, after the seal.
         conn = _make_mock_conn()
         msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         conn.select_folder.return_value = {b"EXISTS": 1}
@@ -314,9 +316,9 @@ class TestIterFolder:
         client = _make_client(delete_after_export=True, conn=conn)
 
         list(client._iter_folder("INBOX"))
-        conn.select_folder.assert_called_with("INBOX", readonly=False)
-        conn.delete_messages.assert_called_once_with(1)
-        conn.expunge.assert_called_once()
+        conn.select_folder.assert_called_with("INBOX", readonly=True)
+        conn.delete_messages.assert_not_called()
+        conn.expunge.assert_not_called()
 
     def test_no_expunge_without_delete(self):
         conn = _make_mock_conn()
@@ -498,14 +500,19 @@ class TestFolderBackup:
 
         result = client.folder_backup("INBOX", store)
         assert result.stored == 1
-        # An archived journal item is deleted from the server.
-        conn.delete_messages.assert_called_once_with(1)
+        # folder_backup does not delete -- it marks the archived item deletable,
+        # and the runner removes it later, through purge, once the log is sealed.
+        assert result.deletable == [1]
+        conn.delete_messages.assert_not_called()
+
+        client.purge("INBOX", result.deletable)
+        conn.delete_messages.assert_called_once_with([1])
         conn.expunge.assert_called_once()
 
-    def test_exchange_journal_non_journal_not_deleted(self, tmp_path):
+    def test_exchange_journal_non_journal_not_deletable(self, tmp_path):
         # Regression: a non-journal item under delete_after_export must NOT be
-        # deleted from the server while it is being skipped -- otherwise it is
-        # lost unarchived. No MOVE capability, so no error_folder is configured.
+        # eligible for deletion while it is being skipped -- otherwise it is lost
+        # unarchived. No MOVE capability, so no error_folder is configured.
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1"])
         msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         conn.select_folder.return_value = {b"EXISTS": 1}
@@ -518,6 +525,7 @@ class TestFolderBackup:
 
         result = client.folder_backup("INBOX", store)
         assert result.stored == 0
+        assert result.deletable == []
         conn.delete_messages.assert_not_called()
 
     def test_gmail_clears_trash(self, tmp_path):
@@ -538,6 +546,34 @@ class TestFolderBackup:
             c == call("[Google Mail]/Trash", readonly=False)
             for c in conn.select_folder.call_args_list
         )
+
+
+# ---------------------------------------------------------------------------
+# purge
+# ---------------------------------------------------------------------------
+
+
+class TestPurge:
+    def test_empty_list_is_a_no_op(self):
+        conn = _make_mock_conn()
+        client = _make_client(delete_after_export=True, conn=conn)
+
+        client.purge("INBOX", [])
+
+        conn.select_folder.assert_not_called()
+        conn.delete_messages.assert_not_called()
+        conn.expunge.assert_not_called()
+
+    def test_deletes_the_batch_read_write_and_expunges(self):
+        conn = _make_mock_conn()
+        client = _make_client(delete_after_export=True, conn=conn)
+
+        client.purge("INBOX", [1, 2, 3])
+
+        conn.select_folder.assert_called_once_with("INBOX", readonly=False)
+        conn.delete_messages.assert_called_once_with([1, 2, 3])
+        conn.expunge.assert_called_once()
+        conn.unselect_folder.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

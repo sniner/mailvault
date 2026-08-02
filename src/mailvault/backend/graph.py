@@ -344,13 +344,33 @@ class MSGraphClient:
                     len(messages),
                 )
 
+            # Not deleted here: a message is removed from the mailbox only after
+            # the folder's log is sealed (see `purge`), so its location is durable
+            # before it leaves its source.
             if self.delete_after_export:
-                try:
-                    self._graph_delete(msg_id)
-                except Exception as exc:
-                    log.error("%s: delete failed: %s", log_ctx, exc)
+                result.deletable.append(msg_id)
 
         return result
+
+    def purge(self, folder_name: str, msg_ids: collections.abc.Sequence[str]) -> None:
+        """Delete the given messages from the mailbox.
+
+        Called by the backup runner only after the folder's metadata log has been
+        sealed, so a message leaves its source once the record of where it was
+        seen is durable. A failed deletion is logged and does not abort the rest;
+        the message stays and is re-fetched (and deduplicated) next run.
+        """
+        for msg_id in msg_ids:
+            try:
+                self._graph_delete(msg_id)
+            except Exception as exc:
+                log.error(
+                    "%s::%s[%s]: delete failed: %s",
+                    self.job_name,
+                    folder_name,
+                    msg_id,
+                    exc,
+                )
 
     def full_backup(
         self,

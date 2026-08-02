@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`delete_after_export`** removed a message from the server before its location was written to
+  the log. A crash or a failed log write in that window left the archived `.eml` with no record of
+  where it was seen -- and, the server copy being gone, no way to recover it. A message is now
+  deleted only after the folder's metadata log has been sealed to disk; a seal that fails holds the
+  deletion back entirely, and the messages are re-fetched (and deduplicated) next run
+
+- **Incremental snapshots** no longer advance when the location log could not be written. A folder
+  whose downloads were clean but whose log did not reach disk is re-fetched next run and recorded
+  again, rather than being skipped for good with its locations lost
+
 ## 0.8.0 (2026-08-02)
 
 ### Breaking changes

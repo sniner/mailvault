@@ -246,22 +246,17 @@ class ImapClient:
         folder_name: str,
         since: datetime | None = None,
         result: BackupResult | None = None,
-        auto_delete: bool = True,
     ) -> collections.abc.Generator[tuple[int, bytes, datetime | None], None, None]:
-        """Select folder, search and yield messages, handle cleanup.
+        """Select the folder read-only, search and yield its messages.
 
-        With `auto_delete` (the default) each yielded message is deleted right
-        after the caller processed it, if delete_after_export is configured.
-        Callers that must only delete messages they actually archived (e.g. the
-        exchange_journal path, which skips non-journal items) pass
-        `auto_delete=False` and delete successfully handled messages themselves.
-        On successful completion, deleted messages are expunged. The folder is
-        always unselected on exit.
+        A read-only pass: nothing is deleted here. Messages are removed from the
+        server later, by `purge`, and only once their archival has been made
+        durable -- so the folder is opened read-only even when the job deletes
+        after export, and a torn run can never remove mail whose location was
+        never written down. The folder is always unselected on exit.
         """
         with self.lock:
-            folder_info = self.conn.select_folder(
-                folder_name, readonly=not self.delete_after_export
-            )
+            folder_info = self.conn.select_folder(folder_name, readonly=True)
             try:
                 items_in_folder = folder_info[b"EXISTS"]
                 message_ids = self._search_folder(since)
@@ -294,14 +289,9 @@ class ImapClient:
                             processed,
                             items_found,
                         )
-                    if self.delete_after_export and auto_delete:
-                        self.conn.delete_messages(msg_id)
             except Exception as exc:
                 log.error("%s::%s: %s", self.job_name, folder_name, exc)
                 raise
-            else:
-                if self.delete_after_export:
-                    self.conn.expunge()
             finally:
                 self.conn.unselect_folder()
 
@@ -337,14 +327,7 @@ class ImapClient:
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> BackupResult:
         result = BackupResult()
-        # In journal mode the non-journal items are skipped, so deletion must be
-        # tied to a successful archive run instead of the generic per-message
-        # auto-delete -- otherwise a skipped item would be removed from the
-        # server unarchived.
-        auto_delete = not self.exchange_journal
-        for msg_id, msg, _ in self._iter_folder(
-            folder_name, since, result=result, auto_delete=auto_delete
-        ):
+        for msg_id, msg, _ in self._iter_folder(folder_name, since, result=result):
             if self.exchange_journal:
                 msg = mailutils.unwrap_exchange_journal_item(msg)
                 if msg is None:
@@ -362,13 +345,33 @@ class ImapClient:
             )
             if store_id is None:
                 continue
-            if not auto_delete and self.delete_after_export:
-                # Journal path: delete only now that the item is archived. The
-                # generic auto-delete was disabled for this run.
-                self.conn.delete_messages(msg_id)
+            # Not deleted here: a message is removed from the server only after
+            # the folder's log is sealed. A non-journal item skipped above never
+            # reaches this point, so it can never be deleted unarchived.
+            if self.delete_after_export:
+                result.deletable.append(msg_id)
         if self.gmail and self.trash_folder:
             self._clear_folder(self.trash_folder)
         return result
+
+    def purge(self, folder_name: str, msg_ids: collections.abc.Sequence[int]) -> None:
+        """Delete the given messages from the server and expunge them.
+
+        The folder is opened read-write only here, and only the backup runner
+        calls it -- after the metadata log for the folder has been sealed. So a
+        message is removed from its source only once the record of where it was
+        seen is durable; a run interrupted before this point leaves every message
+        in place, to be re-fetched (and deduplicated) next time.
+        """
+        if not msg_ids:
+            return
+        with self.lock:
+            self.conn.select_folder(folder_name, readonly=False)
+            try:
+                self.conn.delete_messages(list(msg_ids))
+                self.conn.expunge()
+            finally:
+                self.conn.unselect_folder()
 
     def full_backup(
         self,

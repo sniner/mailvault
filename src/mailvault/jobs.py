@@ -30,21 +30,26 @@ class VerifyResult:
     failed: int = 0
 
 
-def _seal_log(writer: metalog.LogWriter, date: datetime) -> None:
-    """Write out a pass over a folder, tolerating a failure to do so.
+def _seal_log(writer: metalog.LogWriter, date: datetime) -> bool:
+    """Write out a pass over a folder; return whether the log is now durable.
 
-    A log that cannot be written is reported but does not abort the run: the
-    messages themselves are archived and the database still holds the location,
-    so the loss is repairable while an aborted run is not.
+    A log that cannot be written is reported but does not abort the run -- the
+    messages themselves are archived, and a failed seal simply does not advance
+    what depends on it. In particular it gates deletion: a job that deletes after
+    export must not remove a message from the server whose location was not
+    recorded, so a False return keeps those messages in place to be re-fetched
+    next run. An empty pass records nothing and is durable by definition, so it
+    returns True.
     """
     recorded, places = len(writer), writer.places
     try:
         paths = writer.seal(date)
     except OSError as exc:
         log.error("%s: metadata log not written: %s", writer.root, exc)
-        return
+        return False
     if paths:
         log.info("%s: %s message(s) recorded in %s place(s)", writer.root, recorded, places)
+    return True
 
 
 # What a migrated database is renamed to. Not deleted: renaming says "the log is
@@ -392,10 +397,10 @@ def _backup_folder(
     result = mb.folder_backup(
         folder, store, since=start_date, callback=_location_writer(log_writer)
     )
-    _seal_log(log_writer, snapshot_date)
-    if result.complete:
+    sealed = _seal_log(log_writer, snapshot_date)
+    if result.complete and sealed:
         _record_snapshot(snapshot_state, job.name, folder, snapshot_date)
-    else:
+    elif not result.complete:
         # Advancing the snapshot now would push the failed messages
         # out of every future date filter, losing them permanently.
         log.warning(
@@ -405,6 +410,53 @@ def _backup_folder(
             result.failed,
             result.total,
         )
+    else:
+        # Downloads were clean but the location log did not reach disk. Holding
+        # the snapshot back re-fetches the folder next run and writes the log
+        # again, rather than advancing past locations that were never recorded.
+        log.warning("%s::%s: metadata log not sealed, snapshot not advanced", job.name, folder)
+    _purge_after_seal(mb, job, folder, result, sealed)
+
+
+def _purge_after_seal(
+    mb: base.MailboxClient,
+    job: conf.JobConfig,
+    folder: str,
+    result: base.BackupResult,
+    sealed: bool,
+) -> None:
+    """Delete the archived messages from the server, but only once the log is on disk.
+
+    This is the ordering the archive depends on when it deletes after export: a
+    message's location reaches the log and is fsync'd *before* the message is
+    removed from its source. A seal that failed holds the deletion back entirely
+    -- the messages stay on the server and are re-fetched next run, which the
+    content-addressed storage deduplicates -- rather than leaving `.eml` files in
+    the archive whose one unrecoverable fact, where they were seen, went with the
+    deleted server copy.
+
+    Deletion does not wait for a *complete* folder, only a sealed one: the
+    messages in `deletable` were stored and their locations written, so removing
+    them is safe even when other messages of the same folder failed. Those failed
+    ones are not in `deletable`, so they stay and are retried while the snapshot
+    holds.
+    """
+    if not job.delete_after_export or not result.deletable:
+        return
+    if not sealed:
+        log.error(
+            "%s::%s: metadata log not sealed, %s message(s) left on the server",
+            job.name,
+            folder,
+            len(result.deletable),
+        )
+        return
+    try:
+        mb.purge(folder, result.deletable)
+    except Exception as exc:
+        # The log is already durable, so a failed purge costs nothing but server
+        # space: the messages stay and are deleted on the next clean run.
+        log.error("%s::%s: purge failed: %s", job.name, folder, exc)
 
 
 def backup(job: conf.JobConfig, store_path: pathlib.Path, compress: bool = False) -> None:
