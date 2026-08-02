@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from mailvault import conf, mailutils
 from mailvault.backend import base, session
 from mailvault.jobs.common import _seal_log
-from mailvault.jobs.migrate import migrate_archive
+from mailvault.jobs.migration import migrate_archive
 from mailvault.store import cas, metalog, state
 
 log = logging.getLogger(__name__)

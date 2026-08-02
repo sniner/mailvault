@@ -11,7 +11,7 @@ import pytest
 from mailvault import conf, jobs, mailutils
 from mailvault.backend import base
 from mailvault.jobs.copy import _format_archive_folder
-from mailvault.jobs.verify import _archived_message_ids, _places_from_log
+from mailvault.jobs.verification import _archived_message_ids, _places_from_log
 from mailvault.store import cas, metadb, metalog, state
 
 # ---------------------------------------------------------------------------
@@ -744,7 +744,7 @@ class TestRebuildWithLog:
         jobs.create_db(tmp_path, target)
         before = target.read_bytes()
 
-        with patch("mailvault.jobs.database._replay_metalog", side_effect=KeyboardInterrupt):
+        with patch("mailvault.jobs.storedb._replay_metalog", side_effect=KeyboardInterrupt):
             with pytest.raises(KeyboardInterrupt):
                 jobs.create_db(tmp_path, target, force=True)
 
