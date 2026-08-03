@@ -72,6 +72,7 @@ class MSGraphClient:
         self.job = job
         self.job_name = job.name
         self.delete_after_export = job.delete_after_export
+        self.permanent_delete = job.permanent_delete
         self.exchange_journal = job.exchange_journal
         self.error_folder = job.error_folder
         self.max_retries = max(job.max_retries, 0)
@@ -287,8 +288,20 @@ class MSGraphClient:
         return self._download_mime(msg_id)
 
     def _graph_delete(self, msg_id: str) -> None:
-        url = f"{GRAPH_BASE_URL}/users/{self._user}/messages/{msg_id}"
-        resp = self._request("DELETE", url)
+        """Delete one message, softly or for good depending on the job.
+
+        A plain DELETE is a *soft* delete: Graph moves the message to Deleted
+        Items, where it keeps occupying the mailbox quota. `permanent_delete`
+        uses the `permanentDelete` action instead, which removes exactly this
+        message -- the one just archived -- without touching anything else that
+        happens to be in the bin. Retention policies and holds still apply; this
+        is not a way around them.
+        """
+        base_url = f"{GRAPH_BASE_URL}/users/{self._user}/messages/{msg_id}"
+        if self.permanent_delete:
+            resp = self._request("POST", f"{base_url}/permanentDelete")
+        else:
+            resp = self._request("DELETE", base_url)
         resp.raise_for_status()
 
     def _iter_messages(
@@ -463,12 +476,14 @@ class MSGraphClient:
         )
 
     def purge(self, folder_name: str, msg_ids: collections.abc.Sequence[str]) -> None:
-        """Delete the given messages from the mailbox.
+        """Delete the given messages from the mailbox, softly or for good.
 
         Called by the backup runner only after the folder's metadata log has been
         sealed, so a message leaves its source once the record of where it was
         seen is durable. A failed deletion is logged and does not abort the rest;
-        the message stays and is re-fetched (and deduplicated) next run.
+        the message stays and is re-fetched (and deduplicated) next run -- which
+        is also what happens if `permanent_delete` is not available, so the
+        failure direction is "still there", never "gone unarchived".
         """
         for msg_id in msg_ids:
             try:

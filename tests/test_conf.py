@@ -143,6 +143,18 @@ def _imap_job(**overrides) -> conf.JobConfig:
     return conf.JobConfig(name="j", server="imap.example.com", username="u", **overrides)
 
 
+def _graph_job(**overrides) -> conf.JobConfig:
+    return conf.JobConfig(
+        name="j",
+        backend="msgraph",
+        username="u",
+        tenant_id="t",
+        client_id="c",
+        client_secret="s",
+        **overrides,
+    )
+
+
 class TestJobValidate:
     def test_an_unknown_backend_is_refused(self):
         with pytest.raises(conf.ConfigError, match="unknown backend"):
@@ -166,19 +178,21 @@ class TestJobValidate:
     def test_a_trash_folder_is_fine_when_deleting(self):
         _imap_job(trash_folder="[Gmail]/Trash", delete_after_export=True).validate()
 
-    def test_a_trash_folder_on_graph_is_reported_as_inert(self, caplog):
-        job = conf.JobConfig(
-            name="j",
-            backend="msgraph",
-            username="u",
-            tenant_id="t",
-            client_id="c",
-            client_secret="s",
-            trash_folder="Deleted Items",
-            delete_after_export=True,
-        )
-        job.validate()
-        assert "does nothing on backend 'msgraph'" in caplog.text
+    def test_a_trash_folder_on_graph_is_refused(self):
+        """An option deciding the fate of mail must not look effective while inert."""
+        with pytest.raises(conf.ConfigError, match="use 'permanent_delete' instead"):
+            _graph_job(trash_folder="Deleted Items", delete_after_export=True).validate()
+
+    def test_permanent_delete_needs_the_graph_backend(self):
+        with pytest.raises(conf.ConfigError, match="use 'trash_folder' instead"):
+            _imap_job(permanent_delete=True, delete_after_export=True).validate()
+
+    def test_permanent_delete_without_deleting_stops_the_job(self):
+        with pytest.raises(conf.ConfigError, match="delete_after_export"):
+            _graph_job(permanent_delete=True).validate()
+
+    def test_permanent_delete_is_fine_when_deleting(self):
+        _graph_job(permanent_delete=True, delete_after_export=True).validate()
 
     def test_an_error_folder_without_journal_only_warns(self, caplog):
         # Inert, not harmful: nothing is moved when nothing fails to unwrap.

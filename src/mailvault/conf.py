@@ -123,7 +123,12 @@ class JobConfig:
     ignore_folder_names: list[str] = dataclasses.field(default_factory=list)
     delete_after_export: bool = False
     exchange_journal: bool = False
+    # Each of these belongs to exactly one backend: deleting really deletes on
+    # plain IMAP, but Gmail moves the message to a trash folder whose name is
+    # localised (so only the owner knows it), and Graph soft-deletes into
+    # Deleted Items. See `validate`.
     trash_folder: str | None = None
+    permanent_delete: bool = False
     error_folder: str | None = None
     backend: str = "imap"
     max_retries: int = 5
@@ -151,24 +156,36 @@ class JobConfig:
             raise ConfigError(
                 f"{self.name}: backend {self.backend!r} requires: {', '.join(missing)}"
             )
-        if self.trash_folder and not self.delete_after_export:
-            # `trash_folder` exists because deleting from Gmail only moves the
-            # message to the trash, so the trash has to be emptied for the
-            # deletion to be real. Emptying it removes everything in there,
-            # including mail the owner put there and mail that was never
-            # archived. Without `delete_after_export` this job never asked to
-            # delete anything at all, so doing it anyway is not a default worth
-            # having -- refuse the job instead.
-            raise ConfigError(
-                f"{self.name}: 'trash_folder' empties that folder completely and only makes "
-                f"sense together with 'delete_after_export' -- set that too, or remove it"
-            )
-        if self.trash_folder and self.backend != "imap":
-            log.warning(
-                "%s: 'trash_folder' is an IMAP/Gmail option and does nothing on backend %r",
-                self.name,
-                self.backend,
-            )
+        # `trash_folder` and `permanent_delete` are the same idea for the two
+        # hosted providers that only pretend to delete, one backend each. Both
+        # are refused rather than ignored where they cannot work: an option that
+        # decides the fate of mail must never look effective while doing
+        # nothing. Neither means anything without `delete_after_export` -- with
+        # nothing being deleted there is nothing left to finish off.
+        if self.trash_folder:
+            if self.backend != "imap":
+                raise ConfigError(
+                    f"{self.name}: 'trash_folder' is an IMAP option (Gmail) and has no effect "
+                    f"on backend {self.backend!r} -- use 'permanent_delete' instead"
+                )
+            if not self.delete_after_export:
+                raise ConfigError(
+                    f"{self.name}: 'trash_folder' empties that folder completely and only "
+                    f"makes sense together with 'delete_after_export' -- set that too, or "
+                    f"remove it"
+                )
+        if self.permanent_delete:
+            if self.backend != "msgraph":
+                raise ConfigError(
+                    f"{self.name}: 'permanent_delete' is an msgraph option and has no effect "
+                    f"on backend {self.backend!r}"
+                    + (" -- use 'trash_folder' instead" if self.backend == "imap" else "")
+                )
+            if not self.delete_after_export:
+                raise ConfigError(
+                    f"{self.name}: 'permanent_delete' only makes sense together with "
+                    f"'delete_after_export' -- set that too, or remove it"
+                )
         if self.error_folder and not self.exchange_journal:
             # The error folder is the escape hatch for the one case that can go
             # wrong on its own: an item in a journal mailbox that is not a

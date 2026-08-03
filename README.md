@@ -150,30 +150,42 @@ providers do not mean what you probably expect:
 | Microsoft 365 | A *soft delete*: the message moves to **Deleted Items** and stays there |
 
 On both hosted services the mailbox therefore does not actually shrink. The mail
-is out of your way, but it still occupies the quota.
+is out of your way, but it still occupies the quota. Each has an option to
+finish the job — one per backend, and each is refused on the other:
 
-For **Gmail** there is `trash_folder`:
+**Gmail** — name the trash folder, and it is emptied after every backup pass:
 
 ```toml
 delete_after_export = true
 trash_folder = "[Gmail]/Trash"
 ```
 
-After each backup pass that folder is emptied, which is what makes the deletion
-real.
+You have to supply the name because Gmail localises it: `[Gmail]/Papierkorb` on
+a German account, `[Google Mail]/…` on some older ones. Use
+`mailvault --config … folders` to see what yours is called.
 
 > [!WARNING]
 > `trash_folder` empties the folder **completely** — including messages you put
 > there yourself and messages that were never archived. It is the one place
 > where mailvault deletes mail it did not archive, so point it at a trash folder
-> and nothing else. Because emptying a trash is destructive in its own right, a
-> job that sets `trash_folder` without `delete_after_export` is refused rather
-> than run: without it, the job never asked for any deletion at all.
+> and nothing else.
 
-For **Microsoft 365** there is currently no equivalent — mailvault does not empty
-Deleted Items, so with `delete_after_export` you have to do that yourself (a
-retention policy, or by hand). `trash_folder` has no effect on the Graph backend
-and says so when the configuration is loaded.
+**Microsoft 365** — delete for good instead of into Deleted Items:
+
+```toml
+delete_after_export = true
+permanent_delete = true
+```
+
+This is the tidier of the two: it hard-deletes exactly the messages that were
+just archived, one by one, and never touches anything else that happens to be
+in the bin. Retention policies, litigation hold and the recoverable-items
+dumpster still apply — this is not a way around them, and in a tenant with a
+hold in place the mail remains recoverable by an administrator.
+
+Neither option means anything without `delete_after_export`, and a job that sets
+one anyway is refused rather than run: an option that decides the fate of mail
+must never look effective while doing nothing.
 
 ### Exchange journal mailboxes
 
@@ -544,7 +556,8 @@ etc.) work the same as with IMAP. Three do not:
 * `ignore_folder_flags` has no effect — Graph folders have no IMAP-style flags
 * `delete_after_export` is a soft delete: the message moves to Deleted Items and
   stays there, see [Deleting from the server](#deleting-from-the-server-after-export)
-* `trash_folder` has no effect and is reported as such when the config is loaded
+* `trash_folder` is an IMAP option and is refused here — `permanent_delete` is its
+  counterpart on this backend
 
 ### Global options
 
@@ -617,7 +630,8 @@ with a warning.
 | `tls_verify_cert` | `true` | Verify the TLS certificate |
 | `exchange_journal` | `false` | Extract original emails from MS Exchange journal messages (see [Exchange journal mailboxes](#exchange-journal-mailboxes)) |
 | `error_folder` | — | Where to file items that are not journal envelopes; only meaningful with `exchange_journal` |
-| `trash_folder` | — | Gmail only: folder emptied after each backup pass; requires `delete_after_export` (see [Deleting from the server](#deleting-from-the-server-after-export)) |
+| `trash_folder` | — | IMAP/Gmail only: folder emptied after each backup pass; requires `delete_after_export` (see [Deleting from the server](#deleting-from-the-server-after-export)) |
+| `permanent_delete` | `false` | MS Graph only: delete for good instead of into Deleted Items; requires `delete_after_export` (see [Deleting from the server](#deleting-from-the-server-after-export)) |
 | `delete_after_export` | `false` | Delete emails from the server after export — on Gmail and M365 this only moves them to the trash, see [Deleting from the server](#deleting-from-the-server-after-export) (use with caution) |
 | `max_retries` | `5` | Retries for failed MS Graph requests (throttling, gateway and connection errors) |
 | `incremental` | `true` | Only download messages added since the last backup run (global option) |

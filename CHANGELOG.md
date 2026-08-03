@@ -4,6 +4,13 @@
 
 ### Added
 
+- **`permanent_delete` for Microsoft 365 jobs.** With `delete_after_export`, Graph only *soft*
+  deletes: the message moves to Deleted Items and keeps occupying the quota, so a mailbox being
+  cleared out never actually shrank. This deletes for good instead -- exactly the messages that
+  were archived, one by one, leaving anything else in the bin alone. It is the counterpart to
+  Gmail's `trash_folder` and, unlike it, touches nothing it did not archive. Retention policies and
+  holds still apply. Requires `delete_after_export`, and is refused on any other backend
+
 - **`error_folder` now works on Microsoft 365, not only on IMAP.** Journaling is a Microsoft
   feature, but the escape hatch for items in a journal mailbox that turn out not to be journal
   envelopes existed only on the IMAP side; on Graph such an item was reported and left lying
@@ -29,11 +36,13 @@
 
 ### Changed
 
-- **A job that sets `trash_folder` without `delete_after_export` is now refused.** That folder is
-  emptied *completely*, including mail its owner put there and mail that was never archived -- and
-  a job that did not ask to delete anything has no business doing that. It is the one place where
-  mailvault removes mail it did not archive, so it now requires the option that says deleting is
-  intended. On the Graph backend `trash_folder` does nothing at all, and says so
+- **A job that sets `trash_folder` without `delete_after_export` is now refused**, as is one that
+  sets it on the Graph backend, where it never did anything. That folder is emptied *completely*,
+  including mail its owner put there and mail that was never archived -- and a job that did not ask
+  to delete anything has no business doing that. It is the one place where mailvault removes mail
+  it did not archive, so it now requires the option that says deleting is intended. The same rules
+  apply to `permanent_delete` on any backend but Graph: an option that decides the fate of mail
+  must never look effective while doing nothing
 
 - **What `delete_after_export` really does is documented per backend.** On plain IMAP the message
   is expunged and gone. On Gmail it lands in the trash, which is what `trash_folder` is for. On

@@ -294,3 +294,58 @@ class TestGraphRelocate:
 
         with pytest.raises(PermissionError, match="Mail.ReadWrite"):
             harness.client._relocate("INBOX", ["m1", "m2"], "Errors")
+
+
+# ---------------------------------------------------------------------------
+# Deleting: soft by default, permanent on request
+# ---------------------------------------------------------------------------
+
+
+class TestPurge:
+    @staticmethod
+    def _client(monkeypatch, responses, permanent: bool):
+        harness = _make_client(monkeypatch, responses)
+        harness.client._user = "user@example.org"
+        harness.client.job_name = "job"
+        harness.client.permanent_delete = permanent
+        return harness
+
+    def test_the_default_is_a_soft_delete(self, monkeypatch):
+        """Plain DELETE moves the message to Deleted Items and leaves it there."""
+        harness = self._client(monkeypatch, [_resp(204)], permanent=False)
+
+        harness.client.purge("INBOX", ["m1"])
+
+        method, url = harness.request.call_args[0][:2]
+        assert method == "DELETE"
+        assert url.endswith("/messages/m1")
+
+    def test_permanent_delete_uses_the_permanent_action(self, monkeypatch):
+        harness = self._client(monkeypatch, [_resp(204)], permanent=True)
+
+        harness.client.purge("INBOX", ["m1"])
+
+        method, url = harness.request.call_args[0][:2]
+        assert method == "POST"
+        assert url.endswith("/messages/m1/permanentDelete")
+
+    def test_it_deletes_only_what_it_was_given(self, monkeypatch):
+        # Unlike emptying a trash folder, this touches nothing else in the bin.
+        harness = self._client(monkeypatch, [_resp(204), _resp(204)], permanent=True)
+
+        harness.client.purge("INBOX", ["m1", "m2"])
+
+        urls = [call[0][1] for call in harness.request.call_args_list]
+        assert [u.rsplit("/messages/", 1)[1] for u in urls] == [
+            "m1/permanentDelete",
+            "m2/permanentDelete",
+        ]
+
+    def test_a_failure_leaves_the_message_in_place(self, monkeypatch):
+        """The safe direction: still there, never gone unarchived."""
+        harness = self._client(monkeypatch, [_resp(404), _resp(204)], permanent=True)
+        harness.client.max_retries = 0
+
+        harness.client.purge("INBOX", ["m1", "m2"])  # must not raise
+
+        assert harness.request.call_count == 2
