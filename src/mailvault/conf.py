@@ -132,11 +132,14 @@ class JobConfig:
     client_secret: str = ""
 
     def validate(self) -> None:
-        """Check that the backend is known and its required fields are present.
+        """Check that the backend is known and the options make sense together.
 
         Raises ConfigError with a message naming the offending job, so a typo in
         `backend` or a missing Graph credential fails early and clearly instead
         of silently falling back to IMAP or crashing deep in the backend.
+
+        An option that does nothing in its context is warned about; one that
+        would do something destructive nobody asked for stops the job.
         """
         if self.backend not in VALID_BACKENDS:
             raise ConfigError(
@@ -148,11 +151,30 @@ class JobConfig:
             raise ConfigError(
                 f"{self.name}: backend {self.backend!r} requires: {', '.join(missing)}"
             )
+        if self.trash_folder and not self.delete_after_export:
+            # `trash_folder` exists because deleting from Gmail only moves the
+            # message to the trash, so the trash has to be emptied for the
+            # deletion to be real. Emptying it removes everything in there,
+            # including mail the owner put there and mail that was never
+            # archived. Without `delete_after_export` this job never asked to
+            # delete anything at all, so doing it anyway is not a default worth
+            # having -- refuse the job instead.
+            raise ConfigError(
+                f"{self.name}: 'trash_folder' empties that folder completely and only makes "
+                f"sense together with 'delete_after_export' -- set that too, or remove it"
+            )
+        if self.trash_folder and self.backend != "imap":
+            log.warning(
+                "%s: 'trash_folder' is an IMAP/Gmail option and does nothing on backend %r",
+                self.name,
+                self.backend,
+            )
         if self.error_folder and not self.exchange_journal:
             # The error folder is the escape hatch for the one case that can go
             # wrong on its own: an item in a journal mailbox that is not a
             # journal envelope. An ordinary backup only reads and, on request,
-            # deletes -- it never relocates, so there is nothing to catch.
+            # deletes -- it never relocates, so there is nothing to catch. It is
+            # inert rather than harmful here, hence a warning and not an error.
             log.warning(
                 "%s: 'error_folder' only applies to 'exchange_journal' jobs "
                 "and does nothing here",

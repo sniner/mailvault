@@ -136,6 +136,45 @@ $ mailvault --config example.toml backup ./backup
 Use `--compress` to store emails compressed with zstd. Use `--job NAME` to run
 only specific jobs from the configuration file.
 
+### Deleting from the server after export
+
+With `delete_after_export = true` a message is removed from the mailbox once it
+is archived — and only once its location has been written down durably, never
+before. What "removed" then means is up to the server, and the two big hosted
+providers do not mean what you probably expect:
+
+| Backend | What `delete_after_export` actually does |
+|---------|------------------------------------------|
+| Plain IMAP | Marks `\Deleted` and expunges — the message is gone |
+| Gmail | Depends on the account's IMAP setting; in the usual "move to the Trash" configuration the message lands in `[Gmail]/Trash` and stays there |
+| Microsoft 365 | A *soft delete*: the message moves to **Deleted Items** and stays there |
+
+On both hosted services the mailbox therefore does not actually shrink. The mail
+is out of your way, but it still occupies the quota.
+
+For **Gmail** there is `trash_folder`:
+
+```toml
+delete_after_export = true
+trash_folder = "[Gmail]/Trash"
+```
+
+After each backup pass that folder is emptied, which is what makes the deletion
+real.
+
+> [!WARNING]
+> `trash_folder` empties the folder **completely** — including messages you put
+> there yourself and messages that were never archived. It is the one place
+> where mailvault deletes mail it did not archive, so point it at a trash folder
+> and nothing else. Because emptying a trash is destructive in its own right, a
+> job that sets `trash_folder` without `delete_after_export` is refused rather
+> than run: without it, the job never asked for any deletion at all.
+
+For **Microsoft 365** there is currently no equivalent — mailvault does not empty
+Deleted Items, so with `delete_after_export` you have to do that yourself (a
+retention policy, or by hand). `trash_folder` has no effect on the Graph backend
+and says so when the configuration is loaded.
+
 ### Exchange journal mailboxes
 
 Exchange journaling wraps every mail it records in an envelope: the journal
@@ -498,11 +537,14 @@ username = "john.doe@example.com"
 folders = ["Inbox", "Archive"]
 ```
 
-The `username` is the email address of the mailbox to back up. All other
-options (`folders`, `ignore_folder_names`, `exchange_journal`,
-`delete_after_export`, etc.) work the same as with IMAP. Note that
-`ignore_folder_flags` has no effect with MS Graph, as Graph folders do not
-have IMAP-style flags.
+The `username` is the email address of the mailbox to back up. Most other
+options (`folders`, `ignore_folder_names`, `exchange_journal`, `error_folder`,
+etc.) work the same as with IMAP. Three do not:
+
+* `ignore_folder_flags` has no effect — Graph folders have no IMAP-style flags
+* `delete_after_export` is a soft delete: the message moves to Deleted Items and
+  stays there, see [Deleting from the server](#deleting-from-the-server-after-export)
+* `trash_folder` has no effect and is reported as such when the config is loaded
 
 ### Global options
 
@@ -575,8 +617,8 @@ with a warning.
 | `tls_verify_cert` | `true` | Verify the TLS certificate |
 | `exchange_journal` | `false` | Extract original emails from MS Exchange journal messages (see [Exchange journal mailboxes](#exchange-journal-mailboxes)) |
 | `error_folder` | — | Where to file items that are not journal envelopes; only meaningful with `exchange_journal` |
-| `trash_folder` | — | Gmail only: folder emptied after a backup pass |
-| `delete_after_export` | `false` | Delete emails from the server after export (use with caution) |
+| `trash_folder` | — | Gmail only: folder emptied after each backup pass; requires `delete_after_export` (see [Deleting from the server](#deleting-from-the-server-after-export)) |
+| `delete_after_export` | `false` | Delete emails from the server after export — on Gmail and M365 this only moves them to the trash, see [Deleting from the server](#deleting-from-the-server-after-export) (use with caution) |
 | `max_retries` | `5` | Retries for failed MS Graph requests (throttling, gateway and connection errors) |
 | `incremental` | `true` | Only download messages added since the last backup run (global option) |
 | `compress` | `false` | Compress stored emails with zstd (global option) |

@@ -135,6 +135,62 @@ def test_jobconfig_from_dict():
 
 
 # ---------------------------------------------------------------------------
+# JobConfig.validate
+# ---------------------------------------------------------------------------
+
+
+def _imap_job(**overrides) -> conf.JobConfig:
+    return conf.JobConfig(name="j", server="imap.example.com", username="u", **overrides)
+
+
+class TestJobValidate:
+    def test_an_unknown_backend_is_refused(self):
+        with pytest.raises(conf.ConfigError, match="unknown backend"):
+            _imap_job(backend="pigeon").validate()
+
+    def test_a_missing_graph_credential_is_named(self):
+        job = conf.JobConfig(name="j", backend="msgraph", username="u")
+        with pytest.raises(conf.ConfigError, match="tenant_id"):
+            job.validate()
+
+    def test_a_trash_folder_without_deleting_stops_the_job(self):
+        """Emptying a trash nobody asked to fill is not a default worth having.
+
+        `trash_folder` removes everything in that folder, including mail the
+        owner put there. A job that never set `delete_after_export` did not ask
+        for any deletion at all.
+        """
+        with pytest.raises(conf.ConfigError, match="delete_after_export"):
+            _imap_job(trash_folder="[Gmail]/Trash").validate()
+
+    def test_a_trash_folder_is_fine_when_deleting(self):
+        _imap_job(trash_folder="[Gmail]/Trash", delete_after_export=True).validate()
+
+    def test_a_trash_folder_on_graph_is_reported_as_inert(self, caplog):
+        job = conf.JobConfig(
+            name="j",
+            backend="msgraph",
+            username="u",
+            tenant_id="t",
+            client_id="c",
+            client_secret="s",
+            trash_folder="Deleted Items",
+            delete_after_export=True,
+        )
+        job.validate()
+        assert "does nothing on backend 'msgraph'" in caplog.text
+
+    def test_an_error_folder_without_journal_only_warns(self, caplog):
+        # Inert, not harmful: nothing is moved when nothing fails to unwrap.
+        _imap_job(error_folder="Errors").validate()
+        assert "only applies to 'exchange_journal' jobs" in caplog.text
+
+    def test_an_error_folder_with_journal_is_quiet(self, caplog):
+        _imap_job(error_folder="Errors", exchange_journal=True).validate()
+        assert "error_folder" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
 # TOML loading
 # ---------------------------------------------------------------------------
 

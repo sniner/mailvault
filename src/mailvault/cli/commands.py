@@ -71,11 +71,16 @@ def run_mailbox(args: argparse.Namespace) -> int:
             log.error("Unknown job: %s", name)
             exit_code = 1
     for job in selected:
+        # One broken job must not stop the remaining ones, but the run as a
+        # whole reports failure so callers/cron can react.
         try:
             _run_job(job, args, config)
+        except (conf.ConfigError, jobs.JobError) as exc:
+            # A misconfigured or refused job is a user error, not a crash --
+            # reported as one line here for the same reason `main` does it.
+            log.error("Job '%s' failed: %s", job.name, exc)
+            exit_code = 1
         except Exception as exc:
-            # One broken job must not stop the remaining ones, but the run
-            # as a whole reports failure so callers/cron can react.
             log.exception("Job '%s' failed: %s", job.name, exc)
             exit_code = 1
     return exit_code

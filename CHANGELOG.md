@@ -29,6 +29,18 @@
 
 ### Changed
 
+- **A job that sets `trash_folder` without `delete_after_export` is now refused.** That folder is
+  emptied *completely*, including mail its owner put there and mail that was never archived -- and
+  a job that did not ask to delete anything has no business doing that. It is the one place where
+  mailvault removes mail it did not archive, so it now requires the option that says deleting is
+  intended. On the Graph backend `trash_folder` does nothing at all, and says so
+
+- **What `delete_after_export` really does is documented per backend.** On plain IMAP the message
+  is expunged and gone. On Gmail it lands in the trash, which is what `trash_folder` is for. On
+  Microsoft 365 it is a soft delete into Deleted Items and stays there -- mailvault does not empty
+  that folder, so the mailbox does not actually shrink. None of this was written down anywhere,
+  and it is exactly the kind of surprise nobody wants while clearing out a mailbox
+
 - **`error_folder` is documented, and reports when it does nothing.** It is the escape hatch for
   `exchange_journal` and for nothing else -- an ordinary backup reads and, on request, deletes, but
   never relocates. Setting it on a job that is not a journal job says so when the config is loaded.
