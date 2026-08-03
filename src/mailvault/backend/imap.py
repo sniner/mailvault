@@ -145,7 +145,7 @@ class ImapClient:
         chunk_size: int = 10,
         result: BackupResult | None = None,
     ) -> collections.abc.Generator[tuple[int, bytes, datetime | None], None, None]:
-        for msg_ids in utils.chunks(message_ids, chunk_size):
+        for msg_ids in utils.batched(message_ids, chunk_size):
             msg_ids_str = ", ".join([str(i) for i in msg_ids])
             log.debug("%s::%s: fetching %s", self.job_name, folder_name, msg_ids_str)
             msg_id = None
@@ -194,7 +194,7 @@ class ImapClient:
                 self.conn.select_folder(folder_name, readonly=False)
                 try:
                     message_ids = self.conn.search()
-                    for msg_ids in utils.chunks(message_ids, 10):
+                    for msg_ids in utils.batched(message_ids, 10):
                         self.conn.delete_messages(msg_ids)
                 except Exception as exc:
                     log.error("%s::%s: %s", self.job_name, folder_name, exc)
@@ -404,7 +404,7 @@ class ImapClient:
                     folder_name,
                     len(message_ids),
                 )
-                for chunk in utils.chunks(message_ids, INDEX_CHUNK_SIZE):
+                for chunk in utils.batched(message_ids, INDEX_CHUNK_SIZE):
                     try:
                         fetched = self.conn.fetch(chunk, ["ENVELOPE"])
                     except (OSError, imaplib.IMAP4.error) as exc:
