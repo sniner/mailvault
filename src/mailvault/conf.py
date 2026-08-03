@@ -1,9 +1,9 @@
-"""Loading the TOML configuration into `Config` and `JobConfig`.
+"""Loading the TOML configuration into `Config`, `JobConfig` and `CopyConfig`.
 
-Parses the `[global]` options and the `[[job]]` list, expands `${VAR}` and
-`_cmd` values (the latter only with `--allow-exec`), and drops fields that were
-retired in an earlier version with a warning rather than silently restoring a
-default.
+Parses the `[global]` options, the `[[job]]` list and the `[copy]` section,
+expands `${VAR}` and `_cmd` values (the latter only with `--allow-exec`), and
+drops fields that were retired in an earlier version with a warning rather than
+silently restoring a default.
 """
 
 from __future__ import annotations
@@ -94,6 +94,15 @@ RETIRED_FIELDS = {
     "with_db": "metadata is always recorded now, and there is no database to have",
     "with_metadata": "metadata is always recorded now",
     "incremental": "it is a global option now -- set it once under [global], not per job",
+    "role": "the [copy] section names its 'source' and 'destination' jobs itself now",
+    "archive_folder": (
+        "it is '[copy] move_to_folder' now; 'archive' means the local archive, "
+        "and this is a folder on the source server"
+    ),
+    "move_to_archive": (
+        "naming a '[copy] move_to_folder' is what turns moving on now, "
+        "so the separate switch is gone"
+    ),
 }
 
 
@@ -114,9 +123,6 @@ class JobConfig:
     exchange_journal: bool = False
     trash_folder: str | None = None
     error_folder: str | None = None
-    role: str | None = None
-    move_to_archive: bool = False
-    archive_folder: str | None = None
     backend: str = "imap"
     max_retries: int = 5
     tenant_id: str = ""
@@ -168,8 +174,66 @@ class JobConfig:
 
 
 @dataclasses.dataclass
+class CopyConfig:
+    """The `[copy]` section -- everything the `copy` command needs, in one place.
+
+    `source` and `destination` name two `[[job]]` entries rather than tagging
+    them. A job then says only how to reach a mailbox, and nothing in the job
+    list has to know that a command exists which never touches an archive.
+    """
+
+    source: str = ""
+    destination: str = ""
+    move_to_folder: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> CopyConfig:
+        fields = {f.name for f in dataclasses.fields(cls)}
+        unknown = set(data) - fields
+        if unknown:
+            log.warning("Unknown fields in [copy]: %s", ", ".join(sorted(unknown)))
+        return cls(**{k: v for k, v in data.items() if k in fields})
+
+    def resolve(self, jobs: list[JobConfig]) -> tuple[JobConfig, JobConfig]:
+        """Look the two named jobs up in `jobs`.
+
+        Raises ConfigError naming what is wrong -- an unset name, a name with no
+        matching job, or both roles on the same one. A mistyped job name is
+        caught here rather than surfacing later as a copy that finds nothing, and
+        the same job on both ends would copy a mailbox onto itself.
+        """
+        by_name: dict[str, JobConfig] = {}
+        for job in jobs:
+            by_name.setdefault(job.name, job)
+
+        found = []
+        for role in ("source", "destination"):
+            name = getattr(self, role)
+            if not name:
+                raise ConfigError(f"[copy]: '{role}' is not set")
+            job = by_name.get(name)
+            if job is None:
+                known = ", ".join(sorted(by_name)) or "none defined"
+                raise ConfigError(f"[copy]: {role} job {name!r} does not exist (jobs: {known})")
+            found.append(job)
+
+        source, destination = found
+        if source is destination:
+            raise ConfigError(
+                f"[copy]: source and destination are the same job ({source.name!r})"
+            )
+        return source, destination
+
+
+# Config fields that come from their own part of the file rather than from the
+# `[global]` table, and must not be accepted as global options.
+_NON_GLOBAL_FIELDS = frozenset({"jobs", "copy"})
+
+
+@dataclasses.dataclass
 class Config:
     jobs: list[JobConfig] = dataclasses.field(default_factory=list)
+    copy: CopyConfig | None = None
     compress: bool = False
     index_db: bool = False
     incremental: bool = True
@@ -177,7 +241,7 @@ class Config:
     @classmethod
     def from_toml(cls, data: dict, allow_exec: bool = False) -> Config:
         global_data = data.get("global", {})
-        fields = {f.name for f in dataclasses.fields(cls) if f.name != "jobs"}
+        fields = {f.name for f in dataclasses.fields(cls) if f.name not in _NON_GLOBAL_FIELDS}
         known_global = {k: v for k, v in global_data.items() if k in fields}
         unknown_global = set(global_data.keys()) - fields
         if unknown_global:
@@ -194,7 +258,10 @@ class Config:
                 )
             )
 
-        return cls(jobs=jobs, **known_global)
+        copy_data = data.get("copy")
+        copy = CopyConfig.from_dict(copy_data) if copy_data is not None else None
+
+        return cls(jobs=jobs, copy=copy, **known_global)
 
 
 def load(path: pathlib.Path | str, allow_exec: bool = False) -> Config:
@@ -211,16 +278,3 @@ def load(path: pathlib.Path | str, allow_exec: bool = False) -> Config:
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path}: not a valid TOML configuration: {exc}") from exc
     return Config.from_toml(data, allow_exec=allow_exec)
-
-
-def find(configs: list[JobConfig], key: str, value: str) -> JobConfig | None:
-    """Return the first job whose `key` attribute equals `value`, case-insensitively.
-
-    Used to resolve the `source`/`destination` roles for `copy`. Returns None when
-    no job matches.
-    """
-    _value = value.casefold()
-    return next(
-        (c for c in configs if (getattr(c, key, "") or "").casefold() == _value),
-        None,
-    )

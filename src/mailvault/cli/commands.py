@@ -85,20 +85,24 @@ def run_mailbox(args: argparse.Namespace) -> int:
 
 
 def run_copy(args: argparse.Namespace) -> int:
-    """Copy from the source-role mailbox to the destination-role mailbox."""
+    """Copy between the two mailboxes the `[copy]` section names."""
     config = conf.load(args.config, allow_exec=args.allow_exec)
-    source = conf.find(config.jobs, "role", "source")
-    destination = conf.find(config.jobs, "role", "destination")
-
-    if source is None or destination is None:
-        log.error("Job missing source or destination role")
-        return 1
+    if config.copy is None:
+        raise conf.ConfigError(
+            "no [copy] section: 'copy' needs one naming a 'source' and a 'destination' job"
+        )
+    source, destination = config.copy.resolve(config.jobs)
 
     if args.list_folders:
         jobs.folder_list(source)
     else:
         log.info(f"Copy job: {source.name} -> {destination.name}")
-        jobs.copy(source, destination, idle=args.idle)
+        jobs.copy(
+            source,
+            destination,
+            move_to_folder=config.copy.move_to_folder,
+            idle=args.idle,
+        )
 
     return 0
 

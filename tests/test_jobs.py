@@ -11,7 +11,7 @@ import pytest
 
 from mailvault import conf, jobs, mailutils
 from mailvault.backend import base
-from mailvault.jobs.copy import _format_archive_folder
+from mailvault.jobs.copy import _format_folder
 from mailvault.jobs.storedb import DEFAULT_QUERY_DB_NAME, refresh_db
 from mailvault.jobs.verification import _archived_message_ids, _places_from_log
 from mailvault.store import cas, metadb, metalog, state
@@ -1075,8 +1075,8 @@ class TestFolderList:
 
 class TestCopy:
     def test_copy_basic(self):
-        source = _make_job(name="src", role="source", folders=["INBOX"])
-        dest = _make_job(name="dst", role="destination")
+        source = _make_job(name="src", folders=["INBOX"])
+        dest = _make_job(name="dst")
 
         mock_src_client = _make_mock_client()
         mock_src_client.job_name = "src"
@@ -1096,15 +1096,29 @@ class TestCopy:
 
         mock_dst_client.save_message.assert_called_once_with(DUMMY_EML, "INBOX", date=msg_date)
 
-    def test_copy_with_archive(self):
-        source = _make_job(
-            name="src",
-            role="source",
-            folders=["INBOX"],
-            move_to_archive=True,
-            archive_folder="Archive/%Y/%m",
-        )
-        dest = _make_job(name="dst", role="destination")
+    def test_copy_with_move_to_folder(self):
+        source = _make_job(name="src", folders=["INBOX"])
+        dest = _make_job(name="dst")
+
+        mock_src_client = _make_mock_client()
+        mock_dst_client = _make_mock_client()
+
+        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
+        mock_src_client.get_messages.return_value = iter([(1, msg_date, DUMMY_EML)])
+
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            clients = iter([mock_src_client, mock_dst_client])
+            mock_mb_cls.return_value.__enter__ = MagicMock(side_effect=lambda: next(clients))
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            jobs.copy(source, dest, move_to_folder="Old/%Y/%m")
+
+        # Should have attempted to move the copied message aside
+        mock_src_client.move_message.assert_called_once()
+
+    def test_copy_without_move_to_folder_leaves_source_alone(self):
+        source = _make_job(name="src", folders=["INBOX"])
+        dest = _make_job(name="dst")
 
         mock_src_client = _make_mock_client()
         mock_dst_client = _make_mock_client()
@@ -1119,31 +1133,19 @@ class TestCopy:
 
             jobs.copy(source, dest)
 
-        # Should have attempted to move to archive
-        mock_src_client.move_message.assert_called_once()
-
-    def test_copy_missing_archive_folder_raises(self):
-        source = _make_job(
-            name="src",
-            role="source",
-            move_to_archive=True,
-            archive_folder=None,
-        )
-        dest = _make_job(name="dst", role="destination")
-
-        with pytest.raises(jobs.JobError, match="archive_folder"):
-            jobs.copy(source, dest)
+        mock_src_client.move_message.assert_not_called()
+        mock_src_client.delete_message.assert_not_called()
 
     def test_idle_rejects_non_imap_source(self):
-        source = _make_job(name="src", role="source", backend="msgraph")
-        dest = _make_job(name="dst", role="destination")
+        source = _make_job(name="src", backend="msgraph")
+        dest = _make_job(name="dst")
 
         with pytest.raises(jobs.JobError, match="idle"):
             jobs.copy(source, dest, idle=True)
 
     def test_copy_default_inbox(self):
-        source = _make_job(name="src", role="source")  # folders=None -> default INBOX
-        dest = _make_job(name="dst", role="destination")
+        source = _make_job(name="src")  # folders=None -> default INBOX
+        dest = _make_job(name="dst")
 
         mock_src_client = _make_mock_client()
         mock_dst_client = _make_mock_client()
@@ -1191,19 +1193,19 @@ class TestUpdateDbFromArchive:
 
 
 # ---------------------------------------------------------------------------
-# _format_archive_folder
+# _format_folder
 # ---------------------------------------------------------------------------
 
 
-class TestFormatArchiveFolder:
+class TestFormatFolder:
     def test_strftime_expansion(self):
-        result = _format_archive_folder("Archive/%Y")
+        result = _format_folder("Old/%Y")
         year = datetime.now().strftime("%Y")
-        assert result == f"Archive/{year}"
+        assert result == f"Old/{year}"
 
     def test_plain_string(self):
-        result = _format_archive_folder("Archive/Fixed")
-        assert result == "Archive/Fixed"
+        result = _format_folder("Old/Fixed")
+        assert result == "Old/Fixed"
 
 
 # ---------------------------------------------------------------------------

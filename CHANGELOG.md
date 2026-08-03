@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.8.2 (2026-08-03)
+
+### Breaking changes
+
+- **`copy` is configured in a `[copy]` section now, not on the jobs themselves.** It named its two
+  mailboxes by tagging them `role = "source"` / `role = "destination"`, which put a command that
+  never touches an archive into the middle of the job list and left `--job` unable to address it.
+  The section names the jobs instead, so a `[[job]]` again says only how to reach a mailbox:
+
+  ```toml
+  [copy]
+  source = "source_account"
+  destination = "destination_account"
+  move_to_folder = "Old/%Y"
+  ```
+
+  A name matching no job, or the same job on both ends, is now refused before anything connects --
+  the latter would have copied a mailbox onto itself
+
+- **`move_to_archive` and `archive_folder` are one option, `[copy] move_to_folder`.** Naming the
+  folder is what turns moving on, so the separate switch is gone, and the old name claimed the word
+  "archive" for something that is not one: everywhere else in this tool an archive is the local
+  store, while this is a folder on the source server. Replace `move_to_archive = true` plus
+  `archive_folder = "Archive/%Y"` with `move_to_folder = "Old/%Y"` in the `[copy]` section
+
+  Each retired option is reported by name when the configuration is loaded, so nothing changes
+  behaviour quietly -- but a configuration that still uses them has no `[copy]` section, and `copy`
+  stops rather than guessing
+
 ## 0.8.1 (2026-08-02)
 
 ### Breaking changes
