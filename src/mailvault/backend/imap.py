@@ -17,7 +17,6 @@ import re
 import ssl
 import sys
 import threading
-import time
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -133,43 +132,6 @@ class ImapClient:
                 if self._isfoldername(folder, *self.job.ignore_folder_names):
                     continue
                 yield folder[2]
-
-    def select_folder(self, folder_name: str, readonly: bool = True) -> None:
-        if not self.conn.folder_exists(folder_name):
-            self.conn.create_folder(folder_name)
-        self.conn.select_folder(folder_name, readonly=readonly)
-
-    def watch_folder(
-        self,
-        folder_name: str,
-        timeout: int = 20,
-        break_out: int = 3600,
-    ) -> collections.abc.Generator[tuple[str, list], None, None]:
-        with self.lock:
-            start_time = time.monotonic()
-            while time.monotonic() - start_time < break_out:
-                self.select_folder(folder_name)
-                self.conn.idle()
-                responses = None
-                while not responses:
-                    idle_time = time.monotonic()
-                    responses = self.conn.idle_check(timeout=max(timeout, 10))
-                    log.debug("%s::%s: IDLE response %s", self.job_name, folder_name, responses)
-                    if responses:
-                        self.conn.idle_done()
-                        break
-                    now = time.monotonic()
-                    if now - idle_time < timeout / 2:
-                        # Workaround: idle_check() does not raise an exception when
-                        # connection breaks, instead it returns immediately.
-                        log.warning(
-                            "%s::%s: IDLE connection broken", self.job_name, folder_name
-                        )
-                        return
-                    if now - start_time >= break_out:
-                        self.conn.idle_done()
-                        return
-                yield folder_name, responses
 
     def _walk_folder(
         self,
@@ -384,13 +346,6 @@ class ImapClient:
             finally:
                 self.conn.unselect_folder()
 
-    def get_messages(
-        self, folder_name: str, since: datetime | None = None
-    ) -> collections.abc.Generator[tuple[int, datetime | None, bytes], None, None]:
-        for msg_id, msg, msg_date in self._iter_folder(folder_name, since):
-            log.info("%s::%s[%s]: fetched", self.job_name, folder_name, msg_id)
-            yield msg_id, msg_date, msg
-
     def message_index(
         self, folder_name: str, since: datetime | None = None
     ) -> collections.abc.Generator[MessageRef, None, None]:
@@ -433,12 +388,6 @@ class ImapClient:
             finally:
                 self.conn.unselect_folder()
 
-    def save_message(self, msg: bytes, folder_name: str, date: datetime | None = None) -> None:
-        with self.lock:
-            if not self.conn.folder_exists(folder_name):
-                self.conn.create_folder(folder_name)
-            self.conn.append(folder_name, msg, msg_time=date)
-
     def move_message(self, msg_id: int, folder_name: str) -> None:
         with self.lock:
             if self.move_cap:
@@ -449,9 +398,3 @@ class ImapClient:
                 raise MailboxError(
                     "IMAP server has no MOVE capability, moving messages is not supported"
                 )
-
-    def delete_message(self, msg_id: int, expunge: bool = False) -> None:
-        with self.lock:
-            self.conn.delete_messages(msg_id)
-            if expunge:
-                self.conn.expunge(msg_id)

@@ -555,52 +555,11 @@ class TestPurge:
 
 
 # ---------------------------------------------------------------------------
-# get_messages
+# move_message
 # ---------------------------------------------------------------------------
 
 
-class TestGetMessages:
-    def test_yields_messages(self):
-        conn = _make_mock_conn()
-        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
-        conn.select_folder.return_value = {b"EXISTS": 1}
-        conn.search.return_value = [1]
-        conn.fetch.return_value = {
-            1: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
-        }
-        client = _make_client(conn=conn)
-
-        results = list(client.get_messages("INBOX"))
-        assert len(results) == 1
-        msg_id, date, msg = results[0]
-        assert msg_id == 1
-        assert date == msg_date
-        assert msg == DUMMY_EML
-
-
-# ---------------------------------------------------------------------------
-# save_message / move_message / delete_message
-# ---------------------------------------------------------------------------
-
-
-class TestMessageOperations:
-    def test_save_message(self):
-        conn = _make_mock_conn()
-        client = _make_client(conn=conn)
-        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
-
-        client.save_message(DUMMY_EML, "Archive", date=msg_date)
-        conn.append.assert_called_once_with("Archive", DUMMY_EML, msg_time=msg_date)
-
-    def test_save_message_creates_folder(self):
-        conn = _make_mock_conn()
-        conn.folder_exists.return_value = False
-        client = _make_client(conn=conn)
-
-        client.save_message(DUMMY_EML, "NewFolder")
-        conn.create_folder.assert_called_once_with("NewFolder")
-        conn.append.assert_called_once()
-
+class TestMoveMessage:
     def test_move_message_with_capability(self):
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"MOVE"])
         client = _make_client(conn=conn)
@@ -622,22 +581,6 @@ class TestMessageOperations:
 
         with pytest.raises(imap.MailboxError, match="MOVE"):
             client.move_message(42, "Archive")
-
-    def test_delete_message(self):
-        conn = _make_mock_conn()
-        client = _make_client(conn=conn)
-
-        client.delete_message(42)
-        conn.delete_messages.assert_called_once_with(42)
-        conn.expunge.assert_not_called()
-
-    def test_delete_message_with_expunge(self):
-        conn = _make_mock_conn()
-        client = _make_client(conn=conn)
-
-        client.delete_message(42, expunge=True)
-        conn.delete_messages.assert_called_once_with(42)
-        conn.expunge.assert_called_once_with(42)
 
 
 # ---------------------------------------------------------------------------
@@ -685,31 +628,6 @@ class TestCollectMetadata:
         md = client._collect_metadata("[Google Mail]/Alle Nachrichten", 1, "hash123")
 
         assert md.folders == [imap.GMAIL_ALL_MAIL]
-
-
-# ---------------------------------------------------------------------------
-# select_folder
-# ---------------------------------------------------------------------------
-
-
-class TestSelectFolder:
-    def test_creates_missing_folder(self):
-        conn = _make_mock_conn()
-        conn.folder_exists.return_value = False
-        client = _make_client(conn=conn)
-
-        client.select_folder("NewFolder")
-        conn.create_folder.assert_called_once_with("NewFolder")
-        conn.select_folder.assert_called_with("NewFolder", readonly=True)
-
-    def test_existing_folder(self):
-        conn = _make_mock_conn()
-        conn.folder_exists.return_value = True
-        client = _make_client(conn=conn)
-
-        client.select_folder("INBOX", readonly=False)
-        conn.create_folder.assert_not_called()
-        conn.select_folder.assert_called_with("INBOX", readonly=False)
 
 
 # ---------------------------------------------------------------------------

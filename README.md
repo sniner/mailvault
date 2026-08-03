@@ -86,11 +86,6 @@ Wheels and pre-compiled Windows executables are also available on the
 Global options (`--config`, `-v/--verbose`, `-q/--quiet`, `--log-file`,
 `--allow-exec`, `--job`) are given **before** the command.
 
-There is also `mailvault copy`, which does not fit that description: it moves
-mail from one mailbox to another and never touches the archive. It came along
-when the former `ib-copy` tool was folded in, and it is kept as a side tool --
-see [Copying between mailboxes](#copying-between-mailboxes).
-
 
 ## Backing up mailboxes
 
@@ -310,78 +305,10 @@ to interrupt: a half-done run just leaves both, and the next one finishes. Run i
 occasionally; there is no hurry, but do not put it off for years.
 
 
-## Copying between mailboxes
-
-> [!WARNING]
-> **Experimental / Proof of Concept**
-> This subcommand is in an early experimental stage and may have hardcoded
-> limitations (e.g., `--idle` mode only watches the `INBOX`). Use with
-> caution and test with non-critical data first.
-
-`mailvault copy` transfers emails from one IMAP mailbox to another. **It has
-nothing to do with the archive** -- it reads and writes no local storage, creates
-no backup, and records no metadata. Everything else in this tool exists to get
-mail *into* an archive; this one moves it between servers. Keep that in mind when
-reading its options: a "folder" here is always a folder on a mail server.
-
-It is configured in a `[copy]` section of its own, which names two of the
-`[[job]]` entries. The jobs themselves say only how to reach a mailbox -- exactly
-as they do for a backup -- and nothing in them refers to copying:
-
-```toml
-[copy]
-source = "source_account"
-destination = "destination_account"
-move_to_folder = "Old/%Y"
-
-[[job]]
-name = "source_account"
-server = "imap.source.com"
-username = "john@source.com"
-password = "secret"
-folders = ["INBOX"]
-
-[[job]]
-name = "destination_account"
-server = "imap.destination.com"
-username = "john@destination.com"
-password = "secret"
-```
-
-Copy all matching emails:
-
-```console
-$ mailvault --config copy.toml copy
-```
-
-Use `--idle` to keep the connection open and continuously transfer new incoming
-emails. Use `--list-folders` to list the source mailbox folders instead of
-copying.
-
-`move_to_folder` names a folder **on the source server**: every copied message is
-filed there instead of staying in the inbox. The name is a
-[strftime](https://docs.python.org/3/library/time.html#time.strftime) template,
-so `"Old/%Y"` files by year, using your local date. Leave the option out and the
-source mailbox is left untouched.
-
-A name that matches no job, or the same job on both ends, is refused before
-anything connects -- the latter would copy a mailbox onto itself.
-
-> [!NOTE]
-> **Configurations from 0.8.1 and earlier need updating.** Copying used to be
-> configured on the jobs themselves: `role = "source"` / `role = "destination"`,
-> plus `move_to_archive = true` and `archive_folder = "..."` on the source. All
-> three options are gone; move them into a `[copy]` section as shown above.
->
-> Each retired option is reported by name when the configuration is loaded, so
-> nothing changes behaviour silently -- but until you update it, `copy` finds no
-> section to work from and stops.
-
-
 ## Migrating from ib-*
 
-The three former commands are now subcommands of a single `mailvault` command.
-Global options are given **before** the command.
+The former `ib-mailbox` and `ib-archive` commands are now subcommands of a single
+`mailvault` command. Global options are given **before** the command.
 
 | Previously | Now |
 |------------|-----|
@@ -390,8 +317,15 @@ Global options are given **before** the command.
 | `ib-mailbox --config c.toml verify [--repair] <dest>` | `mailvault --config c.toml verify [--repair] <dest>` |
 | `ib-archive stats\|import\|addresses\|compress\|decompress <dir>` | `mailvault archive stats\|import\|addresses\|compress\|decompress <dir>` |
 | `ib-archive db-from-archive --mailbox NAME <dir>` | `mailvault archive create-db <dir> <database>` |
-| `ib-copy --config c.toml copy [--idle]` | `mailvault --config c.toml copy [--idle]` |
-| `ib-copy --config c.toml folders` | `mailvault --config c.toml copy --list-folders` |
+| `ib-copy --config c.toml copy [--idle]` | — removed, see below |
+
+The third tool, `ib-copy`, has no successor. It transferred mail between two IMAP
+mailboxes, was declared "work in progress and not yet usable" when it was first
+committed in 2022, and never became usable; it was removed in 0.9.0. For that job
+use [imapsync](https://github.com/imapsync/imapsync) or
+[mbsync](https://isync.sourceforge.io/), which do it properly. The last release
+that still carried it is
+[v0.8.2](https://github.com/sniner/mailvault/releases/tag/v0.8.2).
 
 To keep using the old `ib-*` commands, pin to
 [v0.5.0](https://github.com/sniner/mailvault/releases/tag/v0.5.0), the last
@@ -607,17 +541,6 @@ with a warning.
 | `incremental` | `true` | Only download messages added since the last backup run (global option) |
 | `compress` | `false` | Compress stored emails with zstd (global option) |
 | `index_db` | `false` | Maintain a queryable `index.db` alongside the archive, refreshed after each backup (global option) |
-
-### The `[copy]` section
-
-Read by [`mailvault copy`](#copying-between-mailboxes) only, and ignored by every
-archive command. `source` and `destination` are job names, not settings on a job:
-
-| Option | Required | Default | Description |
-|--------|----------|---------|-------------|
-| `source` | yes | — | Name of the `[[job]]` to copy mail from |
-| `destination` | yes | — | Name of the `[[job]]` to copy mail to |
-| `move_to_folder` | no | — | File each copied message into this folder **on the source server** (a strftime template, e.g. `"Old/%Y"`) |
 
 
 ## Metadata

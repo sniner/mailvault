@@ -4,41 +4,6 @@ import pytest
 
 from mailvault import conf
 
-
-class TestCopyConfigResolve:
-    JOBS = [
-        conf.JobConfig(name="src", server="imap.src.com"),
-        conf.JobConfig(name="dst", server="imap.dst.com"),
-    ]
-
-    def test_resolves_both_jobs_by_name(self):
-        copy = conf.CopyConfig(source="src", destination="dst")
-        source, destination = copy.resolve(self.JOBS)
-        assert source is self.JOBS[0]
-        assert destination is self.JOBS[1]
-
-    @pytest.mark.parametrize("missing", ["source", "destination"])
-    def test_an_unset_name_is_named(self, missing):
-        copy = conf.CopyConfig(source="src", destination="dst")
-        setattr(copy, missing, "")
-        with pytest.raises(conf.ConfigError, match=f"'{missing}' is not set"):
-            copy.resolve(self.JOBS)
-
-    def test_an_unknown_job_is_reported_with_the_known_ones(self):
-        """A typo must not read as "nothing to copy" once the run is under way."""
-        copy = conf.CopyConfig(source="typo", destination="dst")
-        with pytest.raises(conf.ConfigError, match="source job 'typo' does not exist") as exc:
-            copy.resolve(self.JOBS)
-        assert "dst, src" in str(exc.value)
-
-    def test_the_same_job_on_both_ends_is_refused(self):
-        # Naming jobs rather than tagging them makes this expressible, and it
-        # would copy a mailbox onto itself -- every message duplicated.
-        copy = conf.CopyConfig(source="src", destination="src")
-        with pytest.raises(conf.ConfigError, match="same job"):
-            copy.resolve(self.JOBS)
-
-
 # ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
@@ -275,51 +240,6 @@ class TestTomlConfig:
         config = conf.load(toml_file, allow_exec=True)
         assert config.jobs[0].password == "s3cret"
 
-    def test_load_toml_copy_section(self, tmp_path):
-        toml_file = tmp_path / "test.toml"
-        toml_file.write_text(
-            "[copy]\n"
-            'source = "src"\n'
-            'destination = "dst"\n'
-            'move_to_folder = "Old/%Y"\n'
-            "\n"
-            "[[job]]\n"
-            'name = "src"\n'
-            'server = "imap.src.com"\n'
-            "\n"
-            "[[job]]\n"
-            'name = "dst"\n'
-            'server = "imap.dst.com"\n'
-        )
-        config = conf.load(toml_file)
-        assert config.copy is not None
-        assert config.copy.move_to_folder == "Old/%Y"
-        source, dest = config.copy.resolve(config.jobs)
-        assert source.name == "src"
-        assert dest.name == "dst"
-
-    def test_load_toml_without_copy_section(self, tmp_path):
-        toml_file = tmp_path / "test.toml"
-        toml_file.write_text('[[job]]\nname = "job1"\nserver = "s"\n')
-        config = conf.load(toml_file)
-        assert config.copy is None
-
-    def test_load_toml_copy_unknown_field_warns(self, tmp_path, caplog):
-        toml_file = tmp_path / "test.toml"
-        toml_file.write_text('[copy]\nsource = "a"\ndestination = "b"\nnonsense = 1\n')
-        config = conf.load(toml_file)
-        assert "Unknown fields in [copy]: nonsense" in caplog.text
-        assert config.copy is not None
-        assert not hasattr(config.copy, "nonsense")
-
-    def test_copy_is_not_a_global_option(self, tmp_path, caplog):
-        """`copy` is a section of its own; a `[global] copy` line is a mistake."""
-        toml_file = tmp_path / "test.toml"
-        toml_file.write_text('[global]\ncopy = "something"\n')
-        config = conf.load(toml_file)
-        assert "Unknown global config fields: copy" in caplog.text
-        assert config.copy is None
-
     def test_load_toml_empty_jobs(self, tmp_path):
         toml_file = tmp_path / "test.toml"
         toml_file.write_text("[global]\ncompress = true\n")
@@ -375,10 +295,10 @@ def test_per_job_incremental_is_reported_as_global_now(tmp_path, caplog):
 
 
 def test_a_pre_0_9_copy_job_is_reported_option_by_option(tmp_path, caplog):
-    """All three of the old per-job copy options are gone, and each says so.
+    """The per-job copy options are gone with the command, and each says so.
 
-    They moved into `[copy]`, and a job keeping them would otherwise look like a
-    configured copy source while no copy command can see it.
+    A config written for `copy` must not load as if it still meant something --
+    the backup jobs in it are still valid, but the copying will not happen.
     """
     path = tmp_path / "old.toml"
     path.write_text(
@@ -392,7 +312,22 @@ def test_a_pre_0_9_copy_job_is_reported_option_by_option(tmp_path, caplog):
     for field in ("role", "move_to_archive", "archive_folder"):
         assert f"'{field}' no longer exists" in caplog.text
         assert not hasattr(config.jobs[0], field)
-    assert "[copy]" in caplog.text
-    assert "move_to_folder" in caplog.text
+    assert "removed in 0.9.0" in caplog.text
     # The job itself still loads -- only the copy options were dropped.
     assert config.jobs[0].server == "s"
+
+
+def test_a_leftover_copy_section_is_reported(tmp_path, caplog):
+    """A whole section that stopped meaning anything must not pass unmentioned."""
+    path = tmp_path / "old.toml"
+    path.write_text(
+        '[copy]\nsource = "a"\ndestination = "b"\n\n[[job]]\nname = "a"\nserver = "s"\n',
+        encoding="utf-8",
+    )
+
+    config = conf.load(path)
+
+    assert "[copy] no longer does anything" in caplog.text
+    assert "removed in 0.9.0" in caplog.text
+    assert not hasattr(config, "copy")
+    assert config.jobs[0].name == "a"

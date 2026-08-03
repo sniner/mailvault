@@ -81,32 +81,6 @@ def run_mailbox(args: argparse.Namespace) -> int:
     return exit_code
 
 
-# --- copy ----------------------------------------------------------------------
-
-
-def run_copy(args: argparse.Namespace) -> int:
-    """Copy between the two mailboxes the `[copy]` section names."""
-    config = conf.load(args.config, allow_exec=args.allow_exec)
-    if config.copy is None:
-        raise conf.ConfigError(
-            "no [copy] section: 'copy' needs one naming a 'source' and a 'destination' job"
-        )
-    source, destination = config.copy.resolve(config.jobs)
-
-    if args.list_folders:
-        jobs.folder_list(source)
-    else:
-        log.info(f"Copy job: {source.name} -> {destination.name}")
-        jobs.copy(
-            source,
-            destination,
-            move_to_folder=config.copy.move_to_folder,
-            idle=args.idle,
-        )
-
-    return 0
-
-
 # --- archive -------------------------------------------------------------------
 
 

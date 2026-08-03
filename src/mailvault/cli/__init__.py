@@ -2,7 +2,7 @@
 
     mailvault [global options] <command> [args]
 
-The command groups map onto the former ib-mailbox / ib-copy / ib-archive tools;
+The command groups map onto the former ib-mailbox / ib-archive tools;
 the actual work still lives in mailvault.jobs. This module only builds the
 argument parser and dispatches to the handler modules in this package.
 """
@@ -21,7 +21,7 @@ from mailvault.cli import commands
 log = logging.getLogger(__name__)
 
 # Commands that read a job configuration file and therefore require --config.
-_CONFIG_COMMANDS = {"folders", "backup", "verify", "copy"}
+_CONFIG_COMMANDS = {"folders", "backup", "verify"}
 
 
 def get_version() -> str:
@@ -69,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         type=pathlib.Path,
-        help="Configuration file (TOML); required by folders/backup/verify/copy",
+        help="Configuration file (TOML); required by folders/backup/verify",
     )
     parser.add_argument(
         "--allow-exec",
@@ -118,23 +118,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--compress", action="store_true", help="Compress stored emails with zstd"
     )
     p_verify.add_argument("destination", type=pathlib.Path, help="Archive directory to check")
-
-    p_copy = sub.add_parser(
-        "copy",
-        help="Copy mails between two mailboxes",
-        description="Copy mails from the source-role to the destination-role mailbox.",
-    )
-    p_copy.add_argument(
-        "--idle",
-        action="store_true",
-        help="Keep the connection open and copy new mail as it arrives",
-    )
-    p_copy.add_argument(
-        "--list-folders",
-        dest="list_folders",
-        action="store_true",
-        help="List the source mailbox folders instead of copying",
-    )
 
     p_archive = sub.add_parser(
         "archive",
@@ -267,8 +250,6 @@ def main() -> int:
     try:
         if args.command in {"folders", "backup", "verify"}:
             exit_code = commands.run_mailbox(args)
-        elif args.command == "copy":
-            exit_code = commands.run_copy(args)
         elif args.command == "archive":
             exit_code = commands.run_archive(args)
     except KeyboardInterrupt:

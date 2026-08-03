@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.0 (2026-08-03)
+
+### Removed
+
+- **The `copy` command is gone, with its configuration and its `--idle` mode.** It transferred mail
+  between two IMAP mailboxes and never touched the archive -- the one thing every other command in
+  this tool exists for. It was committed in 2022 described as "work in progress and not yet usable"
+  and never became usable: in four years it received no fix and no feature, and its `--idle` mode
+  re-copied the entire INBOX on every notification, which duplicates mail unless the source is
+  drained as it goes. For transferring mail between mailboxes use
+  [imapsync](https://github.com/imapsync/imapsync) or [mbsync](https://isync.sourceforge.io/),
+  which do it properly. The last release that carried it is 0.8.2
+
+  A configuration written for it still loads, and its backup jobs keep working -- but `[copy]`,
+  `role`, `move_to_archive` and `archive_folder` are each reported as retired and do nothing. There
+  is no replacement in this tool; remove them
+
+### Changed
+
+- **The mailbox backends only do what a backup needs now.** `get_messages`, `save_message`,
+  `delete_message` and the IMAP `IDLE` watch existed solely for `copy` and were removed with it, so
+  a backend no longer offers to write to or delete from a mailbox except through the
+  delete-after-export path, which still deletes only once the metadata log is sealed
+
 ## 0.8.2 (2026-08-03)
 
 ### Breaking changes

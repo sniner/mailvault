@@ -103,23 +103,6 @@ class MailboxClient(Protocol):
 
     def fetch_message(self, msg_id: Any, folder_name: str) -> bytes: ...
 
-    def get_messages(
-        self,
-        folder_name: str,
-        since: datetime | None = ...,
-    ) -> collections.abc.Generator[tuple[Any, datetime | None, bytes], None, None]: ...
-
-    def save_message(
-        self,
-        msg: bytes,
-        folder_name: str,
-        date: datetime | None = ...,
-    ) -> None: ...
-
-    def move_message(self, msg_id: Any, folder_name: str) -> None: ...
-
-    def delete_message(self, msg_id: Any, expunge: bool = ...) -> None: ...
-
     def close(self) -> None: ...
 
 
