@@ -148,6 +148,16 @@ class JobConfig:
             raise ConfigError(
                 f"{self.name}: backend {self.backend!r} requires: {', '.join(missing)}"
             )
+        if self.error_folder and not self.exchange_journal:
+            # The error folder is the escape hatch for the one case that can go
+            # wrong on its own: an item in a journal mailbox that is not a
+            # journal envelope. An ordinary backup only reads and, on request,
+            # deletes -- it never relocates, so there is nothing to catch.
+            log.warning(
+                "%s: 'error_folder' only applies to 'exchange_journal' jobs "
+                "and does nothing here",
+                self.name,
+            )
 
     @classmethod
     def from_dict(cls, name: str, data: dict, allow_exec: bool = False) -> JobConfig:

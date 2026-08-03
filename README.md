@@ -136,6 +136,44 @@ $ mailvault --config example.toml backup ./backup
 Use `--compress` to store emails compressed with zstd. Use `--job NAME` to run
 only specific jobs from the configuration file.
 
+### Exchange journal mailboxes
+
+Exchange journaling wraps every mail it records in an envelope: the journal
+report is the message, and the original mail is an attachment inside it. Backing
+such a mailbox up as-is would archive the envelopes, not the mail. With
+`exchange_journal = true` each item is unwrapped and the original is what goes
+into the archive. This works on both backends -- IMAP and Microsoft 365.
+
+Journal mailboxes collect other things too, though: a bounce, a notification, or
+a mail someone filed there by hand. Those have no envelope to unwrap, so they
+cannot be archived, and they would be examined again on every run.
+`error_folder` is where they go:
+
+```toml
+[[job]]
+name = "journal"
+server = "exchange.example.org"
+username = "journal@example.org"
+exchange_journal = true
+error_folder = "Journal/NotAJournalItem"
+```
+
+The folder is created if it does not exist, so a job that runs unattended does
+not stop because someone tidied it away. Without `error_folder` such items are
+reported and left in place — never deleted, in either case, since they were
+never archived. This is the only situation in which mailvault moves mail around
+in your mailbox; an ordinary backup reads, and with `delete_after_export`
+deletes, but never relocates. Setting `error_folder` on a job that is not a
+journal job therefore does nothing, and says so when the config is loaded.
+
+> [!NOTE]
+> On Microsoft 365 the application registration needs **`Mail.ReadWrite`** for
+> this, not just `Mail.Read` — moving a message and creating a folder are both
+> writes. Without it the job stops with a message naming the missing permission
+> rather than failing obscurely. On IMAP no `MOVE` capability is required:
+> where the server lacks it (Exchange's own IMAP service often does), the older
+> `COPY` + `\Deleted` sequence it replaced is used instead.
+
 ### Verify and repair
 
 A backup run can lose individual messages: the server may answer a single
@@ -535,7 +573,9 @@ with a warning.
 |--------|---------|-------------|
 | `tls_check_hostname` | `true` | Verify the server hostname against the TLS certificate |
 | `tls_verify_cert` | `true` | Verify the TLS certificate |
-| `exchange_journal` | `false` | Extract original emails from MS Exchange journal messages |
+| `exchange_journal` | `false` | Extract original emails from MS Exchange journal messages (see [Exchange journal mailboxes](#exchange-journal-mailboxes)) |
+| `error_folder` | — | Where to file items that are not journal envelopes; only meaningful with `exchange_journal` |
+| `trash_folder` | — | Gmail only: folder emptied after a backup pass |
 | `delete_after_export` | `false` | Delete emails from the server after export (use with caution) |
 | `max_retries` | `5` | Retries for failed MS Graph requests (throttling, gateway and connection errors) |
 | `incremental` | `true` | Only download messages added since the last backup run (global option) |

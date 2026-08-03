@@ -2,6 +2,38 @@
 
 ## 0.9.0 (2026-08-03)
 
+### Added
+
+- **`error_folder` now works on Microsoft 365, not only on IMAP.** Journaling is a Microsoft
+  feature, but the escape hatch for items in a journal mailbox that turn out not to be journal
+  envelopes existed only on the IMAP side; on Graph such an item was reported and left lying
+  around. Both backends file it away now. The folder is **created if it does not exist**, so an
+  unattended job does not stop because someone tidied it away -- on Graph this needs the
+  `Mail.ReadWrite` permission, and without it the job stops naming exactly that instead of failing
+  obscurely
+
+- **A missing IMAP `MOVE` capability no longer disables the error folder.** `MOVE` is RFC 6851 and
+  not part of IMAP4rev1 -- Exchange's own IMAP service, of all things, tends not to offer it, which
+  is precisely where journal mailboxes live. Where it is missing, the `COPY` + `\Deleted` sequence
+  it replaced is used instead. Without `UIDPLUS` the flag is left standing rather than issuing a
+  plain `EXPUNGE`, which would drop every deleted message in the folder and not just this one
+
+### Fixed
+
+- **Filing a non-journal item into the error folder could abort the folder's backup.** The
+  relocation was attempted in the middle of the backup pass, which holds the folder open
+  read-only -- a server must refuse to move mail out of it, and the error was not caught. Affected
+  items are now collected and moved once the pass is over, the same way deletion already waits.
+  Nobody is likely to have hit this: the option is only reachable with `exchange_journal`, and it
+  was silently disabled on every server without `MOVE`
+
+### Changed
+
+- **`error_folder` is documented, and reports when it does nothing.** It is the escape hatch for
+  `exchange_journal` and for nothing else -- an ordinary backup reads and, on request, deletes, but
+  never relocates. Setting it on a job that is not a journal job says so when the config is loaded.
+  `trash_folder` is documented too
+
 ### Removed
 
 - **The `copy` command is gone, with its configuration and its `--idle` mode.** It transferred mail

@@ -72,9 +72,14 @@ class ImapClient:
         self.gmail = functools.reduce(
             lambda acc, c: acc or c.startswith(b"X-GM-"), self.capabilities, False
         )
+        # MOVE is RFC 6851 (2013), UIDPLUS is RFC 4315 -- neither is in the
+        # IMAP4rev1 base, and Exchange's IMAP service in particular is sparing
+        # with both. Missing capabilities only pick a different route in
+        # `_relocate`, they never disable the error folder.
         self.move_cap = b"MOVE" in self.capabilities
+        self.uidplus_cap = b"UIDPLUS" in self.capabilities
         self.trash_folder = job.trash_folder
-        self.error_folder = job.error_folder if self.move_cap else None
+        self.error_folder = job.error_folder
 
     @classmethod
     def connect(cls, job: conf.JobConfig) -> ImapClient:
@@ -262,29 +267,56 @@ class ImapClient:
             finally:
                 self.conn.unselect_folder()
 
-    def _handle_non_journal_item(self, folder_name: str, msg_id: int) -> None:
-        """Deal with a message that turned out not to be an Exchange journal item.
+    def _relocate(self, folder_name: str, msg_ids: list[int], dest_folder: str) -> None:
+        """Move the given messages of `folder_name` into `dest_folder`.
 
-        With an error folder the item is relocated there (MOVE = copy + delete,
-        so it is safely off the source folder); without one it is deliberately
-        left on the server. Either way it is never deleted unarchived, and a
-        skip is not a failure -- the snapshot may still advance.
+        Called after the read-only pass over the folder has finished, never
+        during it: relocating changes the source mailbox, which a server must
+        refuse while the folder is selected read-only. Same reasoning as
+        `purge`, which is why this waits in the same way.
+
+        Uses MOVE where the server has it (RFC 6851) and otherwise the older
+        COPY + \\Deleted + EXPUNGE it replaced, which every IMAP4rev1 server can
+        do. A failure is logged and costs only the relocation: the message stays
+        where it is, unarchived and undeleted.
         """
-        if self.error_folder:
-            log.warning(
-                "%s::%s[%s]: not a journal item, moving to error folder",
-                self.job_name,
-                folder_name,
-                msg_id,
-            )
-            self.move_message(msg_id, self.error_folder)
-        else:
-            log.warning(
-                "%s::%s[%s]: not a journal item, skipping (kept on server)",
-                self.job_name,
-                folder_name,
-                msg_id,
-            )
+        if not msg_ids:
+            return
+        with self.lock:
+            self.conn.select_folder(folder_name, readonly=False)
+            try:
+                if not self.conn.folder_exists(dest_folder):
+                    self.conn.create_folder(dest_folder)
+                if self.move_cap:
+                    self.conn.move(msg_ids, dest_folder)
+                else:
+                    self.conn.copy(msg_ids, dest_folder)
+                    self.conn.delete_messages(msg_ids)
+                    if self.uidplus_cap:
+                        # Targeted: removes these messages and nothing else. A
+                        # plain EXPUNGE would drop every \Deleted message in the
+                        # folder, including ones another client marked, so
+                        # without UIDPLUS the flag is left for the server or the
+                        # mailbox owner to act on.
+                        self.conn.uid_expunge(msg_ids)
+                log.info(
+                    "%s::%s: %s message(s) moved to '%s'",
+                    self.job_name,
+                    folder_name,
+                    len(msg_ids),
+                    dest_folder,
+                )
+            except Exception as exc:
+                log.error(
+                    "%s::%s: could not move %s message(s) to '%s': %s",
+                    self.job_name,
+                    folder_name,
+                    len(msg_ids),
+                    dest_folder,
+                    exc,
+                )
+            finally:
+                self.conn.unselect_folder()
 
     def folder_backup(
         self,
@@ -300,11 +332,21 @@ class ImapClient:
         after the metadata log is sealed.
         """
         result = BackupResult()
+        # Collected during the read-only pass and relocated once it is over --
+        # a skip is not a failure, so the snapshot may still advance either way.
+        non_journal: list[int] = []
         for msg_id, msg, _ in self._iter_folder(folder_name, since, result=result):
             if self.exchange_journal:
                 msg = mailutils.unwrap_exchange_journal_item(msg)
                 if msg is None:
-                    self._handle_non_journal_item(folder_name, msg_id)
+                    log.warning(
+                        "%s::%s[%s]: not a journal item, %s",
+                        self.job_name,
+                        folder_name,
+                        msg_id,
+                        "moving to the error folder" if self.error_folder else "kept on server",
+                    )
+                    non_journal.append(msg_id)
                     continue
             store_id = base.store_message(
                 store,
@@ -323,6 +365,8 @@ class ImapClient:
             # reaches this point, so it can never be deleted unarchived.
             if self.delete_after_export:
                 result.deletable.append(msg_id)
+        if self.error_folder:
+            self._relocate(folder_name, non_journal, self.error_folder)
         if self.gmail and self.trash_folder:
             self._clear_folder(self.trash_folder)
         return result
@@ -387,14 +431,3 @@ class ImapClient:
                 return msg_data[b"RFC822"]  # type: ignore[return-value]
             finally:
                 self.conn.unselect_folder()
-
-    def move_message(self, msg_id: int, folder_name: str) -> None:
-        with self.lock:
-            if self.move_cap:
-                if not self.conn.folder_exists(folder_name):
-                    self.conn.create_folder(folder_name)
-                self.conn.move(msg_id, folder_name)
-            else:
-                raise MailboxError(
-                    "IMAP server has no MOVE capability, moving messages is not supported"
-                )
