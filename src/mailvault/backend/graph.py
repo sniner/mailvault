@@ -98,10 +98,16 @@ class MSGraphClient:
         self._build_folder_map()
 
     def _acquire_token(self) -> str:
+        """Get an access token, or say why the tenant refused to issue one.
+
+        Wrong secret, wrong tenant, consent never granted: Azure names the
+        reason in `error_description`, so this is a diagnosed failure like a
+        refused IMAP login and is reported as one -- see `base.MailboxError`.
+        """
         result = self._msal_app.acquire_token_for_client(scopes=GRAPH_SCOPE)
         if not result or "access_token" not in result:
             error = result.get("error_description", "unknown error") if result else "no result"
-            raise RuntimeError(f"MSAL authentication failed: {error}")
+            raise base.MailboxError(f"authentication failed: {error}")
         return result["access_token"]
 
     def _refresh_auth(self) -> None:
@@ -232,7 +238,7 @@ class MSGraphClient:
         """Resolve a folder display name or path to its Graph ID."""
         folder_id = self._lookup_folder(folder_name)
         if folder_id is None:
-            raise RuntimeError(f"Folder not found: {folder_name}")
+            raise base.MailboxError(f"folder not found: {folder_name}")
         return folder_id
 
     def _ensure_folder(self, folder_name: str) -> str:
@@ -255,8 +261,8 @@ class MSGraphClient:
         if parent_path:
             parent_id = self._lookup_folder(parent_path)
             if parent_id is None:
-                raise RuntimeError(
-                    f"Cannot create folder {folder_name!r}: "
+                raise base.MailboxError(
+                    f"cannot create folder {folder_name!r}: "
                     f"parent {parent_path!r} does not exist"
                 )
             url = f"{GRAPH_BASE_URL}/users/{self._user}/mailFolders/{parent_id}/childFolders"
@@ -266,8 +272,8 @@ class MSGraphClient:
         log.info("%s: creating folder '%s'", self.job_name, folder_name)
         resp = self._request("POST", url, json={"displayName": leaf})
         if resp.status_code == 403:
-            raise PermissionError(
-                f"{self.job_name}: not allowed to create folder {folder_name!r} -- "
+            raise base.MailboxError(
+                f"not allowed to create folder {folder_name!r} -- "
                 f"the application needs the Mail.ReadWrite permission"
             )
         resp.raise_for_status()
@@ -449,13 +455,13 @@ class MSGraphClient:
             try:
                 resp = self._request("POST", url, json={"destinationId": dest_id})
                 if resp.status_code == 403:
-                    raise PermissionError(
-                        f"{self.job_name}: not allowed to move messages -- "
-                        f"the application needs the Mail.ReadWrite permission"
+                    raise base.MailboxError(
+                        "not allowed to move messages -- "
+                        "the application needs the Mail.ReadWrite permission"
                     )
                 resp.raise_for_status()
                 moved += 1
-            except PermissionError:
+            except base.MailboxError:
                 raise
             except Exception as exc:
                 log.error(

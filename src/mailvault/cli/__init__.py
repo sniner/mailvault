@@ -15,7 +15,6 @@ import logging
 import pathlib
 import sys
 
-from mailvault import conf, jobs
 from mailvault.cli import commands
 
 log = logging.getLogger(__name__)
@@ -255,10 +254,11 @@ def main() -> int:
     except KeyboardInterrupt:
         log.warning("Interrupted!")
         exit_code = 130
-    except (conf.ConfigError, jobs.JobError) as exc:
+    except commands.EXPECTED_ERRORS as exc:
         # A broken config or a refused operation is a user error, not a crash:
         # report it as one line instead of a traceback.
         log.error("%s", exc)
+        log.debug("failed", exc_info=exc)
         exit_code = 1
     except Exception as exc:
         log.exception("Fatal error: %s", exc)

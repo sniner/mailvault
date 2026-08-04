@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.1 (2026-08-04)
+
+### Fixed
+
+- **A wrong password no longer prints a traceback.** A refused login is not a crash: the server
+  said what was wrong ("no such user"), and eight frames through `imapclient` add nothing to that.
+  The same goes for a server that cannot be reached, for a Microsoft 365 tenant that refuses to
+  issue a token, and for a Graph job that lacks the `Mail.ReadWrite` permission it was told to
+  use -- each is now the one line that says it, and the run still exits non-zero and carries on
+  with the remaining jobs. The traceback is reserved for the errors nobody anticipated, where the
+  call stack is the only clue there is, and `--verbose` still brings it back for the rest
+
 ## 0.9.0 (2026-08-04)
 
 ### Added

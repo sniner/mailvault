@@ -120,6 +120,26 @@ class TestConnect:
         assert ssl_ctx is not None
         assert ssl_ctx.check_hostname is False
 
+    @patch("mailvault.backend.imap.imapclient.IMAPClient")
+    def test_refused_credentials_are_reported_not_raised_raw(self, mock_imap_cls):
+        """Wrong password: the server's wording, without an imapclient traceback."""
+        mock_conn = _make_mock_conn()
+        mock_conn.login.side_effect = imaplib.IMAP4.error("no such user")
+        mock_imap_cls.return_value = mock_conn
+
+        with pytest.raises(imap.MailboxError, match="login refused for 'user': no such user"):
+            imap.ImapClient.connect(_make_job())
+
+        # And the socket of the refused connection does not stay open.
+        mock_conn.shutdown.assert_called_once()
+
+    @patch("mailvault.backend.imap.imapclient.IMAPClient")
+    def test_an_unreachable_server_names_host_and_port(self, mock_imap_cls):
+        mock_imap_cls.side_effect = OSError("connection refused")
+
+        with pytest.raises(imap.MailboxError, match="imap.example.com:993: connection refused"):
+            imap.ImapClient.connect(_make_job())
+
 
 # ---------------------------------------------------------------------------
 # folders()

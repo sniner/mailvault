@@ -19,6 +19,16 @@ from mailvault.store import cas
 log = logging.getLogger(__name__)
 
 
+class MailboxError(Exception):
+    """The mailbox could not do what was asked, and why is already known.
+
+    Raised where a backend has diagnosed the failure -- a refused login, a
+    folder that will not open, a message the server does not have. The CLI
+    reports these as a single line: the traceback is reserved for the errors
+    nobody expected, where the call stack is the only clue there is.
+    """
+
+
 @dataclasses.dataclass
 class BackupResult:
     """Outcome of a folder backup.

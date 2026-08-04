@@ -12,9 +12,17 @@ import logging
 import pathlib
 
 from mailvault import conf, importer, jobs
+from mailvault.backend import base
 from mailvault.store import cas, metalog
 
 log = logging.getLogger(__name__)
+
+# Failures that are already understood by the time they get here: a broken
+# config, a refused operation, a mailbox that said no. There is nothing to
+# debug in them, so they are reported as one line and the traceback is left to
+# the errors nobody anticipated -- where the call stack is the only clue. The
+# traceback is still there under `--verbose` for the rare case it is wanted.
+EXPECTED_ERRORS = (conf.ConfigError, jobs.JobError, base.MailboxError)
 
 
 # --- folders / backup / verify -------------------------------------------------
@@ -75,10 +83,11 @@ def run_mailbox(args: argparse.Namespace) -> int:
         # whole reports failure so callers/cron can react.
         try:
             _run_job(job, args, config)
-        except (conf.ConfigError, jobs.JobError) as exc:
+        except EXPECTED_ERRORS as exc:
             # A misconfigured or refused job is a user error, not a crash --
             # reported as one line here for the same reason `main` does it.
             log.error("Job '%s' failed: %s", job.name, exc)
+            log.debug("Job '%s' failed", job.name, exc_info=exc)
             exit_code = 1
         except Exception as exc:
             log.exception("Job '%s' failed: %s", job.name, exc)
