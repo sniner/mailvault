@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0 (2026-08-03)
+## 0.9.0 (2026-08-04)
 
 ### Added
 
@@ -25,15 +25,6 @@
   it replaced is used instead. Without `UIDPLUS` the flag is left standing rather than issuing a
   plain `EXPUNGE`, which would drop every deleted message in the folder and not just this one
 
-### Fixed
-
-- **Filing a non-journal item into the error folder could abort the folder's backup.** The
-  relocation was attempted in the middle of the backup pass, which holds the folder open
-  read-only -- a server must refuse to move mail out of it, and the error was not caught. Affected
-  items are now collected and moved once the pass is over, the same way deletion already waits.
-  Nobody is likely to have hit this: the option is only reachable with `exchange_journal`, and it
-  was silently disabled on every server without `MOVE`
-
 ### Changed
 
 - **A job that sets `trash_folder` without `delete_after_export` is now refused**, as is one that
@@ -55,6 +46,11 @@
   never relocates. Setting it on a job that is not a journal job says so when the config is loaded.
   `trash_folder` is documented too
 
+- **The mailbox backends only do what a backup needs now.** `get_messages`, `save_message`,
+  `delete_message` and the IMAP `IDLE` watch existed solely for `copy` and were removed with it, so
+  a backend no longer offers to write to or delete from a mailbox except through the
+  delete-after-export path, which still deletes only once the metadata log is sealed
+
 ### Removed
 
 - **The `copy` command is gone, with its configuration and its `--idle` mode.** It transferred mail
@@ -70,12 +66,20 @@
   `role`, `move_to_archive` and `archive_folder` are each reported as retired and do nothing. There
   is no replacement in this tool; remove them
 
-### Changed
+### Fixed
 
-- **The mailbox backends only do what a backup needs now.** `get_messages`, `save_message`,
-  `delete_message` and the IMAP `IDLE` watch existed solely for `copy` and were removed with it, so
-  a backend no longer offers to write to or delete from a mailbox except through the
-  delete-after-export path, which still deletes only once the metadata log is sealed
+- **`archive compact` leaves no empty directories behind.** Consolidating the metadata log emptied
+  most of its shard directories and then left them standing, so `meta/` kept a skeleton of the runs
+  it had folded away. Compaction now removes them. Nothing else is touched: a directory that still
+  holds anything at all stays, and the mail store never needs this because entries only ever arrive
+  there
+
+- **Filing a non-journal item into the error folder could abort the folder's backup.** The
+  relocation was attempted in the middle of the backup pass, which holds the folder open
+  read-only -- a server must refuse to move mail out of it, and the error was not caught. Affected
+  items are now collected and moved once the pass is over, the same way deletion already waits.
+  Nobody is likely to have hit this: the option is only reachable with `exchange_journal`, and it
+  was silently disabled on every server without `MOVE`
 
 ## 0.8.2 (2026-08-03)
 
