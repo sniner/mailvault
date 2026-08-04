@@ -193,3 +193,159 @@ class TestSinceFilter:
         expected = naive.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         assert self._filter_for(monkeypatch, naive) == f"receivedDateTime ge {expected}"
+
+
+def _resp(status: int, **kwargs) -> httpx.Response:
+    """A response that survives raise_for_status(), which needs its request."""
+    return httpx.Response(status, request=httpx.Request("POST", "https://graph.test"), **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Folder creation and the error folder
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureFolder:
+    @staticmethod
+    def _client(monkeypatch, responses, folder_map):
+        harness = _make_client(monkeypatch, responses)
+        harness.client._user = "user@example.org"
+        harness.client.job_name = "job"
+        harness.client._folder_map = dict(folder_map)
+        return harness
+
+    def test_an_existing_folder_is_not_created(self, monkeypatch):
+        harness = self._client(monkeypatch, [], {"Errors": "id-errors"})
+
+        assert harness.client._ensure_folder("Errors") == "id-errors"
+        harness.request.assert_not_called()
+
+    def test_a_missing_top_level_folder_is_created(self, monkeypatch):
+        """A background job must not stop because someone deleted the folder."""
+        created = _resp(201, json={"id": "id-new"})
+        harness = self._client(monkeypatch, [created], {"INBOX": "id-inbox"})
+
+        assert harness.client._ensure_folder("Errors") == "id-new"
+        method, url = harness.request.call_args[0][:2]
+        assert method == "POST"
+        assert url.endswith("/mailFolders")
+        assert harness.request.call_args.kwargs["json"] == {"displayName": "Errors"}
+        # And it is remembered, so the next message does not create it again.
+        assert harness.client._folder_map["Errors"] == "id-new"
+
+    def test_a_child_folder_is_created_under_its_parent(self, monkeypatch):
+        created = _resp(201, json={"id": "id-child"})
+        harness = self._client(monkeypatch, [created], {"Journal": "id-journal"})
+
+        assert harness.client._ensure_folder("Journal/Errors") == "id-child"
+        url = harness.request.call_args[0][1]
+        assert url.endswith("/mailFolders/id-journal/childFolders")
+        assert harness.request.call_args.kwargs["json"] == {"displayName": "Errors"}
+
+    def test_a_missing_parent_is_an_error(self, monkeypatch):
+        harness = self._client(monkeypatch, [], {})
+
+        with pytest.raises(RuntimeError, match="parent 'Journal' does not exist"):
+            harness.client._ensure_folder("Journal/Errors")
+
+    def test_a_missing_permission_says_which_one(self, monkeypatch):
+        """Creating is the survivable case; not being allowed to is not."""
+        harness = self._client(monkeypatch, [_resp(403)], {})
+
+        with pytest.raises(PermissionError, match="Mail.ReadWrite"):
+            harness.client._ensure_folder("Errors")
+
+
+class TestGraphRelocate:
+    @staticmethod
+    def _client(monkeypatch, responses):
+        harness = _make_client(monkeypatch, responses)
+        harness.client._user = "user@example.org"
+        harness.client.job_name = "job"
+        harness.client._folder_map = {"Errors": "id-errors"}
+        return harness
+
+    def test_each_message_is_moved(self, monkeypatch):
+        harness = self._client(monkeypatch, [_resp(200), _resp(200)])
+
+        harness.client._relocate("INBOX", ["m1", "m2"], "Errors")
+
+        assert harness.request.call_count == 2
+        assert harness.request.call_args.kwargs["json"] == {"destinationId": "id-errors"}
+
+    def test_nothing_to_move_talks_to_nobody(self, monkeypatch):
+        harness = self._client(monkeypatch, [])
+
+        harness.client._relocate("INBOX", [], "Errors")
+        harness.request.assert_not_called()
+
+    def test_one_failure_does_not_stop_the_rest(self, monkeypatch):
+        harness = self._client(
+            monkeypatch,
+            [_resp(500), _resp(200)],
+        )
+        harness.client.max_retries = 0
+
+        harness.client._relocate("INBOX", ["m1", "m2"], "Errors")
+        assert harness.request.call_count == 2
+
+    def test_a_missing_permission_stops_the_run(self, monkeypatch):
+        harness = self._client(monkeypatch, [_resp(403)])
+
+        with pytest.raises(PermissionError, match="Mail.ReadWrite"):
+            harness.client._relocate("INBOX", ["m1", "m2"], "Errors")
+
+
+# ---------------------------------------------------------------------------
+# Deleting: soft by default, permanent on request
+# ---------------------------------------------------------------------------
+
+
+class TestPurge:
+    @staticmethod
+    def _client(monkeypatch, responses, permanent: bool):
+        harness = _make_client(monkeypatch, responses)
+        harness.client._user = "user@example.org"
+        harness.client.job_name = "job"
+        harness.client.permanent_delete = permanent
+        return harness
+
+    def test_the_default_is_a_soft_delete(self, monkeypatch):
+        """Plain DELETE moves the message to Deleted Items and leaves it there."""
+        harness = self._client(monkeypatch, [_resp(204)], permanent=False)
+
+        harness.client.purge("INBOX", ["m1"])
+
+        method, url = harness.request.call_args[0][:2]
+        assert method == "DELETE"
+        assert url.endswith("/messages/m1")
+
+    def test_permanent_delete_uses_the_permanent_action(self, monkeypatch):
+        harness = self._client(monkeypatch, [_resp(204)], permanent=True)
+
+        harness.client.purge("INBOX", ["m1"])
+
+        method, url = harness.request.call_args[0][:2]
+        assert method == "POST"
+        assert url.endswith("/messages/m1/permanentDelete")
+
+    def test_it_deletes_only_what_it_was_given(self, monkeypatch):
+        # Unlike emptying a trash folder, this touches nothing else in the bin.
+        harness = self._client(monkeypatch, [_resp(204), _resp(204)], permanent=True)
+
+        harness.client.purge("INBOX", ["m1", "m2"])
+
+        urls = [call[0][1] for call in harness.request.call_args_list]
+        assert [u.rsplit("/messages/", 1)[1] for u in urls] == [
+            "m1/permanentDelete",
+            "m2/permanentDelete",
+        ]
+
+    def test_a_failure_leaves_the_message_in_place(self, monkeypatch):
+        """The safe direction: still there, never gone unarchived."""
+        harness = self._client(monkeypatch, [_resp(404), _resp(204)], permanent=True)
+        harness.client.max_retries = 0
+
+        harness.client.purge("INBOX", ["m1", "m2"])  # must not raise
+
+        assert harness.request.call_count == 2

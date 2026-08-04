@@ -72,7 +72,9 @@ class MSGraphClient:
         self.job = job
         self.job_name = job.name
         self.delete_after_export = job.delete_after_export
+        self.permanent_delete = job.permanent_delete
         self.exchange_journal = job.exchange_journal
+        self.error_folder = job.error_folder
         self.max_retries = max(job.max_retries, 0)
 
         authority = f"https://login.microsoftonline.com/{job.tenant_id}"
@@ -216,15 +218,63 @@ class MSGraphClient:
                 )
                 self._enumerate_folders(child_url, prefix=path)
 
-    def _resolve_folder(self, folder_name: str) -> str:
-        """Resolve a folder display name or path to its Graph ID."""
+    def _lookup_folder(self, folder_name: str) -> str | None:
+        """Return the Graph ID for a folder display name or path, or None."""
         if folder_name in self._folder_map:
             return self._folder_map[folder_name]
         lower = folder_name.casefold()
         for path, fid in self._folder_map.items():
             if path.casefold() == lower:
                 return fid
-        raise RuntimeError(f"Folder not found: {folder_name}")
+        return None
+
+    def _resolve_folder(self, folder_name: str) -> str:
+        """Resolve a folder display name or path to its Graph ID."""
+        folder_id = self._lookup_folder(folder_name)
+        if folder_id is None:
+            raise RuntimeError(f"Folder not found: {folder_name}")
+        return folder_id
+
+    def _ensure_folder(self, folder_name: str) -> str:
+        """Return the Graph ID for `folder_name`, creating the folder if needed.
+
+        A background job must not stop because someone removed a folder it was
+        told to file things into, so a missing one is created rather than
+        reported. Missing *permission* is a different matter and is raised: with
+        only `Mail.Read` granted, Graph answers 403 and no amount of retrying
+        will help.
+
+        Parent folders are resolved, not created -- `a/b/c` needs `a/b` to
+        exist. Only the leaf is made.
+        """
+        folder_id = self._lookup_folder(folder_name)
+        if folder_id is not None:
+            return folder_id
+
+        parent_path, _, leaf = folder_name.rpartition("/")
+        if parent_path:
+            parent_id = self._lookup_folder(parent_path)
+            if parent_id is None:
+                raise RuntimeError(
+                    f"Cannot create folder {folder_name!r}: "
+                    f"parent {parent_path!r} does not exist"
+                )
+            url = f"{GRAPH_BASE_URL}/users/{self._user}/mailFolders/{parent_id}/childFolders"
+        else:
+            url = f"{GRAPH_BASE_URL}/users/{self._user}/mailFolders"
+
+        log.info("%s: creating folder '%s'", self.job_name, folder_name)
+        resp = self._request("POST", url, json={"displayName": leaf})
+        if resp.status_code == 403:
+            raise PermissionError(
+                f"{self.job_name}: not allowed to create folder {folder_name!r} -- "
+                f"the application needs the Mail.ReadWrite permission"
+            )
+        resp.raise_for_status()
+
+        folder_id = resp.json()["id"]
+        self._folder_map[folder_name] = folder_id
+        return folder_id
 
     def _download_mime(self, msg_id: str) -> bytes:
         """Download a message as RFC 822 MIME content."""
@@ -238,8 +288,20 @@ class MSGraphClient:
         return self._download_mime(msg_id)
 
     def _graph_delete(self, msg_id: str) -> None:
-        url = f"{GRAPH_BASE_URL}/users/{self._user}/messages/{msg_id}"
-        resp = self._request("DELETE", url)
+        """Delete one message, softly or for good depending on the job.
+
+        A plain DELETE is a *soft* delete: Graph moves the message to Deleted
+        Items, where it keeps occupying the mailbox quota. `permanent_delete`
+        uses the `permanentDelete` action instead, which removes exactly this
+        message -- the one just archived -- without touching anything else that
+        happens to be in the bin. Retention policies and holds still apply; this
+        is not a way around them.
+        """
+        base_url = f"{GRAPH_BASE_URL}/users/{self._user}/messages/{msg_id}"
+        if self.permanent_delete:
+            resp = self._request("POST", f"{base_url}/permanentDelete")
+        else:
+            resp = self._request("DELETE", base_url)
         resp.raise_for_status()
 
     def _iter_messages(
@@ -311,6 +373,9 @@ class MSGraphClient:
         log.info("%s::%s: found %s messages", self.job_name, folder_name, len(messages))
 
         result = base.BackupResult(total=len(messages))
+        # Collected while walking the folder and relocated afterwards, so one
+        # unmovable item cannot interrupt the pass. A skip is not a failure.
+        non_journal: list[str] = []
         for idx, msg_info in enumerate(messages, 1):
             msg_id = msg_info["id"]
             log_ctx = f"{self.job_name}::{folder_name}[{idx}]"
@@ -324,7 +389,14 @@ class MSGraphClient:
             if self.exchange_journal:
                 unwrapped = mailutils.unwrap_exchange_journal_item(msg)
                 if unwrapped is None:
-                    log.warning("%s: not a journal item, skipping", log_ctx)
+                    log.warning(
+                        "%s: not a journal item, %s",
+                        log_ctx,
+                        "moving to the error folder"
+                        if self.error_folder
+                        else "kept in mailbox",
+                    )
+                    non_journal.append(msg_id)
                     continue
                 msg = unwrapped
 
@@ -356,15 +428,62 @@ class MSGraphClient:
             if self.delete_after_export:
                 result.deletable.append(msg_id)
 
+        if self.error_folder:
+            self._relocate(folder_name, non_journal, self.error_folder)
+
         return result
 
+    def _relocate(self, folder_name: str, msg_ids: list[str], dest_folder: str) -> None:
+        """Move the given messages into `dest_folder`, creating it if needed.
+
+        A failure on one message is logged and costs only that relocation; the
+        message stays where it is, unarchived and undeleted. A missing
+        permission is not survivable that way, so it is raised.
+        """
+        if not msg_ids:
+            return
+        dest_id = self._ensure_folder(dest_folder)
+        moved = 0
+        for msg_id in msg_ids:
+            url = f"{GRAPH_BASE_URL}/users/{self._user}/messages/{msg_id}/move"
+            try:
+                resp = self._request("POST", url, json={"destinationId": dest_id})
+                if resp.status_code == 403:
+                    raise PermissionError(
+                        f"{self.job_name}: not allowed to move messages -- "
+                        f"the application needs the Mail.ReadWrite permission"
+                    )
+                resp.raise_for_status()
+                moved += 1
+            except PermissionError:
+                raise
+            except Exception as exc:
+                log.error(
+                    "%s::%s[%s]: move to '%s' failed: %s",
+                    self.job_name,
+                    folder_name,
+                    msg_id[:20],
+                    dest_folder,
+                    exc,
+                )
+        log.info(
+            "%s::%s: %s of %s message(s) moved to '%s'",
+            self.job_name,
+            folder_name,
+            moved,
+            len(msg_ids),
+            dest_folder,
+        )
+
     def purge(self, folder_name: str, msg_ids: collections.abc.Sequence[str]) -> None:
-        """Delete the given messages from the mailbox.
+        """Delete the given messages from the mailbox, softly or for good.
 
         Called by the backup runner only after the folder's metadata log has been
         sealed, so a message leaves its source once the record of where it was
         seen is durable. A failed deletion is logged and does not abort the rest;
-        the message stays and is re-fetched (and deduplicated) next run.
+        the message stays and is re-fetched (and deduplicated) next run -- which
+        is also what happens if `permanent_delete` is not available, so the
+        failure direction is "still there", never "gone unarchived".
         """
         for msg_id in msg_ids:
             try:
@@ -377,46 +496,3 @@ class MSGraphClient:
                     msg_id,
                     exc,
                 )
-
-    def get_messages(
-        self,
-        folder_name: str,
-        since: datetime | None = None,
-    ) -> collections.abc.Generator[tuple[Any, datetime | None, bytes], None, None]:
-        folder_id = self._resolve_folder(folder_name)
-        for msg_info in self._iter_messages(folder_name, folder_id, since):
-            msg_id = msg_info["id"]
-            msg_date = _parse_graph_datetime(msg_info.get("receivedDateTime"))
-            try:
-                msg = self._download_mime(msg_id)
-            except Exception as exc:
-                log.error(
-                    "%s::%s: download failed for %s: %s",
-                    self.job_name,
-                    folder_name,
-                    msg_id[:20],
-                    exc,
-                )
-                continue
-            log.info("%s::%s: fetched %s", self.job_name, folder_name, msg_id[:20])
-            yield msg_id, msg_date, msg
-
-    def save_message(
-        self,
-        msg: bytes,
-        folder_name: str,
-        date: datetime | None = None,
-    ) -> None:
-        folder_id = self._resolve_folder(folder_name)
-        url = f"{GRAPH_BASE_URL}/users/{self._user}/mailFolders/{folder_id}/messages"
-        resp = self._request("POST", url, content=msg, headers={"Content-Type": "text/plain"})
-        resp.raise_for_status()
-
-    def move_message(self, msg_id: Any, folder_name: str) -> None:
-        folder_id = self._resolve_folder(folder_name)
-        url = f"{GRAPH_BASE_URL}/users/{self._user}/messages/{msg_id}/move"
-        resp = self._request("POST", url, json={"destinationId": folder_id})
-        resp.raise_for_status()
-
-    def delete_message(self, msg_id: Any, expunge: bool = False) -> None:
-        self._graph_delete(msg_id)

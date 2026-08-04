@@ -1,5 +1,86 @@
 # Changelog
 
+## 0.9.0 (2026-08-04)
+
+### Added
+
+- **`permanent_delete` for Microsoft 365 jobs.** With `delete_after_export`, Graph only *soft*
+  deletes: the message moves to Deleted Items and keeps occupying the quota, so a mailbox being
+  cleared out never actually shrank. This deletes for good instead -- exactly the messages that
+  were archived, one by one, leaving anything else in the bin alone. It is the counterpart to
+  Gmail's `trash_folder` and, unlike it, touches nothing it did not archive. Retention policies and
+  holds still apply. Requires `delete_after_export`, and is refused on any other backend
+
+- **`error_folder` now works on Microsoft 365, not only on IMAP.** Journaling is a Microsoft
+  feature, but the escape hatch for items in a journal mailbox that turn out not to be journal
+  envelopes existed only on the IMAP side; on Graph such an item was reported and left lying
+  around. Both backends file it away now. The folder is **created if it does not exist**, so an
+  unattended job does not stop because someone tidied it away -- on Graph this needs the
+  `Mail.ReadWrite` permission, and without it the job stops naming exactly that instead of failing
+  obscurely
+
+- **A missing IMAP `MOVE` capability no longer disables the error folder.** `MOVE` is RFC 6851 and
+  not part of IMAP4rev1 -- Exchange's own IMAP service, of all things, tends not to offer it, which
+  is precisely where journal mailboxes live. Where it is missing, the `COPY` + `\Deleted` sequence
+  it replaced is used instead. Without `UIDPLUS` the flag is left standing rather than issuing a
+  plain `EXPUNGE`, which would drop every deleted message in the folder and not just this one
+
+### Changed
+
+- **A job that sets `trash_folder` without `delete_after_export` is now refused**, as is one that
+  sets it on the Graph backend, where it never did anything. That folder is emptied *completely*,
+  including mail its owner put there and mail that was never archived -- and a job that did not ask
+  to delete anything has no business doing that. It is the one place where mailvault removes mail
+  it did not archive, so it now requires the option that says deleting is intended. The same rules
+  apply to `permanent_delete` on any backend but Graph: an option that decides the fate of mail
+  must never look effective while doing nothing
+
+- **What `delete_after_export` really does is documented per backend.** On plain IMAP the message
+  is expunged and gone. On Gmail it lands in the trash, which is what `trash_folder` is for. On
+  Microsoft 365 it is a soft delete into Deleted Items and stays there -- mailvault does not empty
+  that folder, so the mailbox does not actually shrink. None of this was written down anywhere,
+  and it is exactly the kind of surprise nobody wants while clearing out a mailbox
+
+- **`error_folder` is documented, and reports when it does nothing.** It is the escape hatch for
+  `exchange_journal` and for nothing else -- an ordinary backup reads and, on request, deletes, but
+  never relocates. Setting it on a job that is not a journal job says so when the config is loaded.
+  `trash_folder` is documented too
+
+- **The mailbox backends only do what a backup needs now.** `get_messages`, `save_message`,
+  `delete_message` and the IMAP `IDLE` watch existed solely for `copy` and were removed with it, so
+  a backend no longer offers to write to or delete from a mailbox except through the
+  delete-after-export path, which still deletes only once the metadata log is sealed
+
+### Removed
+
+- **The `copy` command is gone, with its configuration and its `--idle` mode.** It transferred mail
+  between two IMAP mailboxes and never touched the archive -- the one thing every other command in
+  this tool exists for. It was committed in 2022 described as "work in progress and not yet usable"
+  and never became usable: in four years it received no fix and no feature, and its `--idle` mode
+  re-copied the entire INBOX on every notification, which duplicates mail unless the source is
+  drained as it goes. For transferring mail between mailboxes use
+  [imapsync](https://github.com/imapsync/imapsync) or [mbsync](https://isync.sourceforge.io/),
+  which do it properly. The last release that carried it is 0.8.2
+
+  A configuration written for it still loads, and its backup jobs keep working -- but `[copy]`,
+  `role`, `move_to_archive` and `archive_folder` are each reported as retired and do nothing. There
+  is no replacement in this tool; remove them
+
+### Fixed
+
+- **`archive compact` leaves no empty directories behind.** Consolidating the metadata log emptied
+  most of its shard directories and then left them standing, so `meta/` kept a skeleton of the runs
+  it had folded away. Compaction now removes them. Nothing else is touched: a directory that still
+  holds anything at all stays, and the mail store never needs this because entries only ever arrive
+  there
+
+- **Filing a non-journal item into the error folder could abort the folder's backup.** The
+  relocation was attempted in the middle of the backup pass, which holds the folder open
+  read-only -- a server must refuse to move mail out of it, and the error was not caught. Affected
+  items are now collected and moved once the pass is over, the same way deletion already waits.
+  Nobody is likely to have hit this: the option is only reachable with `exchange_journal`, and it
+  was silently disabled on every server without `MOVE`
+
 ## 0.8.2 (2026-08-03)
 
 ### Breaking changes

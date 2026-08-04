@@ -1,9 +1,9 @@
-"""Loading the TOML configuration into `Config`, `JobConfig` and `CopyConfig`.
+"""Loading the TOML configuration into `Config` and `JobConfig`.
 
-Parses the `[global]` options, the `[[job]]` list and the `[copy]` section,
-expands `${VAR}` and `_cmd` values (the latter only with `--allow-exec`), and
-drops fields that were retired in an earlier version with a warning rather than
-silently restoring a default.
+Parses the `[global]` options and the `[[job]]` list, expands `${VAR}` and
+`_cmd` values (the latter only with `--allow-exec`), and reports fields and
+sections that were retired in an earlier version rather than silently ignoring
+them or restoring a default.
 """
 
 from __future__ import annotations
@@ -86,6 +86,11 @@ def _resolve_values(data: dict, allow_exec: bool = False) -> dict:
     return resolved
 
 
+# What the `copy` command left behind. It was removed in 0.9.0, so these say
+# that it is gone rather than pointing at a replacement -- there is none in this
+# tool, and a config carrying them was written for something that no longer runs.
+_COPY_IS_GONE = "the 'copy' command was removed in 0.9.0; use imapsync or mbsync instead"
+
 # Fields that no longer exist, and what to say about each. An unknown field is
 # only warned about and dropped, which for a boolean would silently restore a
 # default -- someone who deliberately turned something off would find it back on.
@@ -94,16 +99,13 @@ RETIRED_FIELDS = {
     "with_db": "metadata is always recorded now, and there is no database to have",
     "with_metadata": "metadata is always recorded now",
     "incremental": "it is a global option now -- set it once under [global], not per job",
-    "role": "the [copy] section names its 'source' and 'destination' jobs itself now",
-    "archive_folder": (
-        "it is '[copy] move_to_folder' now; 'archive' means the local archive, "
-        "and this is a folder on the source server"
-    ),
-    "move_to_archive": (
-        "naming a '[copy] move_to_folder' is what turns moving on now, "
-        "so the separate switch is gone"
-    ),
+    "role": _COPY_IS_GONE,
+    "archive_folder": _COPY_IS_GONE,
+    "move_to_archive": _COPY_IS_GONE,
 }
+
+# Whole sections that no longer do anything, reported for the same reason.
+RETIRED_SECTIONS = {"copy": _COPY_IS_GONE}
 
 
 @dataclasses.dataclass
@@ -121,7 +123,12 @@ class JobConfig:
     ignore_folder_names: list[str] = dataclasses.field(default_factory=list)
     delete_after_export: bool = False
     exchange_journal: bool = False
+    # Each of these belongs to exactly one backend: deleting really deletes on
+    # plain IMAP, but Gmail moves the message to a trash folder whose name is
+    # localised (so only the owner knows it), and Graph soft-deletes into
+    # Deleted Items. See `validate`.
     trash_folder: str | None = None
+    permanent_delete: bool = False
     error_folder: str | None = None
     backend: str = "imap"
     max_retries: int = 5
@@ -130,11 +137,14 @@ class JobConfig:
     client_secret: str = ""
 
     def validate(self) -> None:
-        """Check that the backend is known and its required fields are present.
+        """Check that the backend is known and the options make sense together.
 
         Raises ConfigError with a message naming the offending job, so a typo in
         `backend` or a missing Graph credential fails early and clearly instead
         of silently falling back to IMAP or crashing deep in the backend.
+
+        An option that does nothing in its context is warned about; one that
+        would do something destructive nobody asked for stops the job.
         """
         if self.backend not in VALID_BACKENDS:
             raise ConfigError(
@@ -145,6 +155,47 @@ class JobConfig:
         if missing:
             raise ConfigError(
                 f"{self.name}: backend {self.backend!r} requires: {', '.join(missing)}"
+            )
+        # `trash_folder` and `permanent_delete` are the same idea for the two
+        # hosted providers that only pretend to delete, one backend each. Both
+        # are refused rather than ignored where they cannot work: an option that
+        # decides the fate of mail must never look effective while doing
+        # nothing. Neither means anything without `delete_after_export` -- with
+        # nothing being deleted there is nothing left to finish off.
+        if self.trash_folder:
+            if self.backend != "imap":
+                raise ConfigError(
+                    f"{self.name}: 'trash_folder' is an IMAP option (Gmail) and has no effect "
+                    f"on backend {self.backend!r} -- use 'permanent_delete' instead"
+                )
+            if not self.delete_after_export:
+                raise ConfigError(
+                    f"{self.name}: 'trash_folder' empties that folder completely and only "
+                    f"makes sense together with 'delete_after_export' -- set that too, or "
+                    f"remove it"
+                )
+        if self.permanent_delete:
+            if self.backend != "msgraph":
+                raise ConfigError(
+                    f"{self.name}: 'permanent_delete' is an msgraph option and has no effect "
+                    f"on backend {self.backend!r}"
+                    + (" -- use 'trash_folder' instead" if self.backend == "imap" else "")
+                )
+            if not self.delete_after_export:
+                raise ConfigError(
+                    f"{self.name}: 'permanent_delete' only makes sense together with "
+                    f"'delete_after_export' -- set that too, or remove it"
+                )
+        if self.error_folder and not self.exchange_journal:
+            # The error folder is the escape hatch for the one case that can go
+            # wrong on its own: an item in a journal mailbox that is not a
+            # journal envelope. An ordinary backup only reads and, on request,
+            # deletes -- it never relocates, so there is nothing to catch. It is
+            # inert rather than harmful here, hence a warning and not an error.
+            log.warning(
+                "%s: 'error_folder' only applies to 'exchange_journal' jobs "
+                "and does nothing here",
+                self.name,
             )
 
     @classmethod
@@ -174,74 +225,19 @@ class JobConfig:
 
 
 @dataclasses.dataclass
-class CopyConfig:
-    """The `[copy]` section -- everything the `copy` command needs, in one place.
-
-    `source` and `destination` name two `[[job]]` entries rather than tagging
-    them. A job then says only how to reach a mailbox, and nothing in the job
-    list has to know that a command exists which never touches an archive.
-    """
-
-    source: str = ""
-    destination: str = ""
-    move_to_folder: str | None = None
-
-    @classmethod
-    def from_dict(cls, data: dict) -> CopyConfig:
-        fields = {f.name for f in dataclasses.fields(cls)}
-        unknown = set(data) - fields
-        if unknown:
-            log.warning("Unknown fields in [copy]: %s", ", ".join(sorted(unknown)))
-        return cls(**{k: v for k, v in data.items() if k in fields})
-
-    def resolve(self, jobs: list[JobConfig]) -> tuple[JobConfig, JobConfig]:
-        """Look the two named jobs up in `jobs`.
-
-        Raises ConfigError naming what is wrong -- an unset name, a name with no
-        matching job, or both roles on the same one. A mistyped job name is
-        caught here rather than surfacing later as a copy that finds nothing, and
-        the same job on both ends would copy a mailbox onto itself.
-        """
-        by_name: dict[str, JobConfig] = {}
-        for job in jobs:
-            by_name.setdefault(job.name, job)
-
-        found = []
-        for role in ("source", "destination"):
-            name = getattr(self, role)
-            if not name:
-                raise ConfigError(f"[copy]: '{role}' is not set")
-            job = by_name.get(name)
-            if job is None:
-                known = ", ".join(sorted(by_name)) or "none defined"
-                raise ConfigError(f"[copy]: {role} job {name!r} does not exist (jobs: {known})")
-            found.append(job)
-
-        source, destination = found
-        if source is destination:
-            raise ConfigError(
-                f"[copy]: source and destination are the same job ({source.name!r})"
-            )
-        return source, destination
-
-
-# Config fields that come from their own part of the file rather than from the
-# `[global]` table, and must not be accepted as global options.
-_NON_GLOBAL_FIELDS = frozenset({"jobs", "copy"})
-
-
-@dataclasses.dataclass
 class Config:
     jobs: list[JobConfig] = dataclasses.field(default_factory=list)
-    copy: CopyConfig | None = None
     compress: bool = False
     index_db: bool = False
     incremental: bool = True
 
     @classmethod
     def from_toml(cls, data: dict, allow_exec: bool = False) -> Config:
+        if "copy" in data:
+            log.warning("[copy] no longer does anything -- %s", RETIRED_SECTIONS["copy"])
+
         global_data = data.get("global", {})
-        fields = {f.name for f in dataclasses.fields(cls) if f.name not in _NON_GLOBAL_FIELDS}
+        fields = {f.name for f in dataclasses.fields(cls) if f.name != "jobs"}
         known_global = {k: v for k, v in global_data.items() if k in fields}
         unknown_global = set(global_data.keys()) - fields
         if unknown_global:
@@ -258,10 +254,7 @@ class Config:
                 )
             )
 
-        copy_data = data.get("copy")
-        copy = CopyConfig.from_dict(copy_data) if copy_data is not None else None
-
-        return cls(jobs=jobs, copy=copy, **known_global)
+        return cls(jobs=jobs, **known_global)
 
 
 def load(path: pathlib.Path | str, allow_exec: bool = False) -> Config:

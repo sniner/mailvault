@@ -408,5 +408,10 @@ def compact(root: pathlib.Path) -> CompactResult:
         if path not in written:
             path.unlink(missing_ok=True)
 
+    # Folding a hundred files into one empties most of the shard directories, and
+    # nothing else ever removes them -- a store that only grows, like the mail, has
+    # no reason to look.
+    store.prune_empty_dirs()
+
     result.files_after = len(log_files(root))
     return result

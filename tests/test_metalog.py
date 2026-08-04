@@ -274,6 +274,18 @@ class TestCompact:
         (logfile,) = list(metalog.read_all(root))
         assert set(logfile.store_ids) == {"a", "b", "c", "d"}
 
+    def test_leaves_no_empty_shard_directories(self, tmp_path):
+        root = tmp_path / "meta"
+        self._write(root, ["a", "b"])
+        self._write(root, ["b", "c"])
+        self._write(root, ["c", "d"])
+        shards_before = [d for d in root.iterdir() if d.is_dir()]
+
+        metalog.compact(root)
+
+        assert len(shards_before) > 1  # the runs really did land in several shards
+        assert [d for d in root.iterdir() if d.is_dir() and not list(d.iterdir())] == []
+
     def test_separate_places_stay_separate(self, tmp_path):
         root = tmp_path / "meta"
         self._write(root, ["a"], folder="INBOX")

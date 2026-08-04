@@ -195,7 +195,7 @@ def migrate_archive(store_path: pathlib.Path) -> MigrationResult:
     the same information and nothing says which one counts.
 
         store.db            not migrated -- the old locations live only here
-        store.db.migrated   the log is the source, this file is spare
+        store.db.migrated   the log is the source, nothing reads this file
         neither             the log is the source
 
     Idempotent by construction. An interrupted export leaves `store.db` in place,
@@ -238,7 +238,7 @@ def migrate_archive(store_path: pathlib.Path) -> MigrationResult:
     legacy.replace(target)
     result.renamed_to = target
     log.info(
-        "%s: migrated -- %s message(s) into %s place(s), %s snapshot(s); %s is now spare",
+        "%s: migrated -- %s message(s) into %s place(s), %s snapshot(s); %s is no longer used",
         store_path,
         result.messages,
         result.places,

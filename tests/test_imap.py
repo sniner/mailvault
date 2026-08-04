@@ -422,21 +422,19 @@ class TestFolderBackup:
         assert result.stored == 1
         assert result.complete
 
-    def test_exchange_journal_skip_non_journal(self, tmp_path):
-        conn = _make_mock_conn()
+    def _journal_conn(self, capabilities=None):
+        """A mailbox holding one message that is not a journal envelope."""
         msg_date = datetime(2026, 2, 20, tzinfo=UTC)
+        conn = _make_mock_conn(capabilities=capabilities or [b"IMAP4rev1"])
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
             1: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
         }
-        # No MOVE capability, so error_folder won't be set
-        conn = _make_mock_conn(capabilities=[b"IMAP4rev1"])
-        conn.select_folder.return_value = {b"EXISTS": 1}
-        conn.search.return_value = [1]
-        conn.fetch.return_value = {
-            1: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
-        }
+        return conn
+
+    def test_exchange_journal_skip_non_journal(self, tmp_path):
+        conn = self._journal_conn()
         client = _make_client(exchange_journal=True, conn=conn)
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
 
@@ -444,6 +442,55 @@ class TestFolderBackup:
         assert result.stored == 0  # skipped because not a journal item
         # A deliberate skip is not a failure: it must not block the snapshot.
         assert result.complete
+        # Without an error folder the item stays exactly where it was.
+        conn.move.assert_not_called()
+        conn.copy.assert_not_called()
+
+    def test_a_non_journal_item_lands_in_the_error_folder(self, tmp_path):
+        conn = self._journal_conn(capabilities=[b"IMAP4rev1", b"MOVE"])
+        client = _make_client(exchange_journal=True, error_folder="Errors", conn=conn)
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+
+        result = client.folder_backup("INBOX", store)
+
+        assert result.stored == 0
+        assert result.complete
+        conn.move.assert_called_once_with([1], "Errors")
+
+    def test_the_error_folder_works_without_move_capability(self, tmp_path):
+        """Exchange's own IMAP service is exactly where MOVE tends to be absent."""
+        conn = self._journal_conn(capabilities=[b"IMAP4rev1"])
+        client = _make_client(exchange_journal=True, error_folder="Errors", conn=conn)
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+
+        client.folder_backup("INBOX", store)
+
+        conn.copy.assert_called_once_with([1], "Errors")
+
+    def test_relocation_happens_after_the_read_only_pass(self, tmp_path):
+        """The pass holds the folder read-only, where a MOVE must be refused."""
+        conn = self._journal_conn(capabilities=[b"IMAP4rev1", b"MOVE"])
+        client = _make_client(exchange_journal=True, error_folder="Errors", conn=conn)
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+
+        order: list[str] = []
+        conn.select_folder.side_effect = lambda f, readonly=True: (
+            order.append(f"select(readonly={readonly})"),
+            {b"EXISTS": 1},
+        )[1]
+        conn.unselect_folder.side_effect = lambda: order.append("unselect")
+        conn.move.side_effect = lambda ids, dest: order.append("move")
+
+        client.folder_backup("INBOX", store)
+
+        # The read-only pass is fully closed before the folder is reopened.
+        assert order == [
+            "select(readonly=True)",
+            "unselect",
+            "select(readonly=False)",
+            "move",
+            "unselect",
+        ]
 
     def test_exchange_journal_delete_after_successful_export(self, tmp_path):
         journal_eml = (
@@ -555,89 +602,73 @@ class TestPurge:
 
 
 # ---------------------------------------------------------------------------
-# get_messages
+# _relocate
 # ---------------------------------------------------------------------------
 
 
-class TestGetMessages:
-    def test_yields_messages(self):
-        conn = _make_mock_conn()
-        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
-        conn.select_folder.return_value = {b"EXISTS": 1}
-        conn.search.return_value = [1]
-        conn.fetch.return_value = {
-            1: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
-        }
-        client = _make_client(conn=conn)
-
-        results = list(client.get_messages("INBOX"))
-        assert len(results) == 1
-        msg_id, date, msg = results[0]
-        assert msg_id == 1
-        assert date == msg_date
-        assert msg == DUMMY_EML
-
-
-# ---------------------------------------------------------------------------
-# save_message / move_message / delete_message
-# ---------------------------------------------------------------------------
-
-
-class TestMessageOperations:
-    def test_save_message(self):
-        conn = _make_mock_conn()
-        client = _make_client(conn=conn)
-        msg_date = datetime(2026, 2, 20, tzinfo=UTC)
-
-        client.save_message(DUMMY_EML, "Archive", date=msg_date)
-        conn.append.assert_called_once_with("Archive", DUMMY_EML, msg_time=msg_date)
-
-    def test_save_message_creates_folder(self):
-        conn = _make_mock_conn()
-        conn.folder_exists.return_value = False
-        client = _make_client(conn=conn)
-
-        client.save_message(DUMMY_EML, "NewFolder")
-        conn.create_folder.assert_called_once_with("NewFolder")
-        conn.append.assert_called_once()
-
-    def test_move_message_with_capability(self):
+class TestRelocate:
+    def test_uses_move_when_the_server_has_it(self):
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"MOVE"])
         client = _make_client(conn=conn)
 
-        client.move_message(42, "Archive")
-        conn.move.assert_called_once_with(42, "Archive")
+        client._relocate("INBOX", [42], "Errors")
+        conn.move.assert_called_once_with([42], "Errors")
+        conn.copy.assert_not_called()
 
-    def test_move_message_creates_folder(self):
-        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"MOVE"])
-        conn.folder_exists.return_value = False
+    def test_falls_back_to_copy_and_delete_without_move(self):
+        """MOVE is RFC 6851; the three-step dance it replaced works everywhere."""
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"UIDPLUS"])
         client = _make_client(conn=conn)
 
-        client.move_message(42, "Archive")
-        conn.create_folder.assert_called_once_with("Archive")
+        client._relocate("INBOX", [42], "Errors")
+        conn.move.assert_not_called()
+        conn.copy.assert_called_once_with([42], "Errors")
+        conn.delete_messages.assert_called_once_with([42])
+        conn.uid_expunge.assert_called_once_with([42])
 
-    def test_move_message_without_capability(self):
+    def test_without_uidplus_the_flag_is_left_for_someone_else(self):
+        # A plain EXPUNGE would drop every \Deleted message in the folder, not
+        # just ours, so the copy is made and the flag simply stays.
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1"])
         client = _make_client(conn=conn)
 
-        with pytest.raises(imap.MailboxError, match="MOVE"):
-            client.move_message(42, "Archive")
-
-    def test_delete_message(self):
-        conn = _make_mock_conn()
-        client = _make_client(conn=conn)
-
-        client.delete_message(42)
-        conn.delete_messages.assert_called_once_with(42)
+        client._relocate("INBOX", [42], "Errors")
+        conn.copy.assert_called_once_with([42], "Errors")
+        conn.delete_messages.assert_called_once_with([42])
+        conn.uid_expunge.assert_not_called()
         conn.expunge.assert_not_called()
 
-    def test_delete_message_with_expunge(self):
-        conn = _make_mock_conn()
+    def test_the_folder_is_reopened_writable(self):
+        """The backup pass holds it read-only, where a server must refuse this."""
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"MOVE"])
         client = _make_client(conn=conn)
 
-        client.delete_message(42, expunge=True)
-        conn.delete_messages.assert_called_once_with(42)
-        conn.expunge.assert_called_once_with(42)
+        client._relocate("INBOX", [42], "Errors")
+        conn.select_folder.assert_called_once_with("INBOX", readonly=False)
+        conn.unselect_folder.assert_called_once()
+
+    def test_a_missing_destination_is_created(self):
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"MOVE"])
+        conn.folder_exists.return_value = False
+        client = _make_client(conn=conn)
+
+        client._relocate("INBOX", [42], "Errors")
+        conn.create_folder.assert_called_once_with("Errors")
+
+    def test_nothing_to_move_touches_nothing(self):
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"MOVE"])
+        client = _make_client(conn=conn)
+
+        client._relocate("INBOX", [], "Errors")
+        conn.select_folder.assert_not_called()
+
+    def test_a_failure_costs_the_move_and_nothing_else(self):
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"MOVE"])
+        conn.move.side_effect = OSError("connection reset")
+        client = _make_client(conn=conn)
+
+        client._relocate("INBOX", [42], "Errors")  # must not raise
+        conn.unselect_folder.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -685,31 +716,6 @@ class TestCollectMetadata:
         md = client._collect_metadata("[Google Mail]/Alle Nachrichten", 1, "hash123")
 
         assert md.folders == [imap.GMAIL_ALL_MAIL]
-
-
-# ---------------------------------------------------------------------------
-# select_folder
-# ---------------------------------------------------------------------------
-
-
-class TestSelectFolder:
-    def test_creates_missing_folder(self):
-        conn = _make_mock_conn()
-        conn.folder_exists.return_value = False
-        client = _make_client(conn=conn)
-
-        client.select_folder("NewFolder")
-        conn.create_folder.assert_called_once_with("NewFolder")
-        conn.select_folder.assert_called_with("NewFolder", readonly=True)
-
-    def test_existing_folder(self):
-        conn = _make_mock_conn()
-        conn.folder_exists.return_value = True
-        client = _make_client(conn=conn)
-
-        client.select_folder("INBOX", readonly=False)
-        conn.create_folder.assert_not_called()
-        conn.select_folder.assert_called_with("INBOX", readonly=False)
 
 
 # ---------------------------------------------------------------------------
