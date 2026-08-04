@@ -36,7 +36,7 @@ if sys.version_info >= (3, 14):
 
 from mailvault import conf, mailutils, utils
 from mailvault.backend import base
-from mailvault.backend.base import BackupResult, MessageRef
+from mailvault.backend.base import BackupResult, MailboxError, MessageRef
 from mailvault.store import cas
 
 log = logging.getLogger(__name__)
@@ -48,10 +48,6 @@ log = logging.getLogger(__name__)
 # name follows the convention of the system labels it sits next to. Gmail never
 # reports a user label with a leading backslash, so it cannot collide with one.
 GMAIL_ALL_MAIL = "\\All"
-
-
-class MailboxError(Exception):
-    pass
 
 
 # Index page size for message_index(); only envelope metadata is fetched, no bodies.
@@ -83,7 +79,13 @@ class ImapClient:
 
     @classmethod
     def connect(cls, job: conf.JobConfig) -> ImapClient:
-        """Open a TLS IMAP connection for `job`, log in, and wrap it in a client."""
+        """Open a TLS IMAP connection for `job`, log in, and wrap it in a client.
+
+        A server that is unreachable or refuses the credentials raises
+        `MailboxError`: both are ordinary, fully diagnosed outcomes -- the
+        server said what was wrong -- and the caller reports them as one line
+        rather than a traceback through `imapclient`.
+        """
         if job.tls:
             tls_context = ssl.create_default_context()
             if not job.tls_check_hostname:
@@ -96,13 +98,30 @@ class ImapClient:
             log.warning("%s: TLS disabled, connection is unencrypted", job.name)
             tls_context = None
 
-        conn = imapclient.IMAPClient(
-            host=job.server,
-            port=job.port,
-            ssl=job.tls,
-            ssl_context=tls_context,
-        )
-        conn.login(job.username, job.password)
+        try:
+            conn = imapclient.IMAPClient(
+                host=job.server,
+                port=job.port,
+                ssl=job.tls,
+                ssl_context=tls_context,
+            )
+        except (OSError, imaplib.IMAP4.error) as exc:
+            # OSError covers the lot below the protocol: DNS, refused
+            # connections, timeouts, and ssl.SSLError for a certificate the
+            # server could not prove.
+            raise MailboxError(f"cannot connect to {job.server}:{job.port}: {exc}") from exc
+
+        try:
+            conn.login(job.username, job.password)
+        except imaplib.IMAP4.error as exc:
+            # imapclient's LoginError is one of these, and carries the server's
+            # own wording ("no such user", "authentication failed") -- which is
+            # the whole message worth reporting.
+            try:
+                conn.shutdown()
+            except Exception as close_exc:
+                log.debug("%s: closing the refused connection failed: %s", job.name, close_exc)
+            raise MailboxError(f"login refused for '{job.username}': {exc}") from exc
         return cls(conn, job)
 
     def close(self) -> None:

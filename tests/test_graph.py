@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from mailvault.backend import graph
+from mailvault.backend import base, graph
 
 
 @dataclasses.dataclass
@@ -245,14 +245,14 @@ class TestEnsureFolder:
     def test_a_missing_parent_is_an_error(self, monkeypatch):
         harness = self._client(monkeypatch, [], {})
 
-        with pytest.raises(RuntimeError, match="parent 'Journal' does not exist"):
+        with pytest.raises(base.MailboxError, match="parent 'Journal' does not exist"):
             harness.client._ensure_folder("Journal/Errors")
 
     def test_a_missing_permission_says_which_one(self, monkeypatch):
         """Creating is the survivable case; not being allowed to is not."""
         harness = self._client(monkeypatch, [_resp(403)], {})
 
-        with pytest.raises(PermissionError, match="Mail.ReadWrite"):
+        with pytest.raises(base.MailboxError, match="Mail.ReadWrite"):
             harness.client._ensure_folder("Errors")
 
 
@@ -292,7 +292,7 @@ class TestGraphRelocate:
     def test_a_missing_permission_stops_the_run(self, monkeypatch):
         harness = self._client(monkeypatch, [_resp(403)])
 
-        with pytest.raises(PermissionError, match="Mail.ReadWrite"):
+        with pytest.raises(base.MailboxError, match="Mail.ReadWrite"):
             harness.client._relocate("INBOX", ["m1", "m2"], "Errors")
 
 
