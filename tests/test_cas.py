@@ -71,6 +71,30 @@ def test_cas_walk(tmp_path):
     assert len(files) == 2
 
 
+def test_cas_prune_empty_dirs(tmp_path):
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas")
+    _, _, kept = store.add(b"keep me")
+    _, _, gone = store.add(b"remove me")
+    gone.unlink()
+
+    removed = store.prune_empty_dirs()
+
+    assert removed == store.depth  # every level of that entry's shard
+    assert not gone.parent.exists()
+    assert kept.exists()  # the shard that still holds something is untouched
+
+
+def test_cas_prune_empty_dirs_keeps_the_root(tmp_path):
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas")
+    _, _, path = store.add(b"lonely")
+    path.unlink()
+
+    store.prune_empty_dirs()
+
+    assert (tmp_path / "cas").is_dir()
+    assert not list((tmp_path / "cas").iterdir())
+
+
 def test_cas_suffix_default(tmp_path):
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas")
     assert store.suffix == ".dat"

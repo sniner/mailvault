@@ -275,6 +275,32 @@ class ContentAddressedStorage:
             operation="decompression",
         )
 
+    def prune_empty_dirs(self) -> int:
+        """Remove the shard directories that no longer hold anything.
+
+        A shard directory is created the first time an entry hashes into it, and
+        nothing removes it when the last entry leaves again. A store that only
+        grows never notices; one whose entries can go -- the metadata log, after
+        compaction -- is left with a skeleton of empty directories.
+
+        Cleanup only, and one that cannot take data with it: `rmdir` refuses a
+        directory that still holds anything, so a shard is removed exactly when
+        it is empty, including when it went empty between the walk and the call.
+        The root itself always stays. Returns how many directories went away.
+        """
+        removed = 0
+        for path, _, _ in os.walk(self.root_dir, topdown=False):
+            directory = pathlib.Path(path)
+            if directory == self.root_dir:
+                continue
+            try:
+                directory.rmdir()
+            except OSError as exc:
+                log.debug(f"{directory}: kept: {exc}")
+                continue
+            removed += 1
+        return removed
+
     def walk(self) -> collections.abc.Generator[pathlib.Path, None, None]:
         suffixes = {self.suffix, self.suffix + ".zst"}
         for path, _, files in os.walk(self.root_dir):
