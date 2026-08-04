@@ -2,8 +2,8 @@
 
 A last resort, not part of the routine: a folder whose downloads partly failed
 does not advance its snapshot, so the next backup fetches it again. What is left
-for verify are archives from older versions, jobs that keep no state, and mail
-moved into a folder with an internal date older than the snapshot.
+for verify are archives from older versions and mail moved into a folder with an
+internal date older than the snapshot.
 """
 
 from __future__ import annotations
@@ -151,11 +151,12 @@ def verify(
     """Check the archive for messages the server still has but the archive lacks.
 
     Gaps are rare by design: a folder whose downloads partly failed does not
-    advance its snapshot, so the next run fetches it again. What is left are
-    archives from older versions, jobs that keep no state, and mail moved into a
-    folder with an internal date older than the snapshot. This is a last resort,
-    not part of the routine -- which is why it can afford to read the archive
-    itself rather than keep an index alongside it.
+    advance its snapshot, so the next run fetches it again, and a message that
+    was never stored is never deleted from the server either. What is left are
+    archives from older versions and mail moved into a folder with an internal
+    date older than the snapshot. This is a last resort, not part of the routine
+    -- which is why it can afford to read the archive itself rather than keep an
+    index alongside it.
     """
     if job.exchange_journal:
         raise JobError(

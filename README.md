@@ -227,12 +227,26 @@ journal job therefore does nothing, and says so when the config is loaded.
 
 ### Verify and repair
 
-A backup run can lose individual messages: the server may answer a single
-download with a `504 Gateway Timeout` or drop the connection, and that message
-is skipped. With `incremental = true` the gap is invisible to every later run,
-because the message is older than the snapshot date and thus filtered out.
+A failed download repairs itself. Servers do drop connections and answer the
+odd request with a `504 Gateway Timeout`, so a folder can end a run with
+messages it did not deliver — but that folder's snapshot is then **not**
+advanced, and the next ordinary run fetches it again from where the last one
+resumed. Nothing needs to be noticed, and nothing needs to be done.
 
-`verify` compares the mailbox against the archive and reports what is missing:
+A message that did not make it into the archive is also never deleted from the
+server. With `delete_after_export`, only messages that were stored *and* whose
+location reached the metadata log on disk are removed; a failed download is not
+among them and stays on the server for the retry.
+
+So gaps do not accumulate silently, and `verify` is not part of the routine. It
+covers the exceptions that the snapshot cannot catch by itself:
+
+- archives carried over from older versions of mailvault
+- mail moved into an already-archived folder with an internal date older than
+  that folder's snapshot, where the date filter of every later run skips it
+
+For those, `verify` compares the mailbox against the archive and reports what is
+missing:
 
 ```console
 $ mailvault --config example.toml verify ./backup
@@ -256,11 +270,6 @@ missing or ambiguous is treated as not archived and fetched again, which is
 harmless: the content-addressed storage recognizes the duplicate and discards
 it. `verify` does not support `exchange_journal` jobs, because there the archived
 message and the server's journal envelope carry different `Message-ID`s.
-
-`verify` is a last resort, not routine. A folder whose downloads partly failed
-does not advance its snapshot, so the next ordinary backup fetches it again by
-itself. What is left for `verify` are archives from older versions and mail moved
-into a folder with an internal date older than the snapshot.
 
 
 ## Managing the archive
