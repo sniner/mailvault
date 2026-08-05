@@ -42,6 +42,50 @@ def _record_snapshot(
         log.error("%s: resume state not written: %s", snapshot_state.path, exc)
 
 
+def _resume_point(
+    result: base.BackupResult,
+    current: datetime | None,
+    observed_at: datetime,
+    full_pass: bool = False,
+) -> datetime | None:
+    """Where the next run may resume, or None to leave the snapshot untouched.
+
+    The snapshot means "everything up to here is in the archive", and the only
+    thing that can back that claim up is mail that was actually stored. Taking
+    the wall clock instead trusts the source to have shown everything it had,
+    which is exactly what a mailbox that is still starting up does not do:
+    Proton Bridge answers before its first sync has run, and reports an empty
+    folder rather than an error. A clock-based snapshot would then jump to
+    today, and every message already sitting in that mailbox would fall before
+    the next date filter -- fetched never, missed silently.
+
+    Hence: no message stored, no advance. The folder is read in full again next
+    run, which costs a search and, for what is already there, nothing else --
+    the content-addressed storage absorbs the repeats.
+
+    `full_pass` says the folder was read without a date filter, and that makes
+    the result authoritative: everything the source was willing to show was
+    seen, so the point is set to exactly that -- backwards too, if the mail says
+    so. An unfiltered pass against a source holding less than it should is the
+    one case where trusting it is safe, because the error runs the harmless way:
+    the next window comes out too wide and costs a download the storage
+    discards, rather than too narrow and costing the mail itself.
+    """
+    if result.newest is None:
+        return None
+    # A message dated in the future -- a sender's clock is off, or the server
+    # stamped it oddly -- must not carry the resume point past the moment the
+    # folder was actually read.
+    candidate = min(result.newest, observed_at)
+    # Only ever forwards, unless the pass was authoritative. The incremental
+    # search window reaches back a day before the snapshot, so such a pass can
+    # legitimately end on an older message than the one the snapshot was taken
+    # from; moving back to it would widen every future run's window for no gain.
+    if not full_pass and current is not None and candidate <= current:
+        return None
+    return candidate
+
+
 def _location_writer(
     log_writer: metalog.LogWriter,
 ) -> collections.abc.Callable[[mailutils.MessageMetadata], None]:
@@ -88,15 +132,34 @@ def _backup_folder(
     incremental: bool = True,
 ) -> None:
     """Back up one folder, recording where its messages were seen."""
-    start_date = snapshot_state.get_date(job.name, folder) if incremental else None
-    snapshot_date = datetime.now(UTC)
+    current = snapshot_state.get_date(job.name, folder)
+    start_date = current if incremental else None
+    observed_at = datetime.now(UTC)
     log_writer = metalog.LogWriter(log_root)
     result = mb.folder_backup(
         folder, store, since=start_date, callback=_location_writer(log_writer)
     )
-    sealed = _seal_log(log_writer, snapshot_date)
+    # The seal date stamps the log with when the folder was read, which is a
+    # fact about the run and stays the wall clock. Where the *next* run resumes
+    # is a claim about coverage, and that one is derived from the mail itself.
+    sealed = _seal_log(log_writer, observed_at)
     if result.complete and sealed:
-        _record_snapshot(snapshot_state, job.name, folder, snapshot_date)
+        resume_at = _resume_point(result, current, observed_at, full_pass=not incremental)
+        if resume_at is not None:
+            _record_snapshot(snapshot_state, job.name, folder, resume_at)
+        elif current is None:
+            # No snapshot yet and nothing came back. Either the folder really is
+            # empty, or the source is not serving its mail yet -- and the two are
+            # indistinguishable from here, so treat it as the second and read the
+            # folder in full again next run.
+            log.info("%s::%s: no messages offered, snapshot not started", job.name, folder)
+        else:
+            log.debug(
+                "%s::%s: nothing newer than %s, snapshot held",
+                job.name,
+                folder,
+                current,
+            )
     elif not result.complete:
         # Advancing the snapshot now would push the failed messages
         # out of every future date filter, losing them permanently.

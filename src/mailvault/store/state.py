@@ -6,6 +6,11 @@ in place, where over SMB or NFS a torn write can take the whole file with it, an
 with it the record of what has already been fetched. That is why they are kept
 here instead.
 
+A snapshot is the date of the newest message a run actually archived, never the
+time the run happened: the wall clock would credit the source with mail it never
+offered, and a mailbox that is still starting up offers none while reporting no
+error at all. See `jobs.backup._resume_point`.
+
 This module keeps that handful of timestamps in `state.json` in the archive and
 only ever replaces that file atomically: write a temporary file,
 flush it to disk, then rename it over the old one. A rename within a directory

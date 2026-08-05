@@ -29,6 +29,13 @@ Body.
 """
 
 
+# Stands in for the timestamp a backend reports for the newest message it
+# stored. A pass that archived something always has one -- it is what the
+# snapshot is then taken from -- so a BackupResult without it means "nothing was
+# archived", not "a message with no date".
+ARCHIVED_AT = datetime(2026, 2, 20, 11, 0, tzinfo=UTC)
+
+
 def _make_job(**overrides: Any) -> conf.JobConfig:
     defaults: dict[str, Any] = dict(
         name="test-job",
@@ -109,7 +116,7 @@ class TestBackup:
         mock_client = _make_mock_client()
         mock_client.folder_backup.side_effect = [
             OSError("connection reset"),
-            base.BackupResult(total=1, stored=1),
+            base.BackupResult(total=1, stored=1, newest=ARCHIVED_AT),
         ]
 
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
@@ -190,7 +197,11 @@ class TestBackup:
     def test_snapshot_advances_on_clean_run(self, tmp_path):
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
-        mock_client.folder_backup.return_value = base.BackupResult(total=3, stored=3)
+        mock_client.folder_backup.return_value = base.BackupResult(
+            total=3,
+            stored=3,
+            newest=ARCHIVED_AT,
+        )
 
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -224,6 +235,185 @@ class TestBackup:
 
 
 # ---------------------------------------------------------------------------
+# where the next run resumes
+# ---------------------------------------------------------------------------
+
+
+class TestResumePoint:
+    """The snapshot follows the mail that was archived, never the wall clock.
+
+    A source can report an empty folder without reporting an error -- Proton
+    Bridge does exactly that between starting up and finishing its first sync,
+    and an IMAP proxy with a cold cache behaves the same way. Taking the clock
+    as the snapshot would answer that silence with "everything up to now is
+    archived", and every message already in the mailbox would then sit before
+    the next date filter: never fetched, never reported missing.
+    """
+
+    @staticmethod
+    def _run(job, mock_client, tmp_path) -> None:
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+            jobs.backup(job, tmp_path)
+
+    def test_a_source_with_nothing_to_offer_does_not_start_a_snapshot(self, tmp_path):
+        """The Proton Bridge case: no error, no mail, and no claim of coverage."""
+        job = _make_job(folders=["INBOX"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = base.BackupResult(total=0, stored=0)
+
+        self._run(job, mock_client, tmp_path)
+
+        s = state.SnapshotState.load(tmp_path / "state.json")
+        assert s.get_date("test-job", "INBOX") is None
+
+    def test_the_next_run_then_reads_the_folder_in_full(self, tmp_path):
+        """What the held-back snapshot is for: the mail is still reachable."""
+        job = _make_job(folders=["INBOX"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = base.BackupResult(total=0, stored=0)
+        self._run(job, mock_client, tmp_path)
+
+        # The bridge has finished syncing by now and the mailbox is there.
+        mock_client.folder_backup.reset_mock()
+        mock_client.folder_backup.return_value = base.BackupResult(
+            total=2,
+            stored=2,
+            newest=ARCHIVED_AT,
+        )
+        self._run(job, mock_client, tmp_path)
+
+        assert mock_client.folder_backup.call_args.kwargs.get("since") is None
+
+    def test_the_snapshot_is_the_newest_message_not_the_clock(self, tmp_path):
+        """A source lagging behind must not be credited with the time it lags."""
+        job = _make_job(folders=["INBOX"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = base.BackupResult(
+            total=1,
+            stored=1,
+            newest=ARCHIVED_AT,
+        )
+
+        self._run(job, mock_client, tmp_path)
+
+        s = state.SnapshotState.load(tmp_path / "state.json")
+        assert s.get_date("test-job", "INBOX") == ARCHIVED_AT
+
+    def test_a_message_dated_in_the_future_cannot_carry_the_snapshot_past_now(
+        self,
+        tmp_path,
+    ):
+        """Someone else's broken clock must not skip our next window."""
+        job = _make_job(folders=["INBOX"])
+        mock_client = _make_mock_client()
+        far_future = datetime(2099, 1, 1, tzinfo=UTC)
+        mock_client.folder_backup.return_value = base.BackupResult(
+            total=1,
+            stored=1,
+            newest=far_future,
+        )
+
+        self._run(job, mock_client, tmp_path)
+
+        recorded = state.SnapshotState.load(tmp_path / "state.json").get_date(
+            "test-job",
+            "INBOX",
+        )
+        assert recorded is not None
+        assert recorded < far_future
+
+    def test_the_snapshot_never_moves_backwards(self, tmp_path):
+        """The search window reaches back a day, so an older find is normal."""
+        job = _make_job(folders=["INBOX"])
+        mock_client = _make_mock_client()
+        current = datetime(2026, 3, 1, tzinfo=UTC)
+        s = state.SnapshotState(tmp_path / "state.json")
+        s.set_date("test-job", "INBOX", current)
+        s.save()
+        mock_client.folder_backup.return_value = base.BackupResult(
+            total=1,
+            stored=1,
+            newest=datetime(2026, 2, 28, tzinfo=UTC),
+        )
+
+        self._run(job, mock_client, tmp_path)
+
+        assert (
+            state.SnapshotState.load(tmp_path / "state.json").get_date("test-job", "INBOX")
+            == current
+        )
+
+    def test_a_full_pass_may_move_the_snapshot_backwards(self, tmp_path):
+        """Read without a date filter, the mail found *is* the coverage.
+
+        This is what repairs a snapshot that was set too far ahead: the pass saw
+        everything the source was willing to show, so the point is set to
+        exactly that. Trusting a source that holds less than it should errs the
+        harmless way here -- the next window comes out too wide.
+        """
+        job = _make_job(folders=["INBOX"])
+        mock_client = _make_mock_client()
+        ahead = datetime(2026, 7, 1, tzinfo=UTC)
+        s = state.SnapshotState(tmp_path / "state.json")
+        s.set_date("test-job", "INBOX", ahead)
+        s.save()
+        mock_client.folder_backup.return_value = base.BackupResult(
+            total=1,
+            stored=1,
+            newest=ARCHIVED_AT,
+        )
+
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+            jobs.backup(job, tmp_path, incremental=False)
+
+        assert (
+            state.SnapshotState.load(tmp_path / "state.json").get_date("test-job", "INBOX")
+            == ARCHIVED_AT
+        )
+
+    def test_a_full_pass_that_finds_nothing_clears_nothing(self, tmp_path):
+        """There is no value to set it to, so the existing one stands."""
+        job = _make_job(folders=["INBOX"])
+        mock_client = _make_mock_client()
+        current = datetime(2026, 3, 1, tzinfo=UTC)
+        s = state.SnapshotState(tmp_path / "state.json")
+        s.set_date("test-job", "INBOX", current)
+        s.save()
+        mock_client.folder_backup.return_value = base.BackupResult(total=0, stored=0)
+
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+            jobs.backup(job, tmp_path, incremental=False)
+
+        assert (
+            state.SnapshotState.load(tmp_path / "state.json").get_date("test-job", "INBOX")
+            == current
+        )
+
+    def test_a_quiet_folder_keeps_its_snapshot(self, tmp_path):
+        """Nothing new is not the same as nothing there: the snapshot stands."""
+        job = _make_job(folders=["INBOX"])
+        mock_client = _make_mock_client()
+        current = datetime(2026, 3, 1, tzinfo=UTC)
+        s = state.SnapshotState(tmp_path / "state.json")
+        s.set_date("test-job", "INBOX", current)
+        s.save()
+        mock_client.folder_backup.return_value = base.BackupResult(total=0, stored=0)
+
+        self._run(job, mock_client, tmp_path)
+
+        assert (
+            state.SnapshotState.load(tmp_path / "state.json").get_date("test-job", "INBOX")
+            == current
+        )
+
+
+# ---------------------------------------------------------------------------
 # snapshot state file (state.json)
 # ---------------------------------------------------------------------------
 
@@ -246,7 +436,11 @@ class TestSnapshotStateFile:
     def test_state_file_written_on_clean_run(self, tmp_path):
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
-        mock_client.folder_backup.return_value = base.BackupResult(total=3, stored=3)
+        mock_client.folder_backup.return_value = base.BackupResult(
+            total=3,
+            stored=3,
+            newest=ARCHIVED_AT,
+        )
 
         self._run(job, mock_client, tmp_path)
 
@@ -301,7 +495,11 @@ class TestSnapshotStateFile:
         """One run must carry over every folder, not just the ones it visits."""
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
-        mock_client.folder_backup.return_value = base.BackupResult()
+        mock_client.folder_backup.return_value = base.BackupResult(
+            total=1,
+            stored=1,
+            newest=ARCHIVED_AT,
+        )
 
         untouched = datetime(2026, 2, 1, tzinfo=UTC)
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
@@ -343,7 +541,11 @@ class TestSnapshotStateFile:
         """Losing the state file costs bandwidth later, never the run in progress."""
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
-        mock_client.folder_backup.return_value = base.BackupResult(total=1, stored=1)
+        mock_client.folder_backup.return_value = base.BackupResult(
+            total=1,
+            stored=1,
+            newest=ARCHIVED_AT,
+        )
 
         with patch.object(state.SnapshotState, "save", side_effect=OSError("read-only")):
             self._run(job, mock_client, tmp_path)

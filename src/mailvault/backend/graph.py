@@ -419,6 +419,11 @@ class MSGraphClient:
             if store_id is None:
                 continue
 
+            # `receivedDateTime`, the same field the `$filter` of an incremental
+            # pass compares against, so the resume point speaks the server's
+            # own terms.
+            result.saw(_parse_graph_datetime(msg_info.get("receivedDateTime")))
+
             if result.stored % 100 == 0:
                 log.info(
                     "%s::%s: %s/%s messages processed",

@@ -38,6 +38,16 @@ class BackupResult:
     advance the incremental snapshot — otherwise those messages would fall
     outside the date filter of every future run and stay lost for good.
 
+    `newest` is the server-side timestamp of the newest message this pass
+    actually stored, and it is the only evidence there is for how far the
+    archive has caught up. The caller resumes from it rather than from the wall
+    clock, because "it is now 12:00" says nothing about what the source was
+    willing to show: a mailbox that is still starting up -- Proton Bridge before
+    its first sync, an IMAP proxy with a cold cache -- reports an empty folder
+    without reporting an error, and a snapshot taken from the clock would then
+    claim coverage of mail that was never offered. It stays None when nothing
+    was stored, which is what keeps the snapshot where it is.
+
     `deletable` lists the backend message ids that were stored successfully and
     may be removed from the server -- but only once the metadata log for this
     folder is sealed, so a message is never deleted from its source before the
@@ -50,12 +60,32 @@ class BackupResult:
     total: int = 0
     stored: int = 0
     failed: int = 0
+    newest: datetime | None = None
     deletable: list[Any] = dataclasses.field(default_factory=list)
 
     @property
     def complete(self) -> bool:
         """True if every message seen on the server was accounted for."""
         return self.failed == 0
+
+    def saw(self, date: datetime | None) -> None:
+        """Note the timestamp of a stored message, keeping the newest one.
+
+        Call it only for messages that were actually archived: the value becomes
+        the point the next run resumes from, so a message that failed must not
+        contribute its date and let the next date filter skip past it.
+
+        A naive value is read as local time. That is what the IMAP backend hands
+        over -- imapclient normalises INTERNALDATE to local time and drops the
+        offset -- and it matches how the state file reads back a naive entry, so
+        the two cannot disagree by a timezone.
+        """
+        if date is None:
+            return
+        if date.tzinfo is None:
+            date = date.astimezone()
+        if self.newest is None or date > self.newest:
+            self.newest = date
 
 
 @dataclasses.dataclass(frozen=True)
