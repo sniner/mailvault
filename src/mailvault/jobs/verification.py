@@ -21,6 +21,14 @@ from mailvault.store import cas, metalog
 
 log = logging.getLogger(__name__)
 
+# How often the two long passes say where they are. Both read one item at a
+# time with nothing to show for it until they finish, so without this a large
+# archive looks like a hung process -- and the local one is usually the slower
+# of the two, because it is thousands of small reads over whatever the archive
+# is mounted on.
+ARCHIVE_PROGRESS_EVERY = 10_000
+SERVER_PROGRESS_EVERY = 5_000
+
 
 @dataclasses.dataclass
 class VerifyResult:
@@ -44,7 +52,9 @@ def _places_from_log(log_root: pathlib.Path) -> dict[tuple[str, str | None], set
 
 
 def _archived_message_ids(
-    store: cas.ContentAddressedStorage, store_ids: collections.abc.Iterable[str]
+    store: cas.ContentAddressedStorage,
+    store_ids: collections.abc.Iterable[str],
+    log_ctx: str = "",
 ) -> set[str]:
     """Return the normalised Message-IDs of the given archived messages.
 
@@ -53,12 +63,21 @@ def _archived_message_ids(
     folder -- `verify` is a once-in-a-blue-moon command, and the database it used
     to ask is no longer part of the archive.
 
+    Reports its progress under `log_ctx` while doing so. On a large folder this
+    is the longest silence in the whole command, and it is spent on the *local*
+    archive rather than on the server, which is not what one would guess from
+    watching a command called verify.
+
     Messages without a usable Message-ID are omitted: they cannot serve as a
     comparison key and must count as "not present" so a verify run re-fetches
     them, which is harmless because the storage deduplicates by content.
     """
     known: set[str] = set()
+    read = 0
     for store_id in store_ids:
+        read += 1
+        if log_ctx and read % ARCHIVE_PROGRESS_EVERY == 0:
+            log.info("%s: %s message(s) read from the archive", log_ctx, f"{read:,}")
         path = store.locate(store_id, exists=True)
         if path is None:
             continue
@@ -94,17 +113,22 @@ def _verify_folder(
     reverse mistake, skipping a message that really is missing, is the one worth
     avoiding.
     """
-    known = mailutils.MessageIdIndex(_archived_message_ids(store, archived))
-    log.info("%s::%s: %s message(s) in archive", job_name, folder, len(known))
+    ctx = f"{job_name}::{folder}"
+    # Said before the work, not after it: this reads one header per archived
+    # message and has nothing to report until every one of them is done.
+    log.info("%s: reading %s archived message(s)", ctx, f"{len(archived):,}")
+    known = mailutils.MessageIdIndex(_archived_message_ids(store, archived, log_ctx=ctx))
+    log.info("%s: %s message(s) in archive", ctx, f"{len(known):,}")
 
     result = VerifyResult(folder=folder)
     missing: list[base.MessageRef] = []
+    log.info("%s: listing the folder on the server", ctx)
     for ref in mb.message_index(folder):
         result.on_server += 1
         if mailutils.normalize_message_id(ref.message_id) not in known:
             missing.append(ref)
-        if result.on_server % 5000 == 0:
-            log.info("%s::%s: %s message(s) indexed", job_name, folder, result.on_server)
+        if result.on_server % SERVER_PROGRESS_EVERY == 0:
+            log.info("%s: %s message(s) indexed", ctx, f"{result.on_server:,}")
     result.missing = len(missing)
 
     log.info(
@@ -167,7 +191,17 @@ def verify(
 
     results: list[VerifyResult] = []
     log_root = store_path / metalog.DEFAULT_LOG_DIR
+    # The first thing that happens and the first thing that takes a while: the
+    # whole log is read before a connection is even opened. Announcing it is what
+    # keeps the start of the command from looking like nothing at all.
+    log.info("%s: reading the metadata log", job.name)
     places = _places_from_log(log_root)
+    log.info(
+        "%s: %s message(s) recorded in %s place(s)",
+        job.name,
+        f"{sum(len(ids) for ids in places.values()):,}",
+        len(places),
+    )
     with session.open_mailbox(job) as mb:
         store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
         folders = job.folders if job.folders else list(mb.folders())
