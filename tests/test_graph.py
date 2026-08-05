@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import dataclasses
-from datetime import UTC, datetime, timedelta, timezone
+import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -164,35 +165,187 @@ class TestRequestRetry:
 # ---------------------------------------------------------------------------
 
 
-class TestSinceFilter:
-    """The trailing Z says UTC, so what precedes it has to be UTC."""
+def _json(status: int, payload: dict) -> httpx.Response:
+    """A JSON response that survives raise_for_status(), which needs its request."""
+    return httpx.Response(
+        status,
+        request=httpx.Request("GET", "https://graph.test"),
+        json=payload,
+    )
 
-    @staticmethod
-    def _filter_for(monkeypatch, since):
-        harness = _make_client(monkeypatch, [])
-        harness.client._user = "user@example.org"
-        with patch.object(harness.client, "_paginate", return_value=iter([])) as paginate:
-            list(harness.client._iter_messages("INBOX", "folder-id", since=since))
-        return paginate.call_args[0][1]["$filter"]
 
-    def test_an_aware_timestamp_is_converted(self, monkeypatch):
-        berlin = timezone(timedelta(hours=2))
-        since = datetime(2026, 8, 2, 12, 0, tzinfo=berlin)
+class TestDeltaPoint:
+    """Reading the resume point back, and refusing everything that is not ours."""
 
-        assert (
-            self._filter_for(monkeypatch, since) == "receivedDateTime ge 2026-08-02T10:00:00Z"
+    def test_our_own_point_is_read(self):
+        issued = datetime(2026, 8, 1, tzinfo=UTC)
+        point = graph._delta_point(
+            {
+                "kind": graph.DELTA_RESUME_KIND,
+                "delta_link": "https://graph.test/delta?$deltatoken=abc",
+                "issued": issued.isoformat(),
+            }
         )
 
-    def test_a_naive_timestamp_is_read_as_local_time(self, monkeypatch):
-        """Snapshots from older versions carry no zone and mean local time.
+        assert point == ("https://graph.test/delta?$deltatoken=abc", issued)
 
-        Stamping such a value `Z` unchanged would ask for mail from one or two
-        hours later than intended, and that window is then skipped for good.
-        """
-        naive = datetime(2026, 8, 2, 12, 0)
-        expected = naive.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    def test_a_point_from_another_backend_is_refused(self, caplog):
+        with caplog.at_level(logging.INFO):
+            assert graph._delta_point({"kind": "imap-uid", "uidvalidity": 1, "uid": 2}) is None
+        assert "is not ours" in caplog.text
 
-        assert self._filter_for(monkeypatch, naive) == f"receivedDateTime ge {expected}"
+    def test_a_point_without_a_link_is_refused(self, caplog):
+        assert graph._delta_point({"kind": graph.DELTA_RESUME_KIND}) is None
+        assert "no usable delta link" in caplog.text
+
+    def test_a_point_without_an_issue_time_still_works(self):
+        """Only the log line about a rejected token needs it."""
+        point = graph._delta_point(
+            {"kind": graph.DELTA_RESUME_KIND, "delta_link": "https://graph.test/d"}
+        )
+
+        assert point == ("https://graph.test/d", None)
+
+
+class TestDeltaToken:
+    """What a completed round hands back."""
+
+    def test_a_round_without_a_link_earns_nothing(self):
+        assert _delta_token_for(None, previous=None, stored=3) is None
+
+    def test_an_incremental_round_records_even_when_nothing_changed(self):
+        """The server says "caught up"; walking the folder again would be waste."""
+        token = _delta_token_for("https://graph.test/new", previous=("old", None), stored=0)
+
+        assert token is not None
+        assert token["delta_link"] == "https://graph.test/new"
+
+    def test_a_first_round_that_archived_nothing_earns_nothing(self):
+        """The Proton Bridge shape, in Graph terms: no mail shown, no claim made."""
+        assert _delta_token_for("https://graph.test/new", previous=None, stored=0) is None
+
+    def test_a_first_round_that_archived_something_records(self):
+        token = _delta_token_for("https://graph.test/new", previous=None, stored=1)
+
+        assert token is not None
+        assert token["kind"] == graph.DELTA_RESUME_KIND
+        assert token["issued"]
+
+
+def _delta_token_for(link, previous, stored):
+    return graph._delta_token(link, previous, stored)
+
+
+class TestDeltaRound:
+    """Walking a round: paging, removals, and a rejected token."""
+
+    @staticmethod
+    def _client(monkeypatch, responses):
+        harness = _make_client(monkeypatch, responses)
+        harness.client._user = "user@example.org"
+        harness.client.job_name = "m365"
+        return harness
+
+    def test_the_opening_request_carries_the_query_options(self, monkeypatch):
+        harness = self._client(
+            monkeypatch,
+            [_json(200, {"value": [], "@odata.deltaLink": "https://graph.test/d"})],
+        )
+
+        harness.client._delta_round("INBOX", "folder-id", None)
+
+        call = harness.request.call_args
+        assert call.args[1].endswith("/mailFolders/folder-id/messages/delta")
+        assert call.kwargs["params"] == {"$select": "id"}
+        assert call.kwargs["headers"]["Prefer"].startswith("odata.maxpagesize=")
+
+    def test_a_stored_link_is_followed_verbatim(self, monkeypatch):
+        """Graph encodes the query options into the token, so nothing is re-added."""
+        harness = self._client(
+            monkeypatch,
+            [_json(200, {"value": [], "@odata.deltaLink": "https://graph.test/d2"})],
+        )
+
+        harness.client._delta_round("INBOX", "folder-id", ("https://graph.test/d1", None))
+
+        call = harness.request.call_args
+        assert call.args[1] == "https://graph.test/d1"
+        assert call.kwargs["params"] is None
+
+    def test_pages_are_followed_until_the_delta_link(self, monkeypatch):
+        harness = self._client(
+            monkeypatch,
+            [
+                _json(
+                    200, {"value": [{"id": "a"}], "@odata.nextLink": "https://graph.test/p2"}
+                ),
+                _json(
+                    200, {"value": [{"id": "b"}], "@odata.deltaLink": "https://graph.test/d"}
+                ),
+            ],
+        )
+
+        items, link = harness.client._delta_round("INBOX", "folder-id", None)
+
+        assert [i["id"] for i in items] == ["a", "b"]
+        assert link == "https://graph.test/d"
+
+    def test_removed_entries_are_skipped(self, monkeypatch):
+        """They arrive for a deletion *or a move out*, asked for or not."""
+        harness = self._client(
+            monkeypatch,
+            [
+                _json(
+                    200,
+                    {
+                        "value": [
+                            {"id": "a"},
+                            {"id": "b", "@removed": {"reason": "deleted"}},
+                        ],
+                        "@odata.deltaLink": "https://graph.test/d",
+                    },
+                )
+            ],
+        )
+
+        items, _link = harness.client._delta_round("INBOX", "folder-id", None)
+
+        assert [i["id"] for i in items] == ["a"]
+
+    def test_a_rejected_token_restarts_the_round(self, monkeypatch, caplog):
+        """410 is documented as a normal recovery path, not a failure."""
+        harness = self._client(
+            monkeypatch,
+            [
+                _json(410, {"error": {"code": "resyncRequired"}}),
+                _json(
+                    200, {"value": [{"id": "a"}], "@odata.deltaLink": "https://graph.test/d"}
+                ),
+            ],
+        )
+        issued = datetime.now(UTC) - timedelta(hours=5)
+
+        with caplog.at_level(logging.INFO):
+            items, link = harness.client._delta_round(
+                "INBOX", "folder-id", ("https://graph.test/stale", issued)
+            )
+
+        assert [i["id"] for i in items] == ["a"]
+        assert link == "https://graph.test/d"
+        assert "delta token rejected (410)" in caplog.text
+        # The age is what tells us how long these actually live.
+        assert "5.0h" in caplog.text
+        # The restart is a fresh round, not a second try at the dead link.
+        assert harness.request.call_args.args[1].endswith("/messages/delta")
+
+    def test_a_round_without_a_delta_link_earns_nothing(self, monkeypatch, caplog):
+        harness = self._client(monkeypatch, [_json(200, {"value": [{"id": "a"}]})])
+
+        items, link = harness.client._delta_round("INBOX", "folder-id", None)
+
+        assert [i["id"] for i in items] == ["a"]
+        assert link is None
+        assert "ended without a link" in caplog.text
 
 
 def _resp(status: int, **kwargs) -> httpx.Response:

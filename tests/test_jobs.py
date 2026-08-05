@@ -36,17 +36,21 @@ Body.
 ARCHIVED_AT = datetime(2026, 2, 20, 11, 0, tzinfo=UTC)
 
 
-# TRANSITIONAL, alongside base.DATE_KIND: until the backends hand back their own
-# resume points, the date mechanism lives inside a token. These three names are
-# where that shape is known in the tests, so replacing them is what the IMAP and
-# Graph steps have to do.
-ARCHIVED_TOKEN = {"kind": "date", "date": ARCHIVED_AT.isoformat()}
+# A resume point as a backend would hand one back. Its shape is the backend's
+# business and the job runner never looks inside, so these tests only ever check
+# that the very same object comes back out again. The date in it is a label, not
+# a mechanism -- it is what makes the assertions readable.
+def _token(date: datetime) -> dict:
+    return {"kind": "test-backend", "at": date.isoformat()}
+
+
+ARCHIVED_TOKEN = _token(ARCHIVED_AT)
 
 
 def _resume_date(path, mailbox: str = "test-job", folder: str = "INBOX") -> datetime | None:
     """Read the resume date out of a state file, or None when there is none."""
     token = state.SnapshotState.load(path).resume(mailbox, folder)
-    return None if token is None else datetime.fromisoformat(token["date"])
+    return None if token is None else datetime.fromisoformat(token["at"])
 
 
 def _seed_resume(
@@ -61,7 +65,7 @@ def _seed_resume(
         mailbox,
         folder,
         last_run=date,
-        resume={"kind": "date", "date": date.isoformat()},
+        resume=_token(date),
     )
     s.save()
 
@@ -173,10 +177,7 @@ class TestBackup:
 
             jobs.backup(job, tmp_path, incremental=True)
 
-        assert mock_client.folder_backup.call_args.kwargs.get("resume") == {
-            "kind": "date",
-            "date": snapshot_date.isoformat(),
-        }
+        assert mock_client.folder_backup.call_args.kwargs.get("resume") == _token(snapshot_date)
 
     def test_backup_non_incremental_ignores_snapshot(self, tmp_path):
         job = _make_job(folders=["INBOX"])
@@ -419,7 +420,7 @@ class TestSnapshotStateFile:
 
         self._run(job, mock_client, tmp_path)
 
-        assert self._resume(mock_client) == {"kind": "date", "date": current.isoformat()}
+        assert self._resume(mock_client) == _token(current)
 
     def test_a_database_snapshot_is_kept_as_a_record_not_as_a_resume_point(self, tmp_path):
         """A legacy timestamp came from the wall clock, so it says when, not how far.
