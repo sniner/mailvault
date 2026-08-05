@@ -36,6 +36,30 @@ Body.
 ARCHIVED_AT = datetime(2026, 2, 20, 11, 0, tzinfo=UTC)
 
 
+# TRANSITIONAL, alongside jobs.backup._DATE_KIND: until the backends hand back
+# their own resume points, the date mechanism lives inside a token. These two
+# helpers are where that shape is known in the tests, so replacing them is what
+# the IMAP and Graph steps have to do.
+def _resume_date(path, mailbox: str = "test-job", folder: str = "INBOX") -> datetime | None:
+    """Read the resume date out of a state file, or None when there is none."""
+    token = state.SnapshotState.load(path).resume(mailbox, folder)
+    return None if token is None else datetime.fromisoformat(token["date"])
+
+
+def _seed_resume(
+    path, date: datetime, mailbox: str = "test-job", folder: str = "INBOX"
+) -> None:
+    """Put a folder's resume point into a state file, as a run would have."""
+    s = state.SnapshotState(path)
+    s.record(
+        mailbox,
+        folder,
+        last_run=date,
+        resume={"kind": "date", "date": date.isoformat()},
+    )
+    s.save()
+
+
 def _make_job(**overrides: Any) -> conf.JobConfig:
     defaults: dict[str, Any] = dict(
         name="test-job",
@@ -126,21 +150,16 @@ class TestBackup:
             jobs.backup(job, tmp_path)
 
         assert mock_client.folder_backup.call_count == 2
-        s = state.SnapshotState.load(tmp_path / "state.json")
-        assert s.get_date("test-job", "Broken") is None
-        assert s.get_date("test-job", "INBOX") is not None
+        assert _resume_date(tmp_path / "state.json", folder="Broken") is None
+        assert _resume_date(tmp_path / "state.json") is not None
 
     def test_backup_incremental_uses_snapshot(self, tmp_path):
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
 
-        # Pre-populate a snapshot
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
-            mb_id = db.add_mailbox("test-job")
-            label_id = db.add_label("INBOX")
-            snapshot_date = datetime(2026, 2, 1, tzinfo=UTC)
-            db.set_snapshot(mb_id, label_id, date=snapshot_date)
+        snapshot_date = datetime(2026, 2, 1, tzinfo=UTC)
+        _seed_resume(tmp_path / "state.json", snapshot_date)
 
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -209,8 +228,7 @@ class TestBackup:
 
             jobs.backup(job, tmp_path)
 
-        s = state.SnapshotState.load(tmp_path / "state.json")
-        assert s.get_date("test-job", "INBOX") is not None
+        assert _resume_date(tmp_path / "state.json") is not None
 
     def test_snapshot_frozen_on_failed_downloads(self, tmp_path):
         """A failed download must not be hidden behind an advanced snapshot."""
@@ -218,9 +236,7 @@ class TestBackup:
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult(total=3, stored=2, failed=1)
         old_snapshot = datetime(2026, 2, 1, tzinfo=UTC)
-        s = state.SnapshotState(tmp_path / "state.json")
-        s.set_date("test-job", "INBOX", old_snapshot)
-        s.save()
+        _seed_resume(tmp_path / "state.json", old_snapshot, folder="INBOX")
 
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -228,10 +244,7 @@ class TestBackup:
 
             jobs.backup(job, tmp_path)
 
-        assert (
-            state.SnapshotState.load(tmp_path / "state.json").get_date("test-job", "INBOX")
-            == old_snapshot
-        )
+        assert _resume_date(tmp_path / "state.json") == old_snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -265,8 +278,7 @@ class TestResumePoint:
 
         self._run(job, mock_client, tmp_path)
 
-        s = state.SnapshotState.load(tmp_path / "state.json")
-        assert s.get_date("test-job", "INBOX") is None
+        assert _resume_date(tmp_path / "state.json") is None
 
     def test_the_next_run_then_reads_the_folder_in_full(self, tmp_path):
         """What the held-back snapshot is for: the mail is still reachable."""
@@ -298,8 +310,7 @@ class TestResumePoint:
 
         self._run(job, mock_client, tmp_path)
 
-        s = state.SnapshotState.load(tmp_path / "state.json")
-        assert s.get_date("test-job", "INBOX") == ARCHIVED_AT
+        assert _resume_date(tmp_path / "state.json") == ARCHIVED_AT
 
     def test_a_message_dated_in_the_future_cannot_carry_the_snapshot_past_now(
         self,
@@ -317,10 +328,7 @@ class TestResumePoint:
 
         self._run(job, mock_client, tmp_path)
 
-        recorded = state.SnapshotState.load(tmp_path / "state.json").get_date(
-            "test-job",
-            "INBOX",
-        )
+        recorded = _resume_date(tmp_path / "state.json")
         assert recorded is not None
         assert recorded < far_future
 
@@ -329,9 +337,7 @@ class TestResumePoint:
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         current = datetime(2026, 3, 1, tzinfo=UTC)
-        s = state.SnapshotState(tmp_path / "state.json")
-        s.set_date("test-job", "INBOX", current)
-        s.save()
+        _seed_resume(tmp_path / "state.json", current, folder="INBOX")
         mock_client.folder_backup.return_value = base.BackupResult(
             total=1,
             stored=1,
@@ -340,10 +346,7 @@ class TestResumePoint:
 
         self._run(job, mock_client, tmp_path)
 
-        assert (
-            state.SnapshotState.load(tmp_path / "state.json").get_date("test-job", "INBOX")
-            == current
-        )
+        assert _resume_date(tmp_path / "state.json") == current
 
     def test_a_full_pass_may_move_the_snapshot_backwards(self, tmp_path):
         """Read without a date filter, the mail found *is* the coverage.
@@ -356,9 +359,7 @@ class TestResumePoint:
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         ahead = datetime(2026, 7, 1, tzinfo=UTC)
-        s = state.SnapshotState(tmp_path / "state.json")
-        s.set_date("test-job", "INBOX", ahead)
-        s.save()
+        _seed_resume(tmp_path / "state.json", ahead, folder="INBOX")
         mock_client.folder_backup.return_value = base.BackupResult(
             total=1,
             stored=1,
@@ -370,19 +371,14 @@ class TestResumePoint:
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
             jobs.backup(job, tmp_path, incremental=False)
 
-        assert (
-            state.SnapshotState.load(tmp_path / "state.json").get_date("test-job", "INBOX")
-            == ARCHIVED_AT
-        )
+        assert _resume_date(tmp_path / "state.json") == ARCHIVED_AT
 
     def test_a_full_pass_that_finds_nothing_clears_nothing(self, tmp_path):
         """There is no value to set it to, so the existing one stands."""
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         current = datetime(2026, 3, 1, tzinfo=UTC)
-        s = state.SnapshotState(tmp_path / "state.json")
-        s.set_date("test-job", "INBOX", current)
-        s.save()
+        _seed_resume(tmp_path / "state.json", current, folder="INBOX")
         mock_client.folder_backup.return_value = base.BackupResult(total=0, stored=0)
 
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
@@ -390,27 +386,19 @@ class TestResumePoint:
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
             jobs.backup(job, tmp_path, incremental=False)
 
-        assert (
-            state.SnapshotState.load(tmp_path / "state.json").get_date("test-job", "INBOX")
-            == current
-        )
+        assert _resume_date(tmp_path / "state.json") == current
 
     def test_a_quiet_folder_keeps_its_snapshot(self, tmp_path):
         """Nothing new is not the same as nothing there: the snapshot stands."""
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         current = datetime(2026, 3, 1, tzinfo=UTC)
-        s = state.SnapshotState(tmp_path / "state.json")
-        s.set_date("test-job", "INBOX", current)
-        s.save()
+        _seed_resume(tmp_path / "state.json", current, folder="INBOX")
         mock_client.folder_backup.return_value = base.BackupResult(total=0, stored=0)
 
         self._run(job, mock_client, tmp_path)
 
-        assert (
-            state.SnapshotState.load(tmp_path / "state.json").get_date("test-job", "INBOX")
-            == current
-        )
+        assert _resume_date(tmp_path / "state.json") == current
 
 
 # ---------------------------------------------------------------------------
@@ -444,8 +432,7 @@ class TestSnapshotStateFile:
 
         self._run(job, mock_client, tmp_path)
 
-        s = state.SnapshotState.load(tmp_path / "state.json")
-        assert s.get_date("test-job", "INBOX") is not None
+        assert _resume_date(tmp_path / "state.json") is not None
 
     def test_state_file_frozen_on_failed_downloads(self, tmp_path):
         job = _make_job(folders=["INBOX"])
@@ -454,8 +441,7 @@ class TestSnapshotStateFile:
 
         self._run(job, mock_client, tmp_path)
 
-        s = state.SnapshotState.load(tmp_path / "state.json")
-        assert s.get_date("test-job", "INBOX") is None
+        assert _resume_date(tmp_path / "state.json") is None
 
     def test_state_file_takes_precedence_over_database(self, tmp_path):
         """The state file is the durable copy, so it decides where a run resumes."""
@@ -467,16 +453,18 @@ class TestSnapshotStateFile:
         current = datetime(2026, 6, 1, tzinfo=UTC)
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
             db.set_snapshot(db.add_mailbox("test-job"), db.add_label("INBOX"), date=stale)
-        s = state.SnapshotState(tmp_path / "state.json")
-        s.set_date("test-job", "INBOX", current)
-        s.save()
+        _seed_resume(tmp_path / "state.json", current, folder="INBOX")
 
         self._run(job, mock_client, tmp_path)
 
         assert self._since(mock_client) == current
 
-    def test_database_snapshot_is_adopted_when_state_file_is_absent(self, tmp_path):
-        """Upgrading an existing archive must not trigger a full re-fetch."""
+    def test_a_database_snapshot_is_kept_as_a_record_not_as_a_resume_point(self, tmp_path):
+        """A legacy timestamp came from the wall clock, so it says when, not how far.
+
+        Adopting it as a resume point would inherit exactly the gap it could
+        hide, so the folder is read in full once instead.
+        """
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
@@ -487,9 +475,14 @@ class TestSnapshotStateFile:
 
         self._run(job, mock_client, tmp_path)
 
-        assert self._since(mock_client) == existing
+        assert self._since(mock_client) is None
         adopted = state.SnapshotState.load(tmp_path / "state.json")
-        assert adopted.get_date("test-job", "INBOX") is not None
+        assert adopted.resume("test-job", "INBOX") is None
+        # The run has read the folder by now, so its own timestamp is the one
+        # standing there -- that the adopted value survives is the business of
+        # the folders a run does not visit.
+        last_run = adopted.last_run("test-job", "INBOX")
+        assert last_run is not None and last_run > existing
 
     def test_all_database_snapshots_are_adopted_at_once(self, tmp_path):
         """One run must carry over every folder, not just the ones it visits."""
@@ -510,12 +503,13 @@ class TestSnapshotStateFile:
         self._run(job, mock_client, tmp_path)
 
         s = state.SnapshotState.load(tmp_path / "state.json")
-        assert s.get_date("test-job", "Sent") == untouched
-        assert s.get_date("test-job", "Archiv/2016") == untouched
-        # The visited folder advanced, the others kept the adopted timestamp.
-        inbox_date = s.get_date("test-job", "INBOX")
-        assert inbox_date is not None
-        assert inbox_date > untouched
+        assert s.last_run("test-job", "Sent") == untouched
+        assert s.last_run("test-job", "Archiv/2016") == untouched
+        # None of them is a resume point, so none shortens the next pass.
+        assert s.resume("test-job", "Sent") is None
+        assert s.resume("test-job", "Archiv/2016") is None
+        # The visited folder was read and earned one.
+        assert _resume_date(tmp_path / "state.json") == ARCHIVED_AT
 
     def test_adoption_never_overwrites_an_existing_state_file(self, tmp_path):
         job = _make_job(folders=["INBOX"])
@@ -526,16 +520,11 @@ class TestSnapshotStateFile:
         stale = datetime(2026, 1, 1, tzinfo=UTC)
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
             db.set_snapshot(db.add_mailbox("test-job"), db.add_label("Sent"), date=stale)
-        s = state.SnapshotState(tmp_path / "state.json")
-        s.set_date("test-job", "Sent", current)
-        s.save()
+        _seed_resume(tmp_path / "state.json", current, folder="Sent")
 
         self._run(job, mock_client, tmp_path)
 
-        assert (
-            state.SnapshotState.load(tmp_path / "state.json").get_date("test-job", "Sent")
-            == current
-        )
+        assert _resume_date(tmp_path / "state.json", folder="Sent") == current
 
     def test_unwritable_state_file_does_not_abort_the_run(self, tmp_path, caplog):
         """Losing the state file costs bandwidth later, never the run in progress."""
@@ -775,7 +764,10 @@ class TestMetadataLog:
         logs = list(metalog.read_all(tmp_path / "meta"))
         assert len(logs) == 1
         assert logs[0].store_ids == ["aaa"]
-        assert state.SnapshotState.load(tmp_path / "state.json").is_empty()
+        # The folder was read, so that is recorded -- but nothing was earned.
+        s = state.SnapshotState.load(tmp_path / "state.json")
+        assert s.last_run("test-job", "INBOX") is not None
+        assert s.resume("test-job", "INBOX") is None
 
     def test_existing_archive_is_bootstrapped_on_first_run(self, tmp_path):
         """An archive filled by an earlier version is protected straight away."""

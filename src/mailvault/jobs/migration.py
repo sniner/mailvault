@@ -160,13 +160,24 @@ def _adopt_database_snapshots(
 
     Only ever fills an empty state file: one that already holds something is the
     newer truth and must not be overwritten by the database.
+
+    What is carried over is `last_run` and nothing else. Those timestamps were
+    written as resume points by a version that took them from the wall clock, and
+    adopting them as such would inherit exactly the gap they could hide. Kept as
+    a record of when the folder was last read, they cost nothing; as a resume
+    point they would cost mail. So every adopted folder is read in full once.
     """
     if not snapshot_state.is_empty():
         return 0
     adopted = 0
     for mailbox, folder, timestamp in db.all_snapshots():
         try:
-            snapshot_state.set_date(mailbox, folder, datetime.fromisoformat(timestamp))
+            snapshot_state.record(
+                mailbox,
+                folder,
+                last_run=datetime.fromisoformat(timestamp),
+                resume=None,
+            )
         except ValueError:
             log.warning(
                 "%s::%s: unparsable snapshot %r in the database, skipped",

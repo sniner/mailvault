@@ -25,17 +25,54 @@ from mailvault.store import cas, metalog, state
 log = logging.getLogger(__name__)
 
 
-def _record_snapshot(
-    snapshot_state: state.SnapshotState, job_name: str, folder: str, date: datetime
+# TRANSITIONAL -- goes when the backends hand back their own resume points (a
+# UID watermark for IMAP, a delta link for Graph). Until then the date-based
+# mechanism is carried inside a token of its own, so the state file already has
+# its final shape while the behaviour stays exactly what it was. This kind must
+# not survive the branch: a date is not a resume point, which is the whole reason
+# for the rebuild.
+_DATE_KIND = "date"
+
+
+def _resume_date(resume: dict | None) -> datetime | None:
+    """Read the transitional date token, or None for anything else."""
+    if resume is None or resume.get("kind") != _DATE_KIND:
+        return None
+    value = resume.get("date")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        log.warning("resume point holds an unparsable date %r, reading in full", value)
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.astimezone()
+
+
+def _date_token(date: datetime) -> dict:
+    """Wrap a date as the transitional resume token."""
+    return {"kind": _DATE_KIND, "date": date.isoformat()}
+
+
+def _record_pass(
+    snapshot_state: state.SnapshotState,
+    job_name: str,
+    folder: str,
+    last_run: datetime,
+    resume: dict | None,
 ) -> None:
-    """Advance the snapshot of one folder.
+    """Note that a pass read this folder, and where the next one may carry on.
+
+    `last_run` is written whatever the outcome -- it says the folder was read,
+    not that the read went well. `resume` is None unless this pass earned a new
+    one, and None leaves the previous point standing rather than clearing it.
 
     A state file that cannot be written is logged and otherwise tolerated. The
     folder is simply fetched again next time, which the content-addressed storage
     absorbs; aborting here would instead cost the remaining folders of the run for
     a failure that has no effect on the archived mail.
     """
-    snapshot_state.set_date(job_name, folder, date)
+    snapshot_state.record(job_name, folder, last_run=last_run, resume=resume)
     try:
         snapshot_state.save()
     except OSError as exc:
@@ -132,7 +169,7 @@ def _backup_folder(
     incremental: bool = True,
 ) -> None:
     """Back up one folder, recording where its messages were seen."""
-    current = snapshot_state.get_date(job.name, folder)
+    current = _resume_date(snapshot_state.resume(job.name, folder))
     start_date = current if incremental else None
     observed_at = datetime.now(UTC)
     log_writer = metalog.LogWriter(log_root)
@@ -143,10 +180,11 @@ def _backup_folder(
     # fact about the run and stays the wall clock. Where the *next* run resumes
     # is a claim about coverage, and that one is derived from the mail itself.
     sealed = _seal_log(log_writer, observed_at)
+    resume: dict | None = None
     if result.complete and sealed:
         resume_at = _resume_point(result, current, observed_at, full_pass=not incremental)
         if resume_at is not None:
-            _record_snapshot(snapshot_state, job.name, folder, resume_at)
+            resume = _date_token(resume_at)
         elif current is None:
             # No snapshot yet and nothing came back. Either the folder really is
             # empty, or the source is not serving its mail yet -- and the two are
@@ -175,6 +213,9 @@ def _backup_folder(
         # the snapshot back re-fetches the folder next run and writes the log
         # again, rather than advancing past locations that were never recorded.
         log.warning("%s::%s: metadata log not sealed, snapshot not advanced", job.name, folder)
+    # Written whatever the outcome: the folder *was* read, and that is all
+    # `last_run` claims. Only `resume` is held back when the pass fell short.
+    _record_pass(snapshot_state, job.name, folder, observed_at, resume)
     _purge_after_seal(mb, job, folder, result, sealed)
 
 
