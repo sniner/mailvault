@@ -36,10 +36,13 @@ Body.
 ARCHIVED_AT = datetime(2026, 2, 20, 11, 0, tzinfo=UTC)
 
 
-# TRANSITIONAL, alongside jobs.backup._DATE_KIND: until the backends hand back
-# their own resume points, the date mechanism lives inside a token. These two
-# helpers are where that shape is known in the tests, so replacing them is what
-# the IMAP and Graph steps have to do.
+# TRANSITIONAL, alongside base.DATE_KIND: until the backends hand back their own
+# resume points, the date mechanism lives inside a token. These three names are
+# where that shape is known in the tests, so replacing them is what the IMAP and
+# Graph steps have to do.
+ARCHIVED_TOKEN = {"kind": "date", "date": ARCHIVED_AT.isoformat()}
+
+
 def _resume_date(path, mailbox: str = "test-job", folder: str = "INBOX") -> datetime | None:
     """Read the resume date out of a state file, or None when there is none."""
     token = state.SnapshotState.load(path).resume(mailbox, folder)
@@ -47,7 +50,10 @@ def _resume_date(path, mailbox: str = "test-job", folder: str = "INBOX") -> date
 
 
 def _seed_resume(
-    path, date: datetime, mailbox: str = "test-job", folder: str = "INBOX"
+    path,
+    date: datetime,
+    mailbox: str = "test-job",
+    folder: str = "INBOX",
 ) -> None:
     """Put a folder's resume point into a state file, as a run would have."""
     s = state.SnapshotState(path)
@@ -140,7 +146,7 @@ class TestBackup:
         mock_client = _make_mock_client()
         mock_client.folder_backup.side_effect = [
             OSError("connection reset"),
-            base.BackupResult(total=1, stored=1, newest=ARCHIVED_AT),
+            base.BackupResult(total=1, stored=1, resume=ARCHIVED_TOKEN),
         ]
 
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
@@ -167,9 +173,10 @@ class TestBackup:
 
             jobs.backup(job, tmp_path, incremental=True)
 
-        call_kwargs = mock_client.folder_backup.call_args
-        since = call_kwargs.kwargs.get("since") or call_kwargs[1].get("since")
-        assert since == snapshot_date
+        assert mock_client.folder_backup.call_args.kwargs.get("resume") == {
+            "kind": "date",
+            "date": snapshot_date.isoformat(),
+        }
 
     def test_backup_non_incremental_ignores_snapshot(self, tmp_path):
         job = _make_job(folders=["INBOX"])
@@ -182,15 +189,13 @@ class TestBackup:
 
             jobs.backup(job, tmp_path, incremental=False)
 
-        call_kwargs = mock_client.folder_backup.call_args
-        since = call_kwargs.kwargs.get("since") or call_kwargs[1].get("since")
-        assert since is None
+        assert mock_client.folder_backup.call_args.kwargs.get("resume") is None
 
     def test_backup_db_stores_metadata(self, tmp_path):
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
 
-        def fake_folder_backup(folder_name, store, since=None, callback=None):
+        def fake_folder_backup(folder_name, store, resume=None, callback=None):
             if callback:
                 callback(
                     mailutils.MessageMetadata(
@@ -219,7 +224,7 @@ class TestBackup:
         mock_client.folder_backup.return_value = base.BackupResult(
             total=3,
             stored=3,
-            newest=ARCHIVED_AT,
+            resume=ARCHIVED_TOKEN,
         )
 
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
@@ -253,24 +258,21 @@ class TestBackup:
 
 
 class TestResumePoint:
-    """The snapshot follows the mail that was archived, never the wall clock.
+    """What the job runner decides about the resume point, which is not much.
 
-    A source can report an empty folder without reporting an error -- Proton
-    Bridge does exactly that between starting up and finishing its first sync,
-    and an IMAP proxy with a cold cache behaves the same way. Taking the clock
-    as the snapshot would answer that silence with "everything up to now is
-    archived", and every message already in the mailbox would then sit before
-    the next date filter: never fetched, never reported missing.
+    The point itself is the backend's to make and to read; nothing here looks
+    inside it. What the runner owns is *whether* a new one is taken at all --
+    and the answer is no whenever the pass fell short of its own claim.
     """
 
     @staticmethod
-    def _run(job, mock_client, tmp_path) -> None:
+    def _run(job, mock_client, tmp_path, incremental: bool = True) -> None:
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
-            jobs.backup(job, tmp_path)
+            jobs.backup(job, tmp_path, incremental=incremental)
 
-    def test_a_source_with_nothing_to_offer_does_not_start_a_snapshot(self, tmp_path):
+    def test_a_source_with_nothing_to_offer_starts_no_resume_point(self, tmp_path):
         """The Proton Bridge case: no error, no mail, and no claim of coverage."""
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
@@ -278,123 +280,84 @@ class TestResumePoint:
 
         self._run(job, mock_client, tmp_path)
 
-        assert _resume_date(tmp_path / "state.json") is None
+        s = state.SnapshotState.load(tmp_path / "state.json")
+        assert s.resume("test-job", "INBOX") is None
+        # The visit is still on record -- it just earned nothing.
+        assert s.last_run("test-job", "INBOX") is not None
 
     def test_the_next_run_then_reads_the_folder_in_full(self, tmp_path):
-        """What the held-back snapshot is for: the mail is still reachable."""
+        """What the withheld point is for: the mail is still reachable."""
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult(total=0, stored=0)
         self._run(job, mock_client, tmp_path)
 
-        # The bridge has finished syncing by now and the mailbox is there.
         mock_client.folder_backup.reset_mock()
+        self._run(job, mock_client, tmp_path)
+
+        assert mock_client.folder_backup.call_args.kwargs.get("resume") is None
+
+    def test_the_backend_point_is_stored_and_handed_back_verbatim(self, tmp_path):
+        """The runner is a courier, not a reader."""
+        job = _make_job(folders=["INBOX"])
+        mock_client = _make_mock_client()
+        token = {"kind": "imap-uid", "uidvalidity": 1239278212, "uid": 48127}
         mock_client.folder_backup.return_value = base.BackupResult(
-            total=2,
+            total=1,
+            stored=1,
+            resume=token,
+        )
+
+        self._run(job, mock_client, tmp_path)
+        assert (
+            state.SnapshotState.load(tmp_path / "state.json").resume("test-job", "INBOX")
+            == token
+        )
+
+        mock_client.folder_backup.reset_mock()
+        self._run(job, mock_client, tmp_path)
+        assert mock_client.folder_backup.call_args.kwargs.get("resume") == token
+
+    def test_full_withholds_the_stored_point(self, tmp_path):
+        """`--full` is what makes a pass authoritative: the backend gets nothing."""
+        job = _make_job(folders=["INBOX"])
+        mock_client = _make_mock_client()
+        _seed_resume(tmp_path / "state.json", datetime(2026, 7, 1, tzinfo=UTC))
+        mock_client.folder_backup.return_value = base.BackupResult(
+            total=1,
+            stored=1,
+            resume=ARCHIVED_TOKEN,
+        )
+
+        self._run(job, mock_client, tmp_path, incremental=False)
+
+        assert mock_client.folder_backup.call_args.kwargs.get("resume") is None
+        assert _resume_date(tmp_path / "state.json") == ARCHIVED_AT
+
+    def test_a_pass_that_earned_nothing_clears_nothing(self, tmp_path):
+        """Nothing new is not the same as nothing there: the old point stands."""
+        job = _make_job(folders=["INBOX"])
+        mock_client = _make_mock_client()
+        current = datetime(2026, 3, 1, tzinfo=UTC)
+        _seed_resume(tmp_path / "state.json", current)
+        mock_client.folder_backup.return_value = base.BackupResult(total=0, stored=0)
+
+        self._run(job, mock_client, tmp_path)
+
+        assert _resume_date(tmp_path / "state.json") == current
+
+    def test_a_failed_pass_discards_the_point_the_backend_offered(self, tmp_path):
+        """Taking it would push the failed messages out of every future pass."""
+        job = _make_job(folders=["INBOX"])
+        mock_client = _make_mock_client()
+        current = datetime(2026, 3, 1, tzinfo=UTC)
+        _seed_resume(tmp_path / "state.json", current)
+        mock_client.folder_backup.return_value = base.BackupResult(
+            total=3,
             stored=2,
-            newest=ARCHIVED_AT,
+            failed=1,
+            resume=ARCHIVED_TOKEN,
         )
-        self._run(job, mock_client, tmp_path)
-
-        assert mock_client.folder_backup.call_args.kwargs.get("since") is None
-
-    def test_the_snapshot_is_the_newest_message_not_the_clock(self, tmp_path):
-        """A source lagging behind must not be credited with the time it lags."""
-        job = _make_job(folders=["INBOX"])
-        mock_client = _make_mock_client()
-        mock_client.folder_backup.return_value = base.BackupResult(
-            total=1,
-            stored=1,
-            newest=ARCHIVED_AT,
-        )
-
-        self._run(job, mock_client, tmp_path)
-
-        assert _resume_date(tmp_path / "state.json") == ARCHIVED_AT
-
-    def test_a_message_dated_in_the_future_cannot_carry_the_snapshot_past_now(
-        self,
-        tmp_path,
-    ):
-        """Someone else's broken clock must not skip our next window."""
-        job = _make_job(folders=["INBOX"])
-        mock_client = _make_mock_client()
-        far_future = datetime(2099, 1, 1, tzinfo=UTC)
-        mock_client.folder_backup.return_value = base.BackupResult(
-            total=1,
-            stored=1,
-            newest=far_future,
-        )
-
-        self._run(job, mock_client, tmp_path)
-
-        recorded = _resume_date(tmp_path / "state.json")
-        assert recorded is not None
-        assert recorded < far_future
-
-    def test_the_snapshot_never_moves_backwards(self, tmp_path):
-        """The search window reaches back a day, so an older find is normal."""
-        job = _make_job(folders=["INBOX"])
-        mock_client = _make_mock_client()
-        current = datetime(2026, 3, 1, tzinfo=UTC)
-        _seed_resume(tmp_path / "state.json", current, folder="INBOX")
-        mock_client.folder_backup.return_value = base.BackupResult(
-            total=1,
-            stored=1,
-            newest=datetime(2026, 2, 28, tzinfo=UTC),
-        )
-
-        self._run(job, mock_client, tmp_path)
-
-        assert _resume_date(tmp_path / "state.json") == current
-
-    def test_a_full_pass_may_move_the_snapshot_backwards(self, tmp_path):
-        """Read without a date filter, the mail found *is* the coverage.
-
-        This is what repairs a snapshot that was set too far ahead: the pass saw
-        everything the source was willing to show, so the point is set to
-        exactly that. Trusting a source that holds less than it should errs the
-        harmless way here -- the next window comes out too wide.
-        """
-        job = _make_job(folders=["INBOX"])
-        mock_client = _make_mock_client()
-        ahead = datetime(2026, 7, 1, tzinfo=UTC)
-        _seed_resume(tmp_path / "state.json", ahead, folder="INBOX")
-        mock_client.folder_backup.return_value = base.BackupResult(
-            total=1,
-            stored=1,
-            newest=ARCHIVED_AT,
-        )
-
-        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
-            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
-            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
-            jobs.backup(job, tmp_path, incremental=False)
-
-        assert _resume_date(tmp_path / "state.json") == ARCHIVED_AT
-
-    def test_a_full_pass_that_finds_nothing_clears_nothing(self, tmp_path):
-        """There is no value to set it to, so the existing one stands."""
-        job = _make_job(folders=["INBOX"])
-        mock_client = _make_mock_client()
-        current = datetime(2026, 3, 1, tzinfo=UTC)
-        _seed_resume(tmp_path / "state.json", current, folder="INBOX")
-        mock_client.folder_backup.return_value = base.BackupResult(total=0, stored=0)
-
-        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
-            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
-            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
-            jobs.backup(job, tmp_path, incremental=False)
-
-        assert _resume_date(tmp_path / "state.json") == current
-
-    def test_a_quiet_folder_keeps_its_snapshot(self, tmp_path):
-        """Nothing new is not the same as nothing there: the snapshot stands."""
-        job = _make_job(folders=["INBOX"])
-        mock_client = _make_mock_client()
-        current = datetime(2026, 3, 1, tzinfo=UTC)
-        _seed_resume(tmp_path / "state.json", current, folder="INBOX")
-        mock_client.folder_backup.return_value = base.BackupResult(total=0, stored=0)
 
         self._run(job, mock_client, tmp_path)
 
@@ -417,9 +380,8 @@ class TestSnapshotStateFile:
             jobs.backup(job, tmp_path)
 
     @staticmethod
-    def _since(mock_client):
-        call_kwargs = mock_client.folder_backup.call_args
-        return call_kwargs.kwargs.get("since") or call_kwargs[1].get("since")
+    def _resume(mock_client):
+        return mock_client.folder_backup.call_args.kwargs.get("resume")
 
     def test_state_file_written_on_clean_run(self, tmp_path):
         job = _make_job(folders=["INBOX"])
@@ -427,7 +389,7 @@ class TestSnapshotStateFile:
         mock_client.folder_backup.return_value = base.BackupResult(
             total=3,
             stored=3,
-            newest=ARCHIVED_AT,
+            resume=ARCHIVED_TOKEN,
         )
 
         self._run(job, mock_client, tmp_path)
@@ -457,7 +419,7 @@ class TestSnapshotStateFile:
 
         self._run(job, mock_client, tmp_path)
 
-        assert self._since(mock_client) == current
+        assert self._resume(mock_client) == {"kind": "date", "date": current.isoformat()}
 
     def test_a_database_snapshot_is_kept_as_a_record_not_as_a_resume_point(self, tmp_path):
         """A legacy timestamp came from the wall clock, so it says when, not how far.
@@ -475,7 +437,7 @@ class TestSnapshotStateFile:
 
         self._run(job, mock_client, tmp_path)
 
-        assert self._since(mock_client) is None
+        assert self._resume(mock_client) is None
         adopted = state.SnapshotState.load(tmp_path / "state.json")
         assert adopted.resume("test-job", "INBOX") is None
         # The run has read the folder by now, so its own timestamp is the one
@@ -491,7 +453,7 @@ class TestSnapshotStateFile:
         mock_client.folder_backup.return_value = base.BackupResult(
             total=1,
             stored=1,
-            newest=ARCHIVED_AT,
+            resume=ARCHIVED_TOKEN,
         )
 
         untouched = datetime(2026, 2, 1, tzinfo=UTC)
@@ -533,7 +495,7 @@ class TestSnapshotStateFile:
         mock_client.folder_backup.return_value = base.BackupResult(
             total=1,
             stored=1,
-            newest=ARCHIVED_AT,
+            resume=ARCHIVED_TOKEN,
         )
 
         with patch.object(state.SnapshotState, "save", side_effect=OSError("read-only")):
@@ -550,7 +512,7 @@ class TestSnapshotStateFile:
 def _fake_folder_backup(*store_ids: str, failed: int = 0):
     """Build a folder_backup stand-in that reports the given messages."""
 
-    def run(folder_name, store, since=None, callback=None):
+    def run(folder_name, store, resume=None, callback=None):
         for store_id in store_ids:
             if callback:
                 callback(
@@ -645,7 +607,7 @@ class TestDeleteAfterExport:
         """A folder_backup stand-in that records the messages and reports which
         server ids may be deleted once the log is sealed."""
 
-        def run(folder_name, store, since=None, callback=None):
+        def run(folder_name, store, resume=None, callback=None):
             for sid in store_ids:
                 if callback:
                     callback(
@@ -1353,7 +1315,7 @@ class TestRefreshDb:
 def _storing_backup(eml: bytes):
     """A folder_backup stand-in that stores an eml and logs it, like a real run."""
 
-    def run(folder_name, store, since=None, callback=None):
+    def run(folder_name, store, resume=None, callback=None):
         _status, store_id, _path = store.add(eml)
         if callback:
             callback(

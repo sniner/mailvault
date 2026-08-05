@@ -17,7 +17,7 @@ import re
 import ssl
 import sys
 import threading
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import imapclient
@@ -341,7 +341,7 @@ class ImapClient:
         self,
         folder_name: str,
         store: cas.ContentAddressedStorage,
-        since: datetime | None = None,
+        resume: dict | None = None,
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> BackupResult:
         """Store a folder's messages read-only, recording each via `callback`.
@@ -351,10 +351,15 @@ class ImapClient:
         after the metadata log is sealed.
         """
         result = BackupResult()
+        tracker = base.DateResumeTracker(resume, datetime.now(UTC))
         # Collected during the read-only pass and relocated once it is over --
-        # a skip is not a failure, so the snapshot may still advance either way.
+        # a skip is not a failure, so the resume point may still advance either way.
         non_journal: list[int] = []
-        for msg_id, msg, msg_date in self._iter_folder(folder_name, since, result=result):
+        for msg_id, msg, msg_date in self._iter_folder(
+            folder_name,
+            tracker.since,
+            result=result,
+        ):
             if self.exchange_journal:
                 msg = mailutils.unwrap_exchange_journal_item(msg)
                 if msg is None:
@@ -382,7 +387,7 @@ class ImapClient:
             # INTERNALDATE, the same clock the SINCE search filters on, so the
             # point the next run resumes from is expressed in the terms the
             # server itself will be asked in.
-            result.saw(msg_date)
+            tracker.saw(msg_date)
             # Not deleted here: a message is removed from the server only after
             # the folder's log is sealed. A non-journal item skipped above never
             # reaches this point, so it can never be deleted unarchived.
@@ -392,6 +397,7 @@ class ImapClient:
             self._relocate(folder_name, non_journal, self.error_folder)
         if self.gmail and self.trash_folder:
             self._clear_folder(self.trash_folder)
+        result.resume = tracker.token()
         return result
 
     def purge(self, folder_name: str, msg_ids: collections.abc.Sequence[int]) -> None:

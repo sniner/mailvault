@@ -38,15 +38,14 @@ class BackupResult:
     advance the incremental snapshot — otherwise those messages would fall
     outside the date filter of every future run and stay lost for good.
 
-    `newest` is the server-side timestamp of the newest message this pass
-    actually stored, and it is the only evidence there is for how far the
-    archive has caught up. The caller resumes from it rather than from the wall
-    clock, because "it is now 12:00" says nothing about what the source was
-    willing to show: a mailbox that is still starting up -- Proton Bridge before
-    its first sync, an IMAP proxy with a cold cache -- reports an empty folder
-    without reporting an error, and a snapshot taken from the clock would then
-    claim coverage of mail that was never offered. It stays None when nothing
-    was stored, which is what keeps the snapshot where it is.
+    `resume` is where the next pass over this folder may carry on, in whatever
+    shape the backend that produced it uses. It is built from what this pass
+    actually archived, never from the clock: "it is now 12:00" says nothing
+    about what the source was willing to show, and a mailbox that is still
+    starting up -- Proton Bridge before its first sync, an IMAP proxy with a
+    cold cache -- reports an empty folder without reporting an error. It stays
+    None when the pass earned no new point, and the caller then leaves the
+    previous one standing.
 
     `deletable` lists the backend message ids that were stored successfully and
     may be removed from the server -- but only once the metadata log for this
@@ -60,7 +59,7 @@ class BackupResult:
     total: int = 0
     stored: int = 0
     failed: int = 0
-    newest: datetime | None = None
+    resume: dict | None = None
     deletable: list[Any] = dataclasses.field(default_factory=list)
 
     @property
@@ -68,12 +67,49 @@ class BackupResult:
         """True if every message seen on the server was accounted for."""
         return self.failed == 0
 
+
+# TRANSITIONAL -- the date mechanism of 0.9.2, carried as a resume token so the
+# protocol can change ahead of the backends. Both backends still resume from a
+# date; IMAP moves to a UID watermark and Graph to a delta link, and this goes
+# with the second of those. It must not survive the branch: a date is not a
+# resume point, which is the whole reason for the rebuild.
+DATE_KIND = "date"
+
+
+class DateResumeTracker:
+    """Turns the date mechanism into a resume token, both ways.
+
+    Decodes the incoming token into the `since` a backend still filters by,
+    collects the timestamps of the messages that were archived, and hands back
+    the token for next time -- or None when this pass earned none.
+
+    The two guards that belong to a date live here rather than in the job
+    runner, because they are properties of dates and vanish with them:
+
+    - never past the moment the folder was read, so a message dated in the
+      future cannot carry the point over whatever arrives in between
+    - never backwards, because the search window reaches a day behind the point
+      and a pass may legitimately end on an older message than the one it came
+      from. A pass given no previous point has nothing to move back from, so a
+      full read is authoritative for free -- which is what repairs a point that
+      an earlier version set too far ahead.
+    """
+
+    def __init__(self, previous: dict | None, observed_at: datetime):
+        self.previous = _date_from_token(previous)
+        self.observed_at = observed_at
+        self.newest: datetime | None = None
+
+    @property
+    def since(self) -> datetime | None:
+        """The date filter this pass should use, or None to read in full."""
+        return self.previous
+
     def saw(self, date: datetime | None) -> None:
         """Note the timestamp of a stored message, keeping the newest one.
 
-        Call it only for messages that were actually archived: the value becomes
-        the point the next run resumes from, so a message that failed must not
-        contribute its date and let the next date filter skip past it.
+        Call it only for messages that were actually archived: a message that
+        failed must not contribute its date and let the next filter skip past it.
 
         A naive value is read as local time. That is what the IMAP backend hands
         over -- imapclient normalises INTERNALDATE to local time and drops the
@@ -86,6 +122,30 @@ class BackupResult:
             date = date.astimezone()
         if self.newest is None or date > self.newest:
             self.newest = date
+
+    def token(self) -> dict | None:
+        """The resume point this pass earned, or None if it earned none."""
+        if self.newest is None:
+            return None
+        candidate = min(self.newest, self.observed_at)
+        if self.previous is not None and candidate <= self.previous:
+            return None
+        return {"kind": DATE_KIND, "date": candidate.isoformat()}
+
+
+def _date_from_token(resume: dict | None) -> datetime | None:
+    """Read the transitional date token, or None for anything else."""
+    if resume is None or resume.get("kind") != DATE_KIND:
+        return None
+    value = resume.get("date")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        log.warning("resume point holds an unparsable date %r, reading in full", value)
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.astimezone()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -116,10 +176,20 @@ class MailboxClient(Protocol):
         self,
         folder_name: str,
         store: cas.ContentAddressedStorage,
-        since: datetime | None = ...,
+        resume: dict | None = ...,
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = ...,
     ) -> BackupResult:
         """Store a folder's messages, recording each via `callback`.
+
+        `resume` is a point this backend produced on an earlier pass. What it
+        contains is the backend's own business -- the caller only stores it and
+        hands it back. A backend that does not recognise it, or finds it no
+        longer valid, reads the folder in full and says so; that one rule covers
+        an upgrade from an older format, a job whose backend was swapped, and a
+        source that invalidated its own token.
+
+        Returns the point for next time in `BackupResult.resume`, built from what
+        was actually archived, or None when the pass earned none.
 
         Deletes nothing; the ids of stored messages go into
         `BackupResult.deletable` for the caller to `purge` after the log is sealed.

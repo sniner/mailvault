@@ -180,7 +180,10 @@ class SnapshotState:
 
     @staticmethod
     def _folder_state(
-        path: pathlib.Path, mailbox: str, folder: str, value: object
+        path: pathlib.Path,
+        mailbox: str,
+        folder: str,
+        value: object,
     ) -> FolderState | None:
         """Decode one folder's entry, in either the version 1 or version 2 shape.
 
@@ -296,6 +299,7 @@ def _is_usable_resume(value: object) -> bool:
     only mean this module having to be changed every time a backend learns
     something. What is checked is what this module actually relies on.
     """
-    return (
-        isinstance(value, dict) and isinstance(value.get("kind"), str) and bool(value["kind"])
-    )
+    if not isinstance(value, dict):
+        return False
+    kind = value.get("kind")
+    return isinstance(kind, str) and bool(kind)

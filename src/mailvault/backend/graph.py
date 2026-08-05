@@ -365,7 +365,7 @@ class MSGraphClient:
         self,
         folder_name: str,
         store: cas.ContentAddressedStorage,
-        since: datetime | None = None,
+        resume: dict | None = None,
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> base.BackupResult:
         """Store a folder's messages, recording each via `callback`.
@@ -374,8 +374,9 @@ class MSGraphClient:
         collected in `BackupResult.deletable`, and the caller purges them only
         after the metadata log is sealed.
         """
+        tracker = base.DateResumeTracker(resume, datetime.now(UTC))
         folder_id = self._resolve_folder(folder_name)
-        messages = list(self._iter_messages(folder_name, folder_id, since))
+        messages = list(self._iter_messages(folder_name, folder_id, tracker.since))
         log.info("%s::%s: found %s messages", self.job_name, folder_name, len(messages))
 
         result = base.BackupResult(total=len(messages))
@@ -422,7 +423,7 @@ class MSGraphClient:
             # `receivedDateTime`, the same field the `$filter` of an incremental
             # pass compares against, so the resume point speaks the server's
             # own terms.
-            result.saw(_parse_graph_datetime(msg_info.get("receivedDateTime")))
+            tracker.saw(_parse_graph_datetime(msg_info.get("receivedDateTime")))
 
             if result.stored % 100 == 0:
                 log.info(
@@ -442,6 +443,7 @@ class MSGraphClient:
         if self.error_folder:
             self._relocate(folder_name, non_journal, self.error_folder)
 
+        result.resume = tracker.token()
         return result
 
     def _relocate(self, folder_name: str, msg_ids: list[str], dest_folder: str) -> None:
