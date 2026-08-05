@@ -511,7 +511,8 @@ class MSGraphClient:
         return _make_delta_token(delta_link) if delta_link else None
 
     def message_index(
-        self, folder_name: str
+        self,
+        folder_name: str,
     ) -> collections.abc.Generator[base.MessageRef, None, None]:
         """List the folder's messages by Message-ID only, without fetching bodies."""
         folder_id = self._resolve_folder(folder_name)
@@ -593,7 +594,9 @@ class MSGraphClient:
                 log_ctx=log_ctx,
                 callback=callback,
                 metadata_fn=lambda sid: mailutils.metadata(
-                    mailbox=self.job_name, folder=folder_name, store_id=sid
+                    mailbox=self.job_name,
+                    folder=folder_name,
+                    store_id=sid,
                 ),
             )
             if store_id is None:

@@ -133,7 +133,8 @@ class MailboxClient(Protocol):
         ...
 
     def message_index(
-        self, folder_name: str
+        self,
+        folder_name: str,
     ) -> collections.abc.Generator[MessageRef, None, None]: ...
 
     def resume_point(self, folder_name: str) -> dict | None:

@@ -36,7 +36,8 @@ def _mail_reader(msg: io.IOBase | bytes) -> io.IOBase:
 
 
 def decode_email(
-    msg: io.IOBase | bytes, headersonly: bool = False
+    msg: io.IOBase | bytes,
+    headersonly: bool = False,
 ) -> email.message.EmailMessage:
     reader = _mail_reader(msg)
     return email.parser.BytesParser(policy=email.policy.default).parse(
@@ -95,7 +96,9 @@ def addresses(msg: email.message.EmailMessage) -> tuple[set[str], set[str]]:
     def received_for() -> collections.abc.Generator[str, None, None]:
         for field in msg.get_all("Received", []):
             m = re.search(
-                r"\bfor\s+\<?([\w\-\.]+@[\w\-\.]+\w)\>?\b", field, flags=re.IGNORECASE
+                r"\bfor\s+\<?([\w\-\.]+@[\w\-\.]+\w)\>?\b",
+                field,
+                flags=re.IGNORECASE,
             )
             if m:
                 yield m[1].lower()

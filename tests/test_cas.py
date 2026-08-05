@@ -211,7 +211,9 @@ def test_cas_read_uncompressed(tmp_path):
 def test_cas_mixed_find_existing(tmp_path):
     """Adding uncompressed, then trying to add compressed -> EXISTS."""
     store_plain = cas.ContentAddressedStorage(
-        root_dir=tmp_path / "cas", suffix=".eml", compress=False
+        root_dir=tmp_path / "cas",
+        suffix=".eml",
+        compress=False,
     )
     data = b"mixed mode test"
     status1, hash1, path1 = store_plain.add(data)
@@ -220,7 +222,9 @@ def test_cas_mixed_find_existing(tmp_path):
 
     # Same data, compressed store -> should find existing uncompressed file
     store_zst = cas.ContentAddressedStorage(
-        root_dir=tmp_path / "cas", suffix=".eml", compress=True
+        root_dir=tmp_path / "cas",
+        suffix=".eml",
+        compress=True,
     )
     status2, hash2, path2 = store_zst.add(data)
     assert status2 == "EXISTS"
@@ -231,13 +235,17 @@ def test_cas_mixed_find_existing(tmp_path):
 def test_cas_locate_finds_compressed_from_plain(tmp_path):
     """A plain-mode store can locate a compressed file."""
     store_zst = cas.ContentAddressedStorage(
-        root_dir=tmp_path / "cas", suffix=".eml", compress=True
+        root_dir=tmp_path / "cas",
+        suffix=".eml",
+        compress=True,
     )
     data = b"cross locate"
     _, hashval, _ = store_zst.add(data)
 
     store_plain = cas.ContentAddressedStorage(
-        root_dir=tmp_path / "cas", suffix=".eml", compress=False
+        root_dir=tmp_path / "cas",
+        suffix=".eml",
+        compress=False,
     )
     found = store_plain.locate(hashval, exists=True)
     assert found is not None
@@ -247,12 +255,16 @@ def test_cas_locate_finds_compressed_from_plain(tmp_path):
 def test_cas_walk_mixed(tmp_path):
     """Walk finds both compressed and uncompressed files."""
     store_plain = cas.ContentAddressedStorage(
-        root_dir=tmp_path / "cas", suffix=".eml", compress=False
+        root_dir=tmp_path / "cas",
+        suffix=".eml",
+        compress=False,
     )
     store_plain.add(b"plain file")
 
     store_zst = cas.ContentAddressedStorage(
-        root_dir=tmp_path / "cas", suffix=".eml", compress=True
+        root_dir=tmp_path / "cas",
+        suffix=".eml",
+        compress=True,
     )
     store_zst.add(b"compressed file")
 
@@ -297,7 +309,9 @@ def test_cas_compress_all_mixed(tmp_path):
     store_plain.add(b"plain file")
 
     store_zst = cas.ContentAddressedStorage(
-        root_dir=tmp_path / "cas", suffix=".eml", compress=True
+        root_dir=tmp_path / "cas",
+        suffix=".eml",
+        compress=True,
     )
     store_zst.add(b"compressed file")
 

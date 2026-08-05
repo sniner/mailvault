@@ -105,7 +105,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Back up mails to the local content-addressed archive.",
     )
     p_backup.add_argument(
-        "--compress", action="store_true", help="Compress stored emails with zstd"
+        "--compress",
+        action="store_true",
+        help="Compress stored emails with zstd",
     )
     p_backup.add_argument(
         "--index-db",
@@ -130,10 +132,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="Compare mailboxes against their archives and report missing messages.",
     )
     p_verify.add_argument(
-        "--repair", action="store_true", help="Download and store the missing emails"
+        "--repair",
+        action="store_true",
+        help="Download and store the missing emails",
     )
     p_verify.add_argument(
-        "--compress", action="store_true", help="Compress stored emails with zstd"
+        "--compress",
+        action="store_true",
+        help="Compress stored emails with zstd",
     )
     p_verify.add_argument(
         "destination",
@@ -148,7 +154,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Manage and maintain the local email archive.",
     )
     asub = p_archive.add_subparsers(
-        dest="archive_command", metavar="<subcommand>", required=True
+        dest="archive_command",
+        metavar="<subcommand>",
+        required=True,
     )
 
     a_stats = asub.add_parser(
@@ -157,7 +165,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Show statistics of the email archive.",
     )
     a_stats.add_argument(
-        "--docuware", action="store_true", help="Archive is a Docuware archive"
+        "--docuware",
+        action="store_true",
+        help="Archive is a Docuware archive",
     )
     a_stats.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
@@ -167,13 +177,19 @@ def build_parser() -> argparse.ArgumentParser:
         description="Import emails from a source archive into the destination archive.",
     )
     a_import.add_argument(
-        "--docuware", action="store_true", help="Source archive is a Docuware email archive"
+        "--docuware",
+        action="store_true",
+        help="Source archive is a Docuware email archive",
     )
     a_import.add_argument(
-        "--move", action="store_true", help="Remove emails from the source after import"
+        "--move",
+        action="store_true",
+        help="Remove emails from the source after import",
     )
     a_import.add_argument(
-        "--compress", action="store_true", help="Compress stored emails with zstd"
+        "--compress",
+        action="store_true",
+        help="Compress stored emails with zstd",
     )
     a_import.add_argument("source", type=pathlib.Path, help="Directory to copy/move mails from")
     a_import.add_argument("destination", type=pathlib.Path, help="Archive directory")
@@ -184,7 +200,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Show mail addresses of all emails in the archive.",
     )
     a_addr.add_argument(
-        "--docuware", action="store_true", help="Directory is a Docuware archive"
+        "--docuware",
+        action="store_true",
+        help="Directory is a Docuware archive",
     )
     a_addr.add_argument("source", type=pathlib.Path, help="Archive directory")
 
@@ -213,10 +231,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     a_create.add_argument(
-        "--mailbox", type=str, help="Mailbox identifier for messages the log does not place"
+        "--mailbox",
+        type=str,
+        help="Mailbox identifier for messages the log does not place",
     )
     a_create.add_argument(
-        "--force", action="store_true", help="Replace the database file if it already exists"
+        "--force",
+        action="store_true",
+        help="Replace the database file if it already exists",
     )
     a_create.add_argument("source", type=pathlib.Path, help="Email archive directory")
     a_create.add_argument("database", type=pathlib.Path, help="Database file to write")

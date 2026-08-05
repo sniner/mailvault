@@ -84,12 +84,15 @@ def _mark_logs_applied(db: metadb.MetaDatabaseConnection, paths: list[pathlib.Pa
     with db.transaction():
         for path in paths:
             db.execute(
-                "INSERT OR IGNORE INTO applied_log (hash) VALUES (?)", (_log_hash(path),)
+                "INSERT OR IGNORE INTO applied_log (hash) VALUES (?)",
+                (_log_hash(path),),
             )
 
 
 def _insert_message_from_path(
-    db: metadb.MetaDatabaseConnection, store: cas.ContentAddressedStorage, path: pathlib.Path
+    db: metadb.MetaDatabaseConnection,
+    store: cas.ContentAddressedStorage,
+    path: pathlib.Path,
 ) -> int:
     """Read one archived message's headers and insert its row, returning its id.
 
@@ -292,12 +295,15 @@ def _apply_new_logs(
                     db.add_message_labels(msg_id, logfile.folder)
                 result.applied += 1
             db.execute(
-                "INSERT OR IGNORE INTO applied_log (hash) VALUES (?)", (_log_hash(path),)
+                "INSERT OR IGNORE INTO applied_log (hash) VALUES (?)",
+                (_log_hash(path),),
             )
 
 
 def _insert_message(
-    db: metadb.MetaDatabaseConnection, store: cas.ContentAddressedStorage, store_id: str
+    db: metadb.MetaDatabaseConnection,
+    store: cas.ContentAddressedStorage,
+    store_id: str,
 ) -> int | None:
     """Insert the row for one archived message, or None when its blob is gone."""
     path = store.locate(store_id, exists=True)

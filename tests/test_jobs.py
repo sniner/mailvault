@@ -699,7 +699,9 @@ def _fake_folder_backup(*store_ids: str, failed: int = 0):
                     )
                 )
         return base.BackupResult(
-            total=len(store_ids) + failed, stored=len(store_ids), failed=failed
+            total=len(store_ids) + failed,
+            stored=len(store_ids),
+            failed=failed,
         )
 
     return run
@@ -794,7 +796,9 @@ class TestDeleteAfterExport:
                         )
                     )
             return base.BackupResult(
-                total=len(store_ids), stored=len(store_ids), deletable=list(deletable)
+                total=len(store_ids),
+                stored=len(store_ids),
+                deletable=list(deletable),
             )
 
         return run
@@ -810,7 +814,8 @@ class TestDeleteAfterExport:
         job = _make_job(folders=["INBOX"], delete_after_export=True)
         mock_client = _make_mock_client()
         mock_client.folder_backup.side_effect = self._backup_with_deletable(
-            "aaa", deletable=[1, 2]
+            "aaa",
+            deletable=[1, 2],
         )
 
         # Capture, at the moment purge runs, whether the log is already durable.
@@ -832,7 +837,8 @@ class TestDeleteAfterExport:
         job = _make_job(folders=["INBOX"], delete_after_export=True)
         mock_client = _make_mock_client()
         mock_client.folder_backup.side_effect = self._backup_with_deletable(
-            "aaa", deletable=[1, 2]
+            "aaa",
+            deletable=[1, 2],
         )
 
         def boom(self, date):
@@ -851,7 +857,8 @@ class TestDeleteAfterExport:
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.side_effect = self._backup_with_deletable(
-            "aaa", deletable=[1, 2]
+            "aaa",
+            deletable=[1, 2],
         )
 
         self._run(job, mock_client, tmp_path)
@@ -1119,7 +1126,8 @@ class TestRebuildWithLog:
 
     def test_replay_restores_a_message_held_in_several_mailboxes(self, tmp_path):
         store_id = self._archive_with_log(
-            tmp_path, [("mail.example.org", ["INBOX"]), ("other.example.org", ["INBOX"])]
+            tmp_path,
+            [("mail.example.org", ["INBOX"]), ("other.example.org", ["INBOX"])],
         )
 
         jobs.create_db(tmp_path, tmp_path / "out.db")
@@ -1306,7 +1314,8 @@ class TestVerify:
         _archive_message(tmp_path, "test-job", "INBOX", _eml("<Mixed@Example.COM>"))
 
         client = _verify_client(
-            [base.MessageRef(msg_id="id-a", message_id="mixed@example.com")], {}
+            [base.MessageRef(msg_id="id-a", message_id="mixed@example.com")],
+            {},
         )
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
@@ -1339,7 +1348,9 @@ class TestVerify:
         old_snapshot = datetime(2026, 2, 1, tzinfo=UTC)
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
             db.set_snapshot(
-                db.add_mailbox("test-job"), db.add_label("INBOX"), date=old_snapshot
+                db.add_mailbox("test-job"),
+                db.add_label("INBOX"),
+                date=old_snapshot,
             )
 
         client = _verify_client([], {})

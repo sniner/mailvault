@@ -93,7 +93,8 @@ class TestParseDatetime:
 class TestRequestRetry:
     def test_gateway_timeout_is_retried(self, monkeypatch):
         h = _make_client(
-            monkeypatch, [httpx.Response(504), httpx.Response(200, json={"ok": True})]
+            monkeypatch,
+            [httpx.Response(504), httpx.Response(200, json={"ok": True})],
         )
         resp = h.client._request("GET", "https://example.invalid/msg")
         assert resp.status_code == 200
@@ -277,10 +278,12 @@ class TestDeltaRound:
             monkeypatch,
             [
                 _json(
-                    200, {"value": [{"id": "a"}], "@odata.nextLink": "https://graph.test/p2"}
+                    200,
+                    {"value": [{"id": "a"}], "@odata.nextLink": "https://graph.test/p2"},
                 ),
                 _json(
-                    200, {"value": [{"id": "b"}], "@odata.deltaLink": "https://graph.test/d"}
+                    200,
+                    {"value": [{"id": "b"}], "@odata.deltaLink": "https://graph.test/d"},
                 ),
             ],
         )
@@ -323,7 +326,9 @@ class TestDeltaRound:
 
         with caplog.at_level(logging.INFO), pytest.raises(graph._DeltaExpired):
             harness.client._delta_round(
-                "INBOX", "folder-id", ("https://graph.test/stale", issued)
+                "INBOX",
+                "folder-id",
+                ("https://graph.test/stale", issued),
             )
 
         assert "delta token rejected (HTTP 410)" in caplog.text
@@ -353,12 +358,15 @@ class TestDeltaRound:
         """Graph documents expiry as "a 40X-series error with codes such as
         syncStateNotFound", not only as 410."""
         harness = self._client(
-            monkeypatch, [_json(404, {"error": {"code": "syncStateNotFound"}})]
+            monkeypatch,
+            [_json(404, {"error": {"code": "syncStateNotFound"}})],
         )
 
         with caplog.at_level(logging.INFO), pytest.raises(graph._DeltaExpired):
             harness.client._delta_round(
-                "INBOX", "folder-id", ("https://graph.test/stale", None)
+                "INBOX",
+                "folder-id",
+                ("https://graph.test/stale", None),
             )
 
         assert "HTTP 404" in caplog.text
@@ -366,12 +374,15 @@ class TestDeltaRound:
     def test_a_refused_request_is_not_mistaken_for_an_expired_token(self, monkeypatch):
         """403 is about credentials; swallowing it would hide a broken job."""
         harness = self._client(
-            monkeypatch, [_json(403, {"error": {"code": "ErrorAccessDenied"}})]
+            monkeypatch,
+            [_json(403, {"error": {"code": "ErrorAccessDenied"}})],
         )
 
         with pytest.raises(httpx.HTTPStatusError):
             harness.client._delta_round(
-                "INBOX", "folder-id", ("https://graph.test/stale", None)
+                "INBOX",
+                "folder-id",
+                ("https://graph.test/stale", None),
             )
 
     def test_a_point_from_another_backend_is_a_lost_point(self, monkeypatch):
@@ -379,7 +390,9 @@ class TestDeltaRound:
         harness = self._client(monkeypatch, [])
 
         result = harness.client.folder_backup(
-            "INBOX", MagicMock(), resume={"kind": "imap-uid", "uidvalidity": 1, "uid": 2}
+            "INBOX",
+            MagicMock(),
+            resume={"kind": "imap-uid", "uidvalidity": 1, "uid": 2},
         )
 
         assert result.resume_lost is True

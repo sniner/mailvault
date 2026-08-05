@@ -56,7 +56,10 @@ class MetaDatabase:
         return self.client
 
     def __exit__(
-        self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any
+        self,
+        exc_type: type | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
     ) -> None:
         if self.dbconn:
             self.dbconn.close()
@@ -138,7 +141,12 @@ class MetaDatabaseConnection(DatabaseConnection):
         self._subject_ids: dict[str, int] = {}
 
     def _intern(
-        self, cache: dict[str, int], table: str, id_column: str, key_column: str, value: str
+        self,
+        cache: dict[str, int],
+        table: str,
+        id_column: str,
+        key_column: str,
+        value: str,
     ) -> int:
         """Return the id for `value` in a lookup table, inserting it if new.
 
@@ -151,7 +159,8 @@ class MetaDatabaseConnection(DatabaseConnection):
         with self.transaction():
             self.execute(f"INSERT OR IGNORE INTO {table}({key_column}) VALUES (?)", (value,))
             row_id = self.execute(
-                f"SELECT {id_column} FROM {table} WHERE {key_column}=?", (value,)
+                f"SELECT {id_column} FROM {table} WHERE {key_column}=?",
+                (value,),
             ).fetchone()[0]
         cache[value] = row_id
         return row_id
@@ -348,7 +357,8 @@ class MetaDatabaseConnection(DatabaseConnection):
                 (store_id, email_id, date.isoformat() if date else None, subject_id),
             )
             msg_id = self.execute(
-                "SELECT message_id FROM message WHERE store_id=?", (store_id,)
+                "SELECT message_id FROM message WHERE store_id=?",
+                (store_id,),
             ).fetchone()[0]
             if mailbox_id is not None:
                 self.assign_message_to_mailbox(msg_id, mailbox_id)
@@ -447,7 +457,10 @@ class MetaDatabaseConnection(DatabaseConnection):
         return [(row[0], row[1], row[2]) for row in rows]
 
     def set_snapshot(
-        self, mailbox_id: int, label_id: int, date: datetime | None = None
+        self,
+        mailbox_id: int,
+        label_id: int,
+        date: datetime | None = None,
     ) -> None:
         if date is None:
             date = datetime.now(UTC)

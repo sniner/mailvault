@@ -154,7 +154,8 @@ def _export_metalog(
 
 
 def _adopt_database_snapshots(
-    snapshot_state: state.SnapshotState, db: metadb.MetaDatabaseConnection
+    snapshot_state: state.SnapshotState,
+    db: metadb.MetaDatabaseConnection,
 ) -> int:
     """Copy the snapshot table of a legacy archive into the state file.
 

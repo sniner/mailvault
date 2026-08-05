@@ -211,7 +211,9 @@ def report_migration(source: pathlib.Path, result: jobs.MigrationResult) -> None
 
 
 def report_create_db(
-    source: pathlib.Path, target: pathlib.Path, result: jobs.RebuildResult
+    source: pathlib.Path,
+    target: pathlib.Path,
+    result: jobs.RebuildResult,
 ) -> None:
     """Say what went into the database, and name what could not."""
     replay = result.replay
@@ -352,7 +354,9 @@ def run_archive(args: argparse.Namespace) -> int:
     elif cmd == "import":
         source = _archive(args)
         destination = cas.ContentAddressedStorage(
-            args.destination, suffix=".eml", compress=args.compress
+            args.destination,
+            suffix=".eml",
+            compress=args.compress,
         )
         source.archive_to_cas(destination, move=args.move)
     elif cmd == "compress":
@@ -367,7 +371,10 @@ def run_archive(args: argparse.Namespace) -> int:
         )
     elif cmd == "create-db":
         result = jobs.create_db(
-            args.source, args.database, mailbox=args.mailbox, force=args.force
+            args.source,
+            args.database,
+            mailbox=args.mailbox,
+            force=args.force,
         )
         report_create_db(args.source, args.database, result)
     elif cmd == "migrate":

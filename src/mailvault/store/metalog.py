@@ -134,7 +134,10 @@ def verify_file(path: pathlib.Path) -> bool:
 
 
 def _serialize(
-    mailbox: str | None, folder: str | None, date: str | None, store_ids: list[str]
+    mailbox: str | None,
+    folder: str | None,
+    date: str | None,
+    store_ids: list[str],
 ) -> bytes:
     """Serialize one place's observations into the on-disk JSONL form.
 
@@ -208,7 +211,8 @@ class LogWriter:
         written: list[pathlib.Path] = []
         store = open_store(self.root)
         for (mailbox, folder), store_ids in sorted(
-            self._places.items(), key=lambda item: (item[0][0] or "", item[0][1] or "")
+            self._places.items(),
+            key=lambda item: (item[0][0] or "", item[0][1] or ""),
         ):
             _status, _hashval, path = store.add(
                 _serialize(mailbox, folder, date.isoformat(), store_ids)

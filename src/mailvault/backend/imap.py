@@ -163,7 +163,9 @@ class ImapClient:
         self.delete_after_export = job.delete_after_export
         self.exchange_journal = job.exchange_journal
         self.gmail = functools.reduce(
-            lambda acc, c: acc or c.startswith(b"X-GM-"), self.capabilities, False
+            lambda acc, c: acc or c.startswith(b"X-GM-"),
+            self.capabilities,
+            False,
         )
         # MOVE is RFC 6851 (2013), UIDPLUS is RFC 4315 -- neither is in the
         # IMAP4rev1 base, and Exchange's IMAP service in particular is sparing
@@ -270,7 +272,11 @@ class ImapClient:
                     yield msg_id, msg_data[b"RFC822"]  # type: ignore
             except (OSError, imaplib.IMAP4.error) as exc:
                 log.exception(
-                    "%s::%s[%s]: fetch failed: %s", self.job_name, folder_name, msg_id, exc
+                    "%s::%s[%s]: fetch failed: %s",
+                    self.job_name,
+                    folder_name,
+                    msg_id,
+                    exc,
                 )
                 if result is not None:
                     # fetch() returns the whole chunk at once, so nothing of it
@@ -278,7 +284,10 @@ class ImapClient:
                     result.failed += len(msg_ids)
 
     def _collect_metadata(
-        self, folder_name: str, msg_id: Any, store_id: str
+        self,
+        folder_name: str,
+        msg_id: Any,
+        store_id: str,
     ) -> mailutils.MessageMetadata:
         if self.gmail:
             # X-GM-LABELS reports every folder the message is in, in canonical
@@ -372,7 +381,10 @@ class ImapClient:
                     )
                 else:
                     log.info(
-                        "%s::%s: found %s messages", self.job_name, folder_name, items_found
+                        "%s::%s: found %s messages",
+                        self.job_name,
+                        folder_name,
+                        items_found,
                     )
                 processed = 0
                 for msg_id, msg in self._walk_folder(folder_name, message_ids, result=result):
@@ -481,7 +493,9 @@ class ImapClient:
                 log_ctx=f"{self.job_name}::{folder_name}[{msg_id}]",
                 callback=callback,
                 metadata_fn=lambda sid, mid=msg_id: self._collect_metadata(
-                    folder_name=folder_name, msg_id=mid, store_id=sid
+                    folder_name=folder_name,
+                    msg_id=mid,
+                    store_id=sid,
                 ),
             )
             if store_id is None:
@@ -546,7 +560,8 @@ class ImapClient:
                 self.conn.unselect_folder()
 
     def message_index(
-        self, folder_name: str
+        self,
+        folder_name: str,
     ) -> collections.abc.Generator[MessageRef, None, None]:
         """List the folder's messages by Message-ID only, without fetching bodies."""
         with self.lock:

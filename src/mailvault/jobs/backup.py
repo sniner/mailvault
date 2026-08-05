@@ -103,7 +103,14 @@ def _backup_to_log(
     for folder in folders:
         try:
             _backup_folder(
-                mb, store, job, folder, snapshot_state, log_root, places, incremental
+                mb,
+                store,
+                job,
+                folder,
+                snapshot_state,
+                log_root,
+                places,
+                incremental,
             )
         except Exception as exc:
             # One folder that cannot be read must not cost the remaining ones;
