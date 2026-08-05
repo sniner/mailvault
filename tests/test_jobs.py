@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -464,6 +465,35 @@ class TestCatchUp:
 
         client.folder_backup.assert_called_once()
         client.message_index.assert_not_called()
+
+    def test_a_version_1_state_file_leads_here(self, tmp_path, caplog):
+        """The upgrade path end to end, which every existing archive walks once.
+
+        Version 1 held a bare timestamp. It is kept as a record of the run but is
+        not a resume point, so the folder has archived mail and nowhere to carry
+        on from -- and that is exactly what this path is for.
+        """
+        self._archive_with(tmp_path, "a", "b")
+        (tmp_path / "state.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "snapshots": {"test-job": {"INBOX": "2026-02-01T12:00:00+00:00"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        client = self._client(["a", "b", "c"])
+
+        with caplog.at_level(logging.INFO):
+            self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        client.folder_backup.assert_not_called()
+        # Only the one the archive lacks, not the two it already has.
+        assert client.fetch_message.call_count == 1
+
+        s = state.SnapshotState.load(tmp_path / "state.json")
+        assert s.resume("test-job", "INBOX") == {"kind": "test-backend", "at": "now"}
 
     def test_a_void_point_is_caught_up_instead_of_downloaded(self, tmp_path, caplog):
         """The backend reports; the runner picks listing over downloading again."""

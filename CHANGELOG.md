@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **An incremental backup resumes from where the server says it is, not from a date.** IMAP now
+  asks for everything above the highest UID it has archived, Microsoft 365 follows a delta link.
+  Both close a hole a date filter cannot: a message copied or moved into a folder keeps its
+  original date, so it lands *behind* the resume date and is never asked for again -- while it
+  gets a new UID and turns up in the next delta round. On a real 77,000-message mailbox this had
+  swallowed 29 messages over the years, silently. If you have been backing up with an earlier
+  version, `verify --repair` will find what it missed
+
+- **`state.json` is version 2**, splitting what used to be one timestamp into two things that were
+  never the same: `last_run` says when a run last read a folder, `resume` says where the next one
+  carries on. Version 1 files are still read and their timestamps kept as `last_run`, but they do
+  not become resume points -- they came from the wall clock, and adopting them would inherit
+  exactly the gap they could hide. The first run after upgrading therefore reads every folder in
+  full, once, and says so
+
+- **Reading a folder in full no longer means downloading it again.** Where the archive already
+  holds mail at that place -- after the upgrade above, or when a server voids its own resume point
+  -- the folder is listed and compared, and only what is missing is fetched. Listing 77,000
+  messages takes half a minute; downloading them does not. `backup --full` is unchanged and stays
+  the read that trusts nothing
+
+### Fixed
+
+- **`verify` says what it is doing while it does it.** Every line it logged reported completion, so
+  the two passes that take the time announced themselves only once they were over -- minutes of
+  silence on a large archive, and a run that looks like a hung process is one nobody trusts. Both
+  now report before and during. Worth naming explicitly: the long one is reading the *local*
+  archive, not the mailbox
+
+- **A message could hide behind another with the same Message-ID.** `verify` and the new full read
+  ask how many copies of a Message-ID the archive holds rather than whether it holds one, so a
+  second message that shares the id but differs in its bytes is no longer taken for one already
+  archived
+
 ## 0.9.4 (2026-08-06)
 
 ### Added

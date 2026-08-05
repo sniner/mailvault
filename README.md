@@ -194,10 +194,9 @@ Bridge** -- host, port and credentials are the ones the Bridge itself shows you.
 
 One habit of the Bridge is worth knowing: it accepts connections a few minutes
 before its first sync has finished, and until then reports folders as empty
-rather than as not ready yet. Since 0.9.2 a folder that offers nothing simply
-gets no resume timestamp, so a backup started against a cold Bridge costs a
-repeated run and nothing else. If you have an archive from a run made before
-0.9.2, back it up once with `--full` and the timestamps are put right.
+rather than as not ready yet. A folder that offers nothing gets no resume point,
+so a backup started against a cold Bridge costs a repeated run and nothing
+else.
 
 ### Exchange journal mailboxes
 
@@ -542,14 +541,29 @@ one carries its own integrity check:
 $ sha384sum meta/a1/a1b2c3….jsonl     # matches the filename, or the file is damaged
 ```
 
-They are written once and never modified. `state.json` holds the timestamps that
-decide where the next incremental run resumes; it is small and always replaced
-atomically, never edited in place.
+They are written once and never modified. `state.json` records, per folder, when
+a run last read it and where the next one carries on; it is small and always
+replaced atomically, never edited in place.
 
-Each of those timestamps is the date of the newest message the run actually
-archived, not the time the run happened -- so a source that is still coming up
-and reports an empty folder cannot move the archive past mail it has not handed
-over yet.
+```json
+"INBOX": {
+  "last_run": "2026-08-05T19:00:00+00:00",
+  "resume": { "kind": "imap-uid", "uidvalidity": 1239278212, "uid": 48127 }
+}
+```
+
+`last_run` is the wall clock and purely for reading -- nothing resumes from it.
+The resume point is what decides what gets fetched, and its shape belongs to the
+backend that made it: a UID watermark on IMAP, a delta link on Microsoft 365.
+Both mean "everything up to here is in the archive" in the server's own terms,
+which a date never could -- a message copied or moved into a folder keeps its
+original date and would fall behind any date filter, but it gets a new UID and
+shows up in a delta round.
+
+If a resume point cannot be read, or the server says it is no longer valid --
+IMAP reports a changed `UIDVALIDITY`, Graph rejects a delta link with `410` --
+the folder is read in full. Not by downloading it again: the archive is listed
+and compared, and only what is missing is fetched.
 
 Both are plain text. If you ever want to know what an archive thinks it contains,
 you can read it without `mailvault` and without SQL.
@@ -660,9 +674,11 @@ server = "imap.gmail.com"
 
 For a one-off full run there is no need to touch the configuration:
 `mailvault backup --full <destination>` re-reads every folder of every selected
-job, whatever `incremental` says. A full run is also the authoritative one -- it
-sees the mailbox without a date filter, so it sets each folder's resume
-timestamp to exactly what it found there.
+job, whatever `incremental` says. It is the one full read that trusts nothing:
+every message is downloaded and the content-addressed storage decides by hash
+what is new. Everywhere else -- after an upgrade, or when a server voids its own
+resume point -- the folder is listed and compared against the archive instead,
+and only the difference is fetched.
 
 ### Dynamic values
 
