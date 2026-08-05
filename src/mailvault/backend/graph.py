@@ -47,6 +47,10 @@ DELTA_RESUME_KIND = "graph-delta"
 DELTA_EXPIRED_STATUS = 410
 
 
+class _DeltaExpired(Exception):
+    """Graph refused the delta link it gave us; the round cannot be continued."""
+
+
 def _delta_point(resume: dict | None) -> tuple[str, datetime | None] | None:
     """Read this backend's own resume point, or None for anything else.
 
@@ -422,7 +426,10 @@ class MSGraphClient:
         kept -- re-storing a message costs a download the storage then discards,
         while dropping one that only looked unchanged would cost the message.
 
-        A rejected token restarts the round from scratch, once.
+        A rejected token raises `_DeltaExpired` rather than quietly starting
+        over: reading the folder in full is the caller's decision, because only
+        the caller knows whether the archive can be brought back in step by
+        listing instead of downloading.
         """
         ctx = f"{self.job_name}::{folder_name}"
         if point is not None:
@@ -439,12 +446,12 @@ class MSGraphClient:
             resp = self._request("GET", url, params=params, headers=headers)
             if resp.status_code == DELTA_EXPIRED_STATUS and point is not None:
                 log.info(
-                    "%s: delta token rejected (%s) after %s, reading the folder in full",
+                    "%s: delta token rejected (%s) after %s",
                     ctx,
                     DELTA_EXPIRED_STATUS,
                     _token_age(point[1]),
                 )
-                return self._delta_round(folder_name, folder_id, None)
+                raise _DeltaExpired
             resp.raise_for_status()
             data = resp.json()
 
@@ -513,8 +520,14 @@ class MSGraphClient:
         after the metadata log is sealed.
         """
         point = _delta_point(resume)
+        if resume is not None and point is None:
+            # A point was handed in and it is not one of ours.
+            return base.BackupResult(resume_lost=True)
         folder_id = self._resolve_folder(folder_name)
-        messages, delta_link = self._delta_round(folder_name, folder_id, point)
+        try:
+            messages, delta_link = self._delta_round(folder_name, folder_id, point)
+        except _DeltaExpired:
+            return base.BackupResult(resume_lost=True)
         log.info("%s::%s: found %s messages", self.job_name, folder_name, len(messages))
 
         result = base.BackupResult(total=len(messages))

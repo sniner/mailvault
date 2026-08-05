@@ -281,7 +281,7 @@ class TestUidResume:
 
         assert resume.accept(self._select(), "job::INBOX") == 4711
 
-    def test_a_changed_uidvalidity_forces_a_full_read(self, caplog):
+    def test_a_changed_uidvalidity_voids_the_point(self, caplog):
         """The server saying its UID space was rebuilt, not something to guess."""
         resume = imap._UidResume(self._point(uidvalidity=42))
 
@@ -289,25 +289,36 @@ class TestUidResume:
             assert resume.accept(self._select(uidvalidity=43), "job::INBOX") is None
 
         assert "UIDVALIDITY changed" in caplog.text
+        assert resume.lost is True
 
-    def test_a_missing_uidvalidity_forces_a_full_read(self, caplog):
+    def test_being_given_no_point_is_not_a_loss(self):
+        """Nothing was handed in, so nothing was lost -- just read the folder."""
+        resume = imap._UidResume(None)
+
+        assert resume.accept(self._select(), "job::INBOX") is None
+        assert resume.lost is False
+
+    def test_a_missing_uidvalidity_voids_a_point(self, caplog):
         """RFC 3501 makes it mandatory, so its absence is a broken server."""
         resume = imap._UidResume(self._point())
 
         assert resume.accept(self._select(uidvalidity=None), "job::INBOX") is None
+        assert resume.lost is True
         assert "no UIDVALIDITY" in caplog.text
 
-    def test_a_point_from_another_backend_forces_a_full_read(self, caplog):
+    def test_a_point_from_another_backend_is_a_loss(self, caplog):
         with caplog.at_level(logging.INFO):
             resume = imap._UidResume({"kind": "graph-delta", "delta_link": "https://x"})
 
         assert resume.accept(self._select(), "job::INBOX") is None
+        assert resume.lost is True
         assert "is not ours" in caplog.text
 
-    def test_an_incomplete_point_forces_a_full_read(self, caplog):
+    def test_an_incomplete_point_is_a_loss(self, caplog):
         resume = imap._UidResume({"kind": imap.UID_RESUME_KIND, "uid": 5})
 
         assert resume.accept(self._select(), "job::INBOX") is None
+        assert resume.lost is True
         assert "incomplete" in caplog.text
 
     def test_a_boolean_is_not_a_uid(self):
@@ -332,6 +343,29 @@ class TestUidResume:
         resume.accept(self._select(), "job::INBOX")
 
         assert resume.token() is None
+
+
+class TestVoidResumePoint:
+    """A point the server will not honour stops the pass instead of redoing it."""
+
+    def test_nothing_is_fetched_and_the_loss_is_reported(self, tmp_path):
+        conn = _make_mock_conn()
+        conn.select_folder.return_value = {b"EXISTS": 5, b"UIDVALIDITY": 43}
+        client = _make_client(conn=conn)
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+
+        result = client.folder_backup(
+            "INBOX",
+            store,
+            resume={"kind": imap.UID_RESUME_KIND, "uidvalidity": 42, "uid": 4711},
+        )
+
+        assert result.resume_lost is True
+        assert result.stored == 0
+        conn.search.assert_not_called()
+        conn.fetch.assert_not_called()
+        # The folder is still released.
+        conn.unselect_folder.assert_called_once()
 
 
 class TestSearchFolder:

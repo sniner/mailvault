@@ -78,9 +78,13 @@ class _UidResume:
     """
 
     def __init__(self, previous: dict | None):
+        self._given = previous is not None
         self._previous = _uid_point(previous)
         self.uidvalidity: int | None = None
         self.highest: int | None = None
+        # A point was handed in and could not be read: that is reported, not
+        # worked around. Being given none in the first place is not a loss.
+        self.lost = self._given and self._previous is None
 
     def accept(self, folder_info: dict, ctx: str) -> int | None:
         """Take the SELECT response; return the UID to resume above, or None.
@@ -94,19 +98,21 @@ class _UidResume:
             # is a broken server rather than an old one. Without it there is
             # nothing to check a remembered UID against, and one that belongs to
             # a rebuilt UID space would silently skip the whole folder.
-            log.warning("%s: no UIDVALIDITY in the SELECT response, reading in full", ctx)
+            log.warning("%s: no UIDVALIDITY in the SELECT response", ctx)
+            self.lost = self._given
             return None
         if self._previous is None:
             return None
         validity, uid = self._previous
         if validity != self.uidvalidity:
             log.info(
-                "%s: UIDVALIDITY changed (%s -> %s), reading the folder in full",
+                "%s: UIDVALIDITY changed (%s -> %s), the resume point is void",
                 ctx,
                 validity,
                 self.uidvalidity,
             )
             self._previous = None
+            self.lost = True
             return None
         return uid
 
@@ -348,6 +354,10 @@ class ImapClient:
                     if resume is not None
                     else None
                 )
+                if resume is not None and resume.lost:
+                    # Nothing is yielded and nothing is fetched: what to do with
+                    # a void point is the caller's call, not this backend's.
+                    return
                 message_ids = self._search_folder(above_uid)
                 items_found = len(message_ids)
                 if result is not None:
@@ -487,6 +497,8 @@ class ImapClient:
             self._relocate(folder_name, non_journal, self.error_folder)
         if self.gmail and self.trash_folder:
             self._clear_folder(self.trash_folder)
+        if watermark.lost:
+            return BackupResult(resume_lost=True)
         result.resume = watermark.token()
         return result
 

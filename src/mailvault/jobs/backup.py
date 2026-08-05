@@ -129,11 +129,10 @@ def _backup_folder(
     nothing to hold itself back from and records exactly what it found.
     """
     previous = snapshot_state.resume(job.name, folder) if incremental else None
-    if previous is None and incremental and _can_catch_up(job):
-        archived = places.of(folder)
-        if archived:
-            _catch_up_folder(mb, store, job, folder, snapshot_state, log_root, archived)
+    if previous is None and incremental:
+        if _catch_up_if_possible(mb, store, job, folder, snapshot_state, log_root, places):
             return
+
     observed_at = datetime.now(UTC)
     log_writer = metalog.LogWriter(log_root)
     result = mb.folder_backup(
@@ -142,6 +141,21 @@ def _backup_folder(
         resume=previous,
         callback=_location_writer(log_writer),
     )
+
+    if result.resume_lost:
+        # The source will not honour the point any more and did nothing rather
+        # than deciding for us. Listing beats downloading the folder again, and
+        # where that is not on offer the full read is at least an explicit one.
+        log.info("%s::%s: the resume point is void", job.name, folder)
+        if _catch_up_if_possible(mb, store, job, folder, snapshot_state, log_root, places):
+            return
+        log.info("%s::%s: reading the folder in full", job.name, folder)
+        result = mb.folder_backup(
+            folder,
+            store,
+            resume=None,
+            callback=_location_writer(log_writer),
+        )
     # The seal date stamps the log with when the folder was read, which is a
     # fact about the run and stays the wall clock. Where the *next* run resumes
     # is a claim about coverage, and that one comes back from the backend.
@@ -197,6 +211,31 @@ def _can_catch_up(job: conf.JobConfig) -> bool:
     folder, which is the same reason `verify` refuses these jobs outright.
     """
     return not job.delete_after_export and not job.exchange_journal
+
+
+def _catch_up_if_possible(
+    mb: base.MailboxClient,
+    store: cas.ContentAddressedStorage,
+    job: conf.JobConfig,
+    folder: str,
+    snapshot_state: state.SnapshotState,
+    log_root: pathlib.Path,
+    places: _ArchivedPlaces,
+) -> bool:
+    """Bring the folder back in step by listing it. False when that is no option.
+
+    No option means either the job is one that must not be caught up that way, or
+    the archive holds nothing at this place to compare against -- in which case
+    listing first would only add a round trip to a download that has to happen
+    anyway.
+    """
+    if not _can_catch_up(job):
+        return False
+    archived = places.of(folder)
+    if not archived:
+        return False
+    _catch_up_folder(mb, store, job, folder, snapshot_state, log_root, archived)
+    return True
 
 
 def _catch_up_folder(

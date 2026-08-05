@@ -465,6 +465,39 @@ class TestCatchUp:
         client.folder_backup.assert_called_once()
         client.message_index.assert_not_called()
 
+    def test_a_void_point_is_caught_up_instead_of_downloaded(self, tmp_path, caplog):
+        """The backend reports; the runner picks listing over downloading again."""
+        self._archive_with(tmp_path, "a")
+        client = self._client(["a", "b"])
+        _seed_resume(tmp_path / "state.json", datetime(2026, 2, 1, tzinfo=UTC))
+        client.folder_backup.return_value = base.BackupResult(resume_lost=True)
+
+        with caplog.at_level(logging.INFO):
+            self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        assert "the resume point is void" in caplog.text
+        client.message_index.assert_called_once()
+        # Only the one the archive lacks, not the whole folder.
+        assert client.fetch_message.call_count == 1
+
+    def test_a_void_point_falls_back_to_a_full_read_when_it_must(self, tmp_path, caplog):
+        """A job that deletes after export cannot be caught up, so it says so."""
+        self._archive_with(tmp_path, "a")
+        client = self._client(["a"])
+        _seed_resume(tmp_path / "state.json", datetime(2026, 2, 1, tzinfo=UTC))
+        client.folder_backup.side_effect = [
+            base.BackupResult(resume_lost=True),
+            base.BackupResult(total=1, stored=1, resume=ARCHIVED_TOKEN),
+        ]
+
+        with caplog.at_level(logging.INFO):
+            self._run(_make_job(folders=["INBOX"], delete_after_export=True), client, tmp_path)
+
+        assert "reading the folder in full" in caplog.text
+        client.message_index.assert_not_called()
+        # The second call asks for the folder without a point at all.
+        assert client.folder_backup.call_args.kwargs.get("resume") is None
+
     def test_a_failed_fetch_holds_the_point_back(self, tmp_path):
         self._archive_with(tmp_path, "a")
         client = self._client(["a", "b"])

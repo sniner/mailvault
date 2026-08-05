@@ -312,31 +312,53 @@ class TestDeltaRound:
 
         assert [i["id"] for i in items] == ["a"]
 
-    def test_a_rejected_token_restarts_the_round(self, monkeypatch, caplog):
-        """410 is documented as a normal recovery path, not a failure."""
-        harness = self._client(
-            monkeypatch,
-            [
-                _json(410, {"error": {"code": "resyncRequired"}}),
-                _json(
-                    200, {"value": [{"id": "a"}], "@odata.deltaLink": "https://graph.test/d"}
-                ),
-            ],
-        )
+    def test_a_rejected_token_is_reported_not_worked_around(self, monkeypatch, caplog):
+        """410 is a normal recovery path, but what to do instead is not ours to pick.
+
+        Restarting here would download the folder; the caller may be able to list
+        it and fetch only the difference. So the round stops and says so.
+        """
+        harness = self._client(monkeypatch, [_json(410, {"error": {"code": "resyncRequired"}})])
         issued = datetime.now(UTC) - timedelta(hours=5)
 
-        with caplog.at_level(logging.INFO):
-            items, link = harness.client._delta_round(
+        with caplog.at_level(logging.INFO), pytest.raises(graph._DeltaExpired):
+            harness.client._delta_round(
                 "INBOX", "folder-id", ("https://graph.test/stale", issued)
             )
 
-        assert [i["id"] for i in items] == ["a"]
-        assert link == "https://graph.test/d"
         assert "delta token rejected (410)" in caplog.text
         # The age is what tells us how long these actually live.
         assert "5.0h" in caplog.text
-        # The restart is a fresh round, not a second try at the dead link.
-        assert harness.request.call_args.args[1].endswith("/messages/delta")
+
+    def test_a_rejected_token_reaches_the_caller_as_a_lost_point(self, monkeypatch):
+        harness = self._client(monkeypatch, [_json(410, {"error": {"code": "resyncRequired"}})])
+        harness.client._folder_map = {"INBOX": "folder-id"}
+        harness.client.exchange_journal = False
+        harness.client.delete_after_export = False
+        harness.client.error_folder = None
+
+        result = harness.client.folder_backup(
+            "INBOX",
+            MagicMock(),
+            resume={
+                "kind": graph.DELTA_RESUME_KIND,
+                "delta_link": "https://graph.test/stale",
+            },
+        )
+
+        assert result.resume_lost is True
+        assert result.stored == 0
+
+    def test_a_point_from_another_backend_is_a_lost_point(self, monkeypatch):
+        """Reported before a single request goes out."""
+        harness = self._client(monkeypatch, [])
+
+        result = harness.client.folder_backup(
+            "INBOX", MagicMock(), resume={"kind": "imap-uid", "uidvalidity": 1, "uid": 2}
+        )
+
+        assert result.resume_lost is True
+        harness.request.assert_not_called()
 
     def test_a_round_without_a_delta_link_earns_nothing(self, monkeypatch, caplog):
         harness = self._client(monkeypatch, [_json(200, {"value": [{"id": "a"}]})])

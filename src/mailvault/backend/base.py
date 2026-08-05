@@ -47,6 +47,12 @@ class BackupResult:
     None when the pass earned no new point, and the caller then leaves the
     previous one standing.
 
+    `resume_lost` says the point the caller handed in is no longer usable -- a
+    UID space the server rebuilt, a delta token it will not honour, a point from
+    a backend that is not this one. The pass then does *nothing*: reading the
+    folder in full is the caller's decision, because only the caller knows
+    whether the archive can be brought back in step by listing instead.
+
     `deletable` lists the backend message ids that were stored successfully and
     may be removed from the server -- but only once the metadata log for this
     folder is sealed, so a message is never deleted from its source before the
@@ -60,6 +66,7 @@ class BackupResult:
     stored: int = 0
     failed: int = 0
     resume: dict | None = None
+    resume_lost: bool = False
     deletable: list[Any] = dataclasses.field(default_factory=list)
 
     @property
@@ -103,10 +110,10 @@ class MailboxClient(Protocol):
 
         `resume` is a point this backend produced on an earlier pass. What it
         contains is the backend's own business -- the caller only stores it and
-        hands it back. A backend that does not recognise it, or finds it no
-        longer valid, reads the folder in full and says so; that one rule covers
-        an upgrade from an older format, a job whose backend was swapped, and a
-        source that invalidated its own token.
+        hands it back. A point that is no longer usable is *reported* rather than
+        worked around: the pass stops and sets `BackupResult.resume_lost`, and
+        what to do instead is the caller's decision. A point of None means read
+        the folder in full, which is how the caller asks for exactly that.
 
         Returns the point for next time in `BackupResult.resume`, built from what
         was actually archived, or None when the pass earned none.
