@@ -326,7 +326,7 @@ class TestDeltaRound:
                 "INBOX", "folder-id", ("https://graph.test/stale", issued)
             )
 
-        assert "delta token rejected (410)" in caplog.text
+        assert "delta token rejected (HTTP 410)" in caplog.text
         # The age is what tells us how long these actually live.
         assert "5.0h" in caplog.text
 
@@ -348,6 +348,31 @@ class TestDeltaRound:
 
         assert result.resume_lost is True
         assert result.stored == 0
+
+    def test_an_expired_token_arrives_as_a_4xx_error_code_too(self, monkeypatch, caplog):
+        """Graph documents expiry as "a 40X-series error with codes such as
+        syncStateNotFound", not only as 410."""
+        harness = self._client(
+            monkeypatch, [_json(404, {"error": {"code": "syncStateNotFound"}})]
+        )
+
+        with caplog.at_level(logging.INFO), pytest.raises(graph._DeltaExpired):
+            harness.client._delta_round(
+                "INBOX", "folder-id", ("https://graph.test/stale", None)
+            )
+
+        assert "HTTP 404" in caplog.text
+
+    def test_a_refused_request_is_not_mistaken_for_an_expired_token(self, monkeypatch):
+        """403 is about credentials; swallowing it would hide a broken job."""
+        harness = self._client(
+            monkeypatch, [_json(403, {"error": {"code": "ErrorAccessDenied"}})]
+        )
+
+        with pytest.raises(httpx.HTTPStatusError):
+            harness.client._delta_round(
+                "INBOX", "folder-id", ("https://graph.test/stale", None)
+            )
 
     def test_a_point_from_another_backend_is_a_lost_point(self, monkeypatch):
         """Reported before a single request goes out."""

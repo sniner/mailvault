@@ -32,19 +32,47 @@ RETRY_MAX_DELAY = 60.0
 # Page size for the lightweight message index (no message bodies involved).
 INDEX_PAGE_SIZE = 500
 
-# Page size for a delta round. Only ids come back, so the pages are small.
-DELTA_PAGE_SIZE = 100
+# Page size for a delta round. Only ids come back, so the pages are small and
+# the round trips are what costs -- a folder of 77,000 messages is 155 requests
+# at this size rather than 777. The service caps it where it will not honour it.
+DELTA_PAGE_SIZE = 500
 
 # The `kind` this backend stamps on the resume points it produces. A point
 # carrying any other kind belongs to a different backend and is read in full.
 DELTA_RESUME_KIND = "graph-delta"
 
-# Graph rejects a delta link it no longer honours with this, and documents no
-# lifetime for one at all: a long gap, cache eviction or service-side
-# maintenance can end it at any time. It is a normal recovery path, not an
-# exceptional one, so the answer is to drop the token and read the folder in
-# full rather than to fail the run.
+# A delta link can stop being honoured, and Graph says so in two different ways.
+# `410 Gone` is the documented sync-reset; an expired token instead arrives as
+# "a 40X-series error with error codes such as syncStateNotFound". Both mean the
+# same thing to us, and both are normal recovery paths rather than exceptional
+# ones -- for Outlook entities there is no fixed lifetime at all, only a
+# service-side cache that drops the oldest tokens as it fills.
 DELTA_EXPIRED_STATUS = 410
+DELTA_EXPIRED_CODES = frozenset(
+    {
+        "syncstatenotfound",
+        "resyncrequired",
+        "resyncchangesapplydifferences",
+        "resyncchangesuploaddifferences",
+    }
+)
+
+
+def _is_delta_expired(resp: httpx.Response) -> bool:
+    """Whether this response means the delta link is no longer usable.
+
+    Restricted to 4xx with a resync error code, plus 410 outright: a 401 or 403
+    is about credentials, not about the token, and must not be mistaken for one.
+    """
+    if resp.status_code == DELTA_EXPIRED_STATUS:
+        return True
+    if not 400 <= resp.status_code < 500:
+        return False
+    try:
+        code = resp.json().get("error", {}).get("code", "")
+    except (ValueError, AttributeError):
+        return False
+    return isinstance(code, str) and code.lower() in DELTA_EXPIRED_CODES
 
 
 class _DeltaExpired(Exception):
@@ -444,11 +472,11 @@ class MSGraphClient:
         removed = 0
         while True:
             resp = self._request("GET", url, params=params, headers=headers)
-            if resp.status_code == DELTA_EXPIRED_STATUS and point is not None:
+            if point is not None and _is_delta_expired(resp):
                 log.info(
-                    "%s: delta token rejected (%s) after %s",
+                    "%s: delta token rejected (HTTP %s) after %s",
                     ctx,
-                    DELTA_EXPIRED_STATUS,
+                    resp.status_code,
                     _token_age(point[1]),
                 )
                 raise _DeltaExpired
