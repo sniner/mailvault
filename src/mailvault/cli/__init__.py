@@ -103,6 +103,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Maintain an index.db alongside the archive, refreshed after the backup",
     )
+    p_backup.add_argument(
+        "--full",
+        action="store_true",
+        help="Re-read every folder in full, ignoring where the last run left off",
+    )
     p_backup.add_argument("destination", type=pathlib.Path, help="Destination base directory")
 
     p_verify = sub.add_parser(

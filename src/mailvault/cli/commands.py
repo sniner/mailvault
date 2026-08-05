@@ -54,12 +54,16 @@ def _run_job(job: conf.JobConfig, args: argparse.Namespace, config: conf.Config)
     elif args.command == "backup":
         compress = args.compress or config.compress
         index_db = args.index_db or config.index_db
+        # The one switch that turns something off rather than on, so it cannot
+        # follow the `args.x or config.x` pattern of the two above: `--full` is
+        # a veto on the configured default, not an addition to it.
+        incremental = config.incremental and not args.full
         jobs.backup(
             job,
             args.destination,
             compress=compress,
             index_db=index_db,
-            incremental=config.incremental,
+            incremental=incremental,
         )
     elif args.command == "verify":
         compress = args.compress or config.compress

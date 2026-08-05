@@ -187,6 +187,18 @@ Neither option means anything without `delete_after_export`, and a job that sets
 one anyway is refused rather than run: an option that decides the fate of mail
 must never look effective while doing nothing.
 
+### Proton Mail via Bridge
+
+Proton Mail offers no IMAP of its own, so mailvault talks to the local **Proton
+Bridge** -- host, port and credentials are the ones the Bridge itself shows you.
+
+One habit of the Bridge is worth knowing: it accepts connections a few minutes
+before its first sync has finished, and until then reports folders as empty
+rather than as not ready yet. Since 0.9.2 a folder that offers nothing simply
+gets no resume timestamp, so a backup started against a cold Bridge costs a
+repeated run and nothing else. If you have an archive from a run made before
+0.9.2, back it up once with `--full` and the timestamps are put right.
+
 ### Exchange journal mailboxes
 
 Exchange journaling wraps every mail it records in an envelope: the journal
@@ -478,6 +490,11 @@ They are written once and never modified. `state.json` holds the timestamps that
 decide where the next incremental run resumes; it is small and always replaced
 atomically, never edited in place.
 
+Each of those timestamps is the date of the newest message the run actually
+archived, not the time the run happened -- so a source that is still coming up
+and reports an empty folder cannot move the archive past mail it has not handed
+over yet.
+
 Both are plain text. If you ever want to know what an archive thinks it contains,
 you can read it without `mailvault` and without SQL.
 
@@ -584,6 +601,12 @@ name = "gmail.com"
 server = "imap.gmail.com"
 # ...
 ```
+
+For a one-off full run there is no need to touch the configuration:
+`mailvault backup --full <destination>` re-reads every folder of every selected
+job, whatever `incremental` says. A full run is also the authoritative one -- it
+sees the mailbox without a date filter, so it sets each folder's resume
+timestamp to exactly what it found there.
 
 ### Dynamic values
 

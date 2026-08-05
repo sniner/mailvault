@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.9.2 (2026-08-05)
+
+### Added
+
+- **`backup --full`** re-reads every folder in full for one run, without having to edit
+  `incremental` in the configuration and put it back afterwards. A full run is also the
+  authoritative one: it sees the mailbox without a date filter, so it sets each folder's resume
+  timestamp to exactly the mail it found -- backwards too, which is what puts a timestamp right
+  that an earlier run had set too far ahead
+
+### Fixed
+
+- **A source that is not serving its mail yet no longer costs you that mail.** The resume timestamp
+  was the time the run happened, which quietly assumed the server had shown everything it had.
+  Proton Bridge does not: it accepts IMAP connections minutes before its first sync completes and
+  answers, without any error, that the folder is empty. The run then recorded "archived up to
+  today", and on the next run every message actually sitting in that mailbox -- all of it older
+  than today -- fell before the date filter and was never fetched again. The backup looked clean
+  both times. The timestamp is now the date of the newest message a run really archived, so a
+  folder that offered nothing gets no timestamp and is read in full next time. The same applies to
+  any source that comes up slowly: an IMAP proxy with a cold cache, a server still mounting a
+  mailbox
+
+- **An incremental run no longer trusts a message dated in the future.** A sender with a wrong
+  clock could push a folder's resume point past the moment the folder was actually read, skipping
+  whatever arrived in between
+
 ## 0.9.1 (2026-08-04)
 
 ### Fixed

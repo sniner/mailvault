@@ -22,6 +22,7 @@ def _args(**overrides: Any) -> argparse.Namespace:
         destination=None,
         compress=False,
         index_db=False,
+        full=False,
     )
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -36,6 +37,32 @@ def _one_job(monkeypatch, failure: Exception) -> None:
         raise failure
 
     monkeypatch.setattr(commands, "_run_job", _fail)
+
+
+class TestFullFlag:
+    """`--full` vetoes the configured default rather than adding to it."""
+
+    @staticmethod
+    def _incremental_of(monkeypatch, args, config) -> bool:
+        seen: dict[str, Any] = {}
+        monkeypatch.setattr(jobs, "backup", lambda *a, **kw: seen.update(kw))
+        commands._run_job(conf.JobConfig(name="proton.me"), args, config)
+        return seen["incremental"]
+
+    def test_full_switches_the_incremental_run_off(self, monkeypatch):
+        config = conf.Config(incremental=True)
+
+        assert self._incremental_of(monkeypatch, _args(full=True), config) is False
+
+    def test_without_it_the_config_still_decides(self, monkeypatch):
+        config = conf.Config(incremental=True)
+
+        assert self._incremental_of(monkeypatch, _args(), config) is True
+
+    def test_a_config_that_says_false_needs_no_flag(self, monkeypatch):
+        config = conf.Config(incremental=False)
+
+        assert self._incremental_of(monkeypatch, _args(), config) is False
 
 
 class TestJobFailureReporting:

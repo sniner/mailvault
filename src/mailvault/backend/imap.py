@@ -354,7 +354,7 @@ class ImapClient:
         # Collected during the read-only pass and relocated once it is over --
         # a skip is not a failure, so the snapshot may still advance either way.
         non_journal: list[int] = []
-        for msg_id, msg, _ in self._iter_folder(folder_name, since, result=result):
+        for msg_id, msg, msg_date in self._iter_folder(folder_name, since, result=result):
             if self.exchange_journal:
                 msg = mailutils.unwrap_exchange_journal_item(msg)
                 if msg is None:
@@ -379,6 +379,10 @@ class ImapClient:
             )
             if store_id is None:
                 continue
+            # INTERNALDATE, the same clock the SINCE search filters on, so the
+            # point the next run resumes from is expressed in the terms the
+            # server itself will be asked in.
+            result.saw(msg_date)
             # Not deleted here: a message is removed from the server only after
             # the folder's log is sealed. A non-journal item skipped above never
             # reaches this point, so it can never be deleted unarchived.
