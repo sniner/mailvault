@@ -86,9 +86,14 @@ def _delta_token(new_link: str | None, previous: object, stored: int) -> dict | 
         return None
     if previous is None and stored == 0:
         return None
+    return _make_delta_token(new_link)
+
+
+def _make_delta_token(delta_link: str) -> dict:
+    """Wrap a delta link as a resume point, stamped with when it was issued."""
     return {
         "kind": DELTA_RESUME_KIND,
-        "delta_link": new_link,
+        "delta_link": delta_link,
         "issued": datetime.now(UTC).isoformat(),
     }
 
@@ -463,6 +468,12 @@ class MSGraphClient:
                 log.warning("%s: delta round ended without a link", ctx)
                 return items, None
             return items, delta_link
+
+    def resume_point(self, folder_name: str) -> dict | None:
+        """A fresh delta link over the folder as it stands, fetching no bodies."""
+        folder_id = self._resolve_folder(folder_name)
+        _items, delta_link = self._delta_round(folder_name, folder_id, None)
+        return _make_delta_token(delta_link) if delta_link else None
 
     def message_index(
         self, folder_name: str

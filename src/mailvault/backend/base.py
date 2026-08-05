@@ -129,6 +129,15 @@ class MailboxClient(Protocol):
         self, folder_name: str
     ) -> collections.abc.Generator[MessageRef, None, None]: ...
 
+    def resume_point(self, folder_name: str) -> dict | None:
+        """A resume point over the folder as it stands right now, fetching nothing.
+
+        For when a folder was brought back in step by other means and only its
+        position still has to be recorded. Returns None when no point can be
+        established, which leaves the folder to be read in full again.
+        """
+        ...
+
     def fetch_message(self, msg_id: Any, folder_name: str) -> bytes: ...
 
     def close(self) -> None: ...

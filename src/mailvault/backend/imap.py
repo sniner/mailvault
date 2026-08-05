@@ -509,6 +509,30 @@ class ImapClient:
             finally:
                 self.conn.unselect_folder()
 
+    def resume_point(self, folder_name: str) -> dict | None:
+        """The folder's current UID watermark, without fetching anything."""
+        with self.lock:
+            folder_info = self.conn.select_folder(folder_name, readonly=True)
+            try:
+                uidvalidity = _as_int(folder_info.get(b"UIDVALIDITY"))
+                if uidvalidity is None:
+                    log.warning(
+                        "%s::%s: no UIDVALIDITY in the SELECT response, no resume point",
+                        self.job_name,
+                        folder_name,
+                    )
+                    return None
+                uids = self._search_folder()
+                if not uids:
+                    return None
+                return {
+                    "kind": UID_RESUME_KIND,
+                    "uidvalidity": uidvalidity,
+                    "uid": max(uids),
+                }
+            finally:
+                self.conn.unselect_folder()
+
     def message_index(
         self, folder_name: str
     ) -> collections.abc.Generator[MessageRef, None, None]:

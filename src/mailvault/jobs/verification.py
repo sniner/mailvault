@@ -1,169 +1,31 @@
 """Check the archive for messages the server still has but the archive lacks.
 
 A last resort, not part of the routine: a folder whose downloads partly failed
-does not advance its snapshot, so the next backup fetches it again. What is left
-for verify are archives from older versions and mail moved into a folder with an
-internal date older than the snapshot.
+does not advance its resume point, so the next backup fetches it again. What is
+left for verify are archives from older versions and mail moved into a folder
+with an internal date older than the point -- the latter is what the move to
+UID and delta resume points removes.
+
+The comparison itself is `reconcile`, which the backup runner also uses when it
+has to read a folder in full.
 """
 
 from __future__ import annotations
 
-import collections.abc
-import dataclasses
 import logging
 import pathlib
-from datetime import UTC, datetime
 
-from mailvault import conf, mailutils
-from mailvault.backend import base, session
-from mailvault.jobs.common import JobError, _seal_log
+from mailvault import conf
+from mailvault.backend import session
+from mailvault.jobs.common import JobError
+from mailvault.jobs.reconcile import ReconcileResult, places_from_log, reconcile_folder
 from mailvault.store import cas, metalog
 
 log = logging.getLogger(__name__)
 
-# How often the two long passes say where they are. Both read one item at a
-# time with nothing to show for it until they finish, so without this a large
-# archive looks like a hung process -- and the local one is usually the slower
-# of the two, because it is thousands of small reads over whatever the archive
-# is mounted on.
-ARCHIVE_PROGRESS_EVERY = 10_000
-SERVER_PROGRESS_EVERY = 5_000
-
-
-@dataclasses.dataclass
-class VerifyResult:
-    """Outcome of comparing one server folder against the local archive."""
-
-    folder: str
-    on_server: int = 0
-    missing: int = 0
-    restored: int = 0
-    failed: int = 0
-
-
-def _places_from_log(log_root: pathlib.Path) -> dict[tuple[str, str | None], set[str]]:
-    """Read the whole log once into `(mailbox, folder) -> store ids`."""
-    places: dict[tuple[str, str | None], set[str]] = {}
-    for logfile in metalog.read_all(log_root):
-        if logfile.mailbox is None:
-            continue
-        places.setdefault((logfile.mailbox, logfile.folder), set()).update(logfile.store_ids)
-    return places
-
-
-def _archived_message_ids(
-    store: cas.ContentAddressedStorage,
-    store_ids: collections.abc.Iterable[str],
-    log_ctx: str = "",
-) -> set[str]:
-    """Return the normalised Message-IDs of the given archived messages.
-
-    The log says which messages are at a place; the Message-ID itself is only in
-    the message, so each one is parsed. That is a few thousand header reads for a
-    folder -- `verify` is a once-in-a-blue-moon command, and the database it used
-    to ask is no longer part of the archive.
-
-    Reports its progress under `log_ctx` while doing so. On a large folder this
-    is the longest silence in the whole command, and it is spent on the *local*
-    archive rather than on the server, which is not what one would guess from
-    watching a command called verify.
-
-    Messages without a usable Message-ID are omitted: they cannot serve as a
-    comparison key and must count as "not present" so a verify run re-fetches
-    them, which is harmless because the storage deduplicates by content.
-    """
-    known: set[str] = set()
-    read = 0
-    for store_id in store_ids:
-        read += 1
-        if log_ctx and read % ARCHIVE_PROGRESS_EVERY == 0:
-            log.info("%s: %s message(s) read from the archive", log_ctx, f"{read:,}")
-        path = store.locate(store_id, exists=True)
-        if path is None:
-            continue
-        try:
-            header = mailutils.decode_email_header(store.read_header(path))
-        except (OSError, ValueError) as exc:
-            log.warning("%s: unreadable, not counted as archived: %s", path, exc)
-            continue
-        known.add(mailutils.normalize_message_id(mailutils.message_id(header)))
-    known.discard("")
-    return known
-
-
-def _verify_folder(
-    mb: base.MailboxClient,
-    store: cas.ContentAddressedStorage,
-    log_root: pathlib.Path,
-    archived: set[str],
-    job_name: str,
-    folder: str,
-    repair: bool = False,
-) -> VerifyResult:
-    """Compare one server folder against the archive and optionally refetch gaps.
-
-    Matching is done by Message-ID, which is the only key both sides share
-    without transferring the message: listing a folder's headers costs a handful
-    of requests, while re-downloading it costs one request per message. The
-    content hash would be exact, but the server does not know it.
-
-    A message counts as missing whenever its Message-ID is not archived for this
-    folder, so messages with an absent or duplicated Message-ID may be fetched
-    needlessly -- deliberate, since the storage discards the redundant copy. The
-    reverse mistake, skipping a message that really is missing, is the one worth
-    avoiding.
-    """
-    ctx = f"{job_name}::{folder}"
-    # Said before the work, not after it: this reads one header per archived
-    # message and has nothing to report until every one of them is done.
-    log.info("%s: reading %s archived message(s)", ctx, f"{len(archived):,}")
-    known = mailutils.MessageIdIndex(_archived_message_ids(store, archived, log_ctx=ctx))
-    log.info("%s: %s message(s) in archive", ctx, f"{len(known):,}")
-
-    result = VerifyResult(folder=folder)
-    missing: list[base.MessageRef] = []
-    log.info("%s: listing the folder on the server", ctx)
-    for ref in mb.message_index(folder):
-        result.on_server += 1
-        if mailutils.normalize_message_id(ref.message_id) not in known:
-            missing.append(ref)
-        if result.on_server % SERVER_PROGRESS_EVERY == 0:
-            log.info("%s: %s message(s) indexed", ctx, f"{result.on_server:,}")
-    result.missing = len(missing)
-
-    log.info(
-        "%s::%s: %s of %s message(s) on the server are not archived",
-        job_name,
-        folder,
-        result.missing,
-        result.on_server,
-    )
-    if not repair or not missing:
-        return result
-
-    # A repaired message is new archive content, so its location has to reach the
-    # log as well -- otherwise nothing records where it belongs.
-    log_writer = metalog.LogWriter(log_root)
-    for ref in missing:
-        label = ref.message_id or ref.msg_id
-        try:
-            msg = mb.fetch_message(ref.msg_id, folder)
-        except Exception as exc:
-            log.error("%s::%s: download failed for %s: %s", job_name, folder, label, exc)
-            result.failed += 1
-            continue
-        try:
-            status, store_id, _path = store.add(msg)
-            log_writer.add(job_name, [folder], store_id)
-        except Exception as exc:
-            log.exception("%s::%s: storing %s failed: %s", job_name, folder, label, exc)
-            result.failed += 1
-            continue
-        log.info("%s::%s: restored %s: %s id=%s", job_name, folder, label, status, store_id)
-        result.restored += 1
-
-    _seal_log(log_writer, datetime.now(UTC))
-    return result
+# `verify` reports what `reconcile` found; the name is what the CLI has always
+# printed and what the public API exposes.
+VerifyResult = ReconcileResult
 
 
 def verify(
@@ -195,7 +57,7 @@ def verify(
     # whole log is read before a connection is even opened. Announcing it is what
     # keeps the start of the command from looking like nothing at all.
     log.info("%s: reading the metadata log", job.name)
-    places = _places_from_log(log_root)
+    places = places_from_log(log_root)
     log.info(
         "%s: %s message(s) recorded in %s place(s)",
         job.name,
@@ -208,7 +70,7 @@ def verify(
         for folder in folders:
             try:
                 results.append(
-                    _verify_folder(
+                    reconcile_folder(
                         mb,
                         store,
                         log_root,

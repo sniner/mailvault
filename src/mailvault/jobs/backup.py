@@ -19,10 +19,32 @@ from mailvault import conf, mailutils
 from mailvault.backend import base, session
 from mailvault.jobs.common import _seal_log
 from mailvault.jobs.migration import migrate_archive
+from mailvault.jobs.reconcile import places_from_log, reconcile_folder
 from mailvault.jobs.storedb import DEFAULT_QUERY_DB_NAME, refresh_db
 from mailvault.store import cas, metalog, state
 
 log = logging.getLogger(__name__)
+
+
+class _ArchivedPlaces:
+    """What the archive already holds, read from the log at most once per run.
+
+    Only a folder that has to be caught up needs this, and reading the whole
+    metadata log is not a cost an ordinary incremental run should carry. In the
+    steady state every folder has a resume point, nothing asks, and the log stays
+    unread.
+    """
+
+    def __init__(self, log_root: pathlib.Path, job_name: str):
+        self._log_root = log_root
+        self._job_name = job_name
+        self._places: dict[tuple[str, str | None], set[str]] | None = None
+
+    def of(self, folder: str) -> set[str]:
+        if self._places is None:
+            log.info("%s: reading the metadata log", self._job_name)
+            self._places = places_from_log(self._log_root)
+        return self._places.get((self._job_name, folder), set())
 
 
 def _record_pass(
@@ -76,10 +98,13 @@ def _backup_to_log(
     """Back up the selected folders, recording locations and resume state."""
     snapshot_state = state.SnapshotState.load(store_path / state.DEFAULT_STATE_NAME)
     log_root = store_path / metalog.DEFAULT_LOG_DIR
+    places = _ArchivedPlaces(log_root, job.name)
     folders = job.folders if job.folders else mb.folders()
     for folder in folders:
         try:
-            _backup_folder(mb, store, job, folder, snapshot_state, log_root, incremental)
+            _backup_folder(
+                mb, store, job, folder, snapshot_state, log_root, places, incremental
+            )
         except Exception as exc:
             # One folder that cannot be read must not cost the remaining ones;
             # its snapshot simply does not advance and the next run tries again.
@@ -93,6 +118,7 @@ def _backup_folder(
     folder: str,
     snapshot_state: state.SnapshotState,
     log_root: pathlib.Path,
+    places: _ArchivedPlaces,
     incremental: bool = True,
 ) -> None:
     """Back up one folder, recording where its messages were seen.
@@ -103,6 +129,11 @@ def _backup_folder(
     nothing to hold itself back from and records exactly what it found.
     """
     previous = snapshot_state.resume(job.name, folder) if incremental else None
+    if previous is None and incremental and _can_catch_up(job):
+        archived = places.of(folder)
+        if archived:
+            _catch_up_folder(mb, store, job, folder, snapshot_state, log_root, archived)
+            return
     observed_at = datetime.now(UTC)
     log_writer = metalog.LogWriter(log_root)
     result = mb.folder_backup(
@@ -147,6 +178,67 @@ def _backup_folder(
     # `last_run` claims. Only `resume` is held back when the pass fell short.
     _record_pass(snapshot_state, job.name, folder, observed_at, resume)
     _purge_after_seal(mb, job, folder, result, sealed)
+
+
+def _can_catch_up(job: conf.JobConfig) -> bool:
+    """Whether this job may be caught up by listing instead of downloading.
+
+    Two jobs may not, for reasons that have nothing to do with speed:
+
+    `delete_after_export` removes a message from the server once its location is
+    durable, and that only happens for messages a pass actually *fetched*. A
+    catch-up skips whatever is already archived, so those would stay on the
+    server -- and stay below the new resume point, meaning no later run would
+    ever see them again to delete them.
+
+    `exchange_journal` stores the unwrapped message, whose Message-ID is not the
+    one the server reports for the journal envelope around it. The comparison a
+    catch-up rests on would match nothing and it would re-fetch the entire
+    folder, which is the same reason `verify` refuses these jobs outright.
+    """
+    return not job.delete_after_export and not job.exchange_journal
+
+
+def _catch_up_folder(
+    mb: base.MailboxClient,
+    store: cas.ContentAddressedStorage,
+    job: conf.JobConfig,
+    folder: str,
+    snapshot_state: state.SnapshotState,
+    log_root: pathlib.Path,
+    archived: set[str],
+) -> None:
+    """Read a folder in full, downloading only what the archive does not have.
+
+    Reached when a folder holds archived mail but no resume point -- an archive
+    upgraded from a format that had none, or one whose state file was lost. The
+    alternative is downloading a mailbox that is already on disk.
+
+    The position is taken *before* the comparison, not after: a message arriving
+    while it runs is then either found by the listing and archived, or left above
+    the point and picked up next run. Taking the point afterwards would leave a
+    window in which a message is neither.
+    """
+    observed_at = datetime.now(UTC)
+    log.info(
+        "%s::%s: no resume point but %s archived message(s) -- reconciling against"
+        " the archive by Message-ID instead of downloading the folder",
+        job.name,
+        folder,
+        f"{len(archived):,}",
+    )
+    resume = mb.resume_point(folder)
+    result = reconcile_folder(mb, store, log_root, archived, job.name, folder, repair=True)
+    if not result.complete:
+        log.warning(
+            "%s::%s: %s of %s message(s) failed, resume point not started",
+            job.name,
+            folder,
+            result.failed,
+            result.missing,
+        )
+        resume = None
+    _record_pass(snapshot_state, job.name, folder, observed_at, resume)
 
 
 def _purge_after_seal(

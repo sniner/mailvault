@@ -11,8 +11,8 @@ import pytest
 
 from mailvault import conf, jobs, mailutils
 from mailvault.backend import base
+from mailvault.jobs.reconcile import archived_message_ids, places_from_log
 from mailvault.jobs.storedb import DEFAULT_QUERY_DB_NAME, refresh_db
-from mailvault.jobs.verification import _archived_message_ids, _places_from_log
 from mailvault.store import cas, metadb, metalog, state
 
 # ---------------------------------------------------------------------------
@@ -363,6 +363,118 @@ class TestResumePoint:
         self._run(job, mock_client, tmp_path)
 
         assert _resume_date(tmp_path / "state.json") == current
+
+
+class TestCatchUp:
+    """A folder with archived mail but no resume point is listed, not downloaded.
+
+    The case an upgrade leaves behind: version 1 of the state file held dates,
+    which are not resume points, so the first run after it has an archive full of
+    mail and nothing saying how far it reaches. Downloading the mailbox again
+    would be correct and absurd.
+    """
+
+    @staticmethod
+    def _archive_with(tmp_path, *store_ids: str) -> None:
+        """Put messages in the store and record them in the log, as a backup would."""
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        writer = metalog.LogWriter(tmp_path / "meta")
+        for store_id in store_ids:
+            body = DUMMY_EML.replace(b"<test@example.com>", f"<{store_id}@x>".encode())
+            _status, sid, _path = store.add(body)
+            writer.add("test-job", ["INBOX"], sid)
+        writer.seal(datetime(2026, 2, 1, tzinfo=UTC))
+
+    @staticmethod
+    def _client(on_server: list[str]):
+        client = _make_mock_client()
+        client.resume_point.return_value = {"kind": "test-backend", "at": "now"}
+        client.message_index.return_value = iter(
+            [base.MessageRef(msg_id=i, message_id=f"<{m}@x>") for i, m in enumerate(on_server)]
+        )
+        client.fetch_message.return_value = DUMMY_EML
+        return client
+
+    @staticmethod
+    def _run(job, client, tmp_path) -> None:
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+            jobs.backup(job, tmp_path)
+
+    def test_an_archived_folder_without_a_point_is_reconciled(self, tmp_path, caplog):
+        self._archive_with(tmp_path, "a", "b")
+        client = self._client(["a", "b"])
+
+        with caplog.at_level(logging.INFO):
+            self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        client.folder_backup.assert_not_called()
+        client.message_index.assert_called_once()
+        assert "reconciling against the archive by Message-ID" in caplog.text
+
+    def test_only_what_is_missing_is_fetched(self, tmp_path):
+        self._archive_with(tmp_path, "a")
+        client = self._client(["a", "b"])
+
+        self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        assert client.fetch_message.call_count == 1
+
+    def test_the_point_is_taken_before_the_comparison(self, tmp_path):
+        """Anything arriving during it is then either found or left above the point."""
+        self._archive_with(tmp_path, "a")
+        client = self._client(["a"])
+        order: list[str] = []
+        client.resume_point.side_effect = lambda _f: order.append("point") or {"kind": "t"}
+        client.message_index.side_effect = lambda _f: (order.append("list"), iter([]))[1]
+
+        self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        assert order == ["point", "list"]
+
+    def test_an_empty_archive_is_downloaded_as_before(self, tmp_path):
+        """Nothing to compare against, so listing first would only add a round trip."""
+        client = self._client([])
+        client.folder_backup.return_value = base.BackupResult()
+
+        self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        client.folder_backup.assert_called_once()
+        client.message_index.assert_not_called()
+
+    def test_a_job_that_deletes_after_export_is_downloaded(self, tmp_path):
+        """A skipped message is never deleted, and would then never be seen again."""
+        self._archive_with(tmp_path, "a")
+        client = self._client(["a"])
+        client.folder_backup.return_value = base.BackupResult()
+
+        self._run(_make_job(folders=["INBOX"], delete_after_export=True), client, tmp_path)
+
+        client.folder_backup.assert_called_once()
+        client.message_index.assert_not_called()
+
+    def test_a_journal_job_is_downloaded(self, tmp_path):
+        """The archive holds the unwrapped message, whose Message-ID differs."""
+        self._archive_with(tmp_path, "a")
+        client = self._client(["a"])
+        client.folder_backup.return_value = base.BackupResult()
+
+        self._run(_make_job(folders=["INBOX"], exchange_journal=True), client, tmp_path)
+
+        client.folder_backup.assert_called_once()
+        client.message_index.assert_not_called()
+
+    def test_a_failed_fetch_holds_the_point_back(self, tmp_path):
+        self._archive_with(tmp_path, "a")
+        client = self._client(["a", "b"])
+        client.fetch_message.side_effect = OSError("connection reset")
+
+        self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        s = state.SnapshotState.load(tmp_path / "state.json")
+        assert s.resume("test-job", "INBOX") is None
+        assert s.last_run("test-job", "INBOX") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1102,8 +1214,8 @@ class TestVerify:
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
         assert len(list(store.walk())) == 2
         # The restored message reached the log too, not just the archive.
-        places = _places_from_log(tmp_path / metalog.DEFAULT_LOG_DIR)
-        known = _archived_message_ids(store, places[("test-job", "INBOX")])
+        places = places_from_log(tmp_path / metalog.DEFAULT_LOG_DIR)
+        known = archived_message_ids(store, places[("test-job", "INBOX")])
         assert known == {"a@example.com", "b@example.com"}
 
     def test_repair_is_idempotent(self, tmp_path):
