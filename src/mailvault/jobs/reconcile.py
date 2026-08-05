@@ -14,15 +14,24 @@ point, or when a source invalidates the point it gave us.
 
 What it trades for that is the comparison key. The archive is addressed by the
 hash of the bytes, which the server does not know, so the only key both sides
-share without transferring the message is the Message-ID. That is the same key
-`verify` has always compared on, and the same bias applies: a message counts as
-missing whenever its Message-ID is not archived *for this folder*, so an absent
-or duplicated one is fetched needlessly. Deliberate -- the storage discards the
-redundant copy, while the reverse mistake would cost the message.
+share without transferring the message is the Message-ID.
+
+It is compared by *count*, not by presence. A place can hold two messages with
+the same Message-ID and different bytes -- those are two objects here -- and a
+plain "is it archived?" would let the second pass as already there. Counting
+catches it: the server showing an id twice where one copy is archived means one
+is missing.
+
+The bias that leaves runs the safe way. Byte-identical duplicates on the server
+collapse into a single object in the storage, so every copy after the first
+finds nothing left to claim and is downloaded again to be discarded. On a real
+folder that is a few thousand needless downloads -- bandwidth, on a command that
+runs rarely, against a message that would otherwise be missing for good.
 """
 
 from __future__ import annotations
 
+import collections
 import collections.abc
 import dataclasses
 import logging
@@ -71,12 +80,17 @@ def places_from_log(log_root: pathlib.Path) -> dict[tuple[str, str | None], set[
     return places
 
 
-def archived_message_ids(
+def archived_message_counts(
     store: cas.ContentAddressedStorage,
     store_ids: collections.abc.Iterable[str],
     log_ctx: str = "",
-) -> set[str]:
-    """Return the normalised Message-IDs of the given archived messages.
+) -> collections.Counter[str]:
+    """Count the archived copies per normalised Message-ID.
+
+    Counted rather than collected, because the archive is addressed by content:
+    two messages sharing a Message-ID and differing in their bytes are two
+    objects here, and only a count can tell that the server showing that id twice
+    means one of them is missing.
 
     The log says which messages are at a place; the Message-ID itself is only in
     the message, so each one is parsed. That is one header read per archived
@@ -92,7 +106,7 @@ def archived_message_ids(
     comparison key and must count as "not present" so they are re-fetched, which
     is harmless because the storage deduplicates by content.
     """
-    known: set[str] = set()
+    known: collections.Counter[str] = collections.Counter()
     read = 0
     for store_id in store_ids:
         read += 1
@@ -106,8 +120,8 @@ def archived_message_ids(
         except (OSError, ValueError) as exc:
             log.warning("%s: unreadable, not counted as archived: %s", path, exc)
             continue
-        known.add(mailutils.normalize_message_id(mailutils.message_id(header)))
-    known.discard("")
+        known[mailutils.normalize_message_id(mailutils.message_id(header))] += 1
+    known.pop("", None)
     return known
 
 
@@ -131,7 +145,7 @@ def reconcile_folder(
     # Said before the work, not after it: this reads one header per archived
     # message and has nothing to report until every one of them is done.
     log.info("%s: reading %s archived message(s)", ctx, f"{len(archived):,}")
-    known = mailutils.MessageIdIndex(archived_message_ids(store, archived, log_ctx=ctx))
+    known = mailutils.MessageIdLedger(archived_message_counts(store, archived, log_ctx=ctx))
     log.info("%s: %s message(s) in archive", ctx, f"{len(known):,}")
 
     result = ReconcileResult(folder=folder)
@@ -139,7 +153,7 @@ def reconcile_folder(
     log.info("%s: listing the folder on the server", ctx)
     for ref in mb.message_index(folder):
         result.on_server += 1
-        if mailutils.normalize_message_id(ref.message_id) not in known:
+        if not known.take(mailutils.normalize_message_id(ref.message_id)):
             missing.append(ref)
         if result.on_server % SERVER_PROGRESS_EVERY == 0:
             log.info("%s: %s message(s) indexed", ctx, f"{result.on_server:,}")

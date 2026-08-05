@@ -11,7 +11,7 @@ import pytest
 
 from mailvault import conf, jobs, mailutils
 from mailvault.backend import base
-from mailvault.jobs.reconcile import archived_message_ids, places_from_log
+from mailvault.jobs.reconcile import archived_message_counts, places_from_log
 from mailvault.jobs.storedb import DEFAULT_QUERY_DB_NAME, refresh_db
 from mailvault.store import cas, metadb, metalog, state
 
@@ -1215,8 +1215,8 @@ class TestVerify:
         assert len(list(store.walk())) == 2
         # The restored message reached the log too, not just the archive.
         places = places_from_log(tmp_path / metalog.DEFAULT_LOG_DIR)
-        known = archived_message_ids(store, places[("test-job", "INBOX")])
-        assert known == {"a@example.com", "b@example.com"}
+        known = archived_message_counts(store, places[("test-job", "INBOX")])
+        assert known == {"a@example.com": 1, "b@example.com": 1}
 
     def test_repair_is_idempotent(self, tmp_path):
         """A second verify run right after a repair must find nothing."""
