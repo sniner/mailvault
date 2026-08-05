@@ -263,9 +263,10 @@ def test_cas_compress_all(tmp_path):
     store.add(data1)
     store.add(data2)
 
-    compressed, skipped = store.compress_all()
-    assert compressed == 2
-    assert skipped == 0
+    result = store.compress_all()
+    assert result.converted == 2
+    assert result.skipped == 0
+    assert result.failed == []
 
     # All files should now be .zst
     files = list(store.walk())
@@ -281,9 +282,9 @@ def test_cas_compress_all_skips_compressed(tmp_path):
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml", compress=True)
     store.add(b"already compressed")
 
-    compressed, skipped = store.compress_all()
-    assert compressed == 0
-    assert skipped == 1
+    result = store.compress_all()
+    assert result.converted == 0
+    assert result.skipped == 1
 
 
 def test_cas_compress_all_mixed(tmp_path):
@@ -295,9 +296,9 @@ def test_cas_compress_all_mixed(tmp_path):
     )
     store_zst.add(b"compressed file")
 
-    compressed, skipped = store_plain.compress_all()
-    assert compressed == 1
-    assert skipped == 1
+    result = store_plain.compress_all()
+    assert result.converted == 1
+    assert result.skipped == 1
 
 
 def test_cas_decompress_all(tmp_path):
@@ -307,9 +308,9 @@ def test_cas_decompress_all(tmp_path):
     store.add(data1)
     store.add(data2)
 
-    decompressed, skipped = store.decompress_all()
-    assert decompressed == 2
-    assert skipped == 0
+    result = store.decompress_all()
+    assert result.converted == 2
+    assert result.skipped == 0
 
     files = list(store.walk())
     assert len(files) == 2
@@ -324,6 +325,238 @@ def test_cas_decompress_all_skips_plain(tmp_path):
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
     store.add(b"already plain")
 
-    decompressed, skipped = store.decompress_all()
-    assert decompressed == 0
-    assert skipped == 1
+    result = store.decompress_all()
+    assert result.converted == 0
+    assert result.skipped == 1
+
+
+# ---------------------------------------------------------------------------
+# What a name is allowed to be
+# ---------------------------------------------------------------------------
+
+
+def test_cas_locate_rejects_a_hash_that_is_not_one(tmp_path):
+    """A store id that is not a hash must not become a path.
+
+    `..` cut into shard components climbs out of the store, and an absolute
+    component would leave it entirely -- so a mix-up has to be caught before a
+    path is derived from it, not after.
+    """
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    for bogus in ("../../etc/passwd", "/etc/passwd", "", "not-a-hash", "abcdef.."):
+        with pytest.raises(ValueError):
+            store.locate(bogus)
+
+
+def test_cas_locate_accepts_an_uppercase_hash(tmp_path):
+    """Entries are named in lowercase, so a hash from elsewhere is folded to it."""
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    _, hashval, path = store.add(b"case test")
+
+    assert store.locate(hashval.upper(), exists=True) == path
+
+
+def test_cas_depth_deeper_than_the_hash_is_refused(tmp_path):
+    """A depth that no digest can be cut into fails at construction, not on write."""
+    with pytest.raises(ValueError):
+        cas.ContentAddressedStorage(root_dir=tmp_path / "cas", depth=49)  # sha384 is 96 chars
+    with pytest.raises(ValueError):
+        cas.ContentAddressedStorage(root_dir=tmp_path / "cas", depth=-1)
+    # The deepest a sha384 store can shard is still fine.
+    cas.ContentAddressedStorage(root_dir=tmp_path / "deep", depth=48)
+
+
+def test_cas_walk_skips_what_is_not_an_entry(tmp_path):
+    """Only files named after a hash are entries -- `create-db` trusts that."""
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    _, _, path = store.add(b"a real message")
+
+    (store.root_dir / ".DS_Store").write_bytes(b"junk")
+    (path.parent / "Re Fwd holiday photos.eml").write_bytes(b"copied in by hand")
+    (path.parent / "not-hex-at-all.eml").write_bytes(b"nor this")
+    (path.parent / (path.name + ".12345-0._tmp_")).write_bytes(b"interrupted run")
+
+    assert list(store.walk()) == [path]
+
+
+def test_cas_hashval_of_reads_the_name_back(tmp_path):
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    _, hashval, path = store.add(b"name me")
+    zst = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml", compress=True)
+    _, zhashval, zpath = zst.add(b"and me, compressed")
+
+    assert store.hashval_of(path) == hashval
+    assert store.hashval_of(zpath) == zhashval
+    assert store.hashval_of(path.with_name("notes.eml")) is None
+    assert store.hashval_of(path.with_suffix(".txt")) is None
+
+
+# ---------------------------------------------------------------------------
+# Integrity
+# ---------------------------------------------------------------------------
+
+
+def test_cas_verify(tmp_path):
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    _, _, path = store.add(b"original content")
+    assert store.verify(path)
+
+    path.write_bytes(b"tampered with")
+    assert not store.verify(path)
+
+
+def test_cas_verify_compressed(tmp_path):
+    """The name is the hash of the content, not of the compressed file."""
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml", compress=True)
+    _, _, path = store.add(b"compressible " * 100)
+
+    assert store.verify(path)
+
+
+def test_cas_verify_needs_an_entry(tmp_path):
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    stray = store.root_dir / "notes.eml"
+    stray.write_bytes(b"by hand")
+
+    with pytest.raises(ValueError):
+        store.verify(stray)
+
+
+def test_cas_hashval_matches_what_add_stores_under(tmp_path):
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    _, hashval, _ = store.add(b"hash me")
+
+    assert store.hashval(b"hash me") == hashval
+
+
+# ---------------------------------------------------------------------------
+# Writing: what an interrupted or concurrent run leaves behind
+# ---------------------------------------------------------------------------
+
+
+def test_cas_failed_write_leaves_nothing_behind(tmp_path):
+    """A write that fails halfway must leave neither an entry nor a leftover.
+
+    The content is hashed first and written second, so the interesting failure
+    is the one in the second pass: by then the destination name is known and a
+    file is already open under it.
+    """
+
+    class FailsAfterHashing(io.BytesIO):
+        """Readable once -- for the hash -- and broken from the rewind on."""
+
+        def __init__(self, data: bytes):
+            super().__init__(data)
+            self.rewinds = 0
+
+        def seek(self, *args, **kwargs):
+            self.rewinds += 1
+            return super().seek(*args, **kwargs)
+
+        def read(self, size=-1, /):
+            # 1: the store rewinds before hashing, 2: it rewinds after.
+            if self.rewinds >= 2:
+                raise OSError("the network went away")
+            return super().read(size)
+
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    source = FailsAfterHashing(b"a message that gets cut off")
+
+    with pytest.raises(OSError):
+        store.add(source)
+
+    assert source.rewinds >= 2, "the failure has to happen while writing, not while hashing"
+    assert [p for p in store.root_dir.rglob("*") if p.is_file()] == []
+    assert store.locate(store.hashval(b"a message that gets cut off"), exists=True) is None
+
+
+def test_cas_transient_files_do_not_collide(tmp_path, monkeypatch):
+    """Two writers storing the same message must not share a transient file.
+
+    They race for the same destination name by design -- that is what makes the
+    store deduplicate. The transient file is the one thing that must be theirs
+    alone, or one writer's blocks land in the other's file and the mixture gets
+    renamed into place.
+    """
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    destination = store.root_dir / "aa" / "aabbcc.eml"
+    destination.parent.mkdir(parents=True)
+
+    with cas._writing_to(destination) as first:
+        with cas._writing_to(destination) as second:
+            first.write(b"one writer")
+            second.write(b"another writer")
+            assert first.name != second.name
+
+    assert destination.read_bytes() == b"one writer"
+
+
+def test_cas_write_is_not_seen_before_it_is_complete(tmp_path):
+    """Nothing appears under the entry's name until the whole entry is there."""
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    destination = store.root_dir / "aa" / "aabbcc.eml"
+
+    with cas._writing_to(destination) as f:
+        f.write(b"half a message")
+        assert not destination.exists()
+
+    assert destination.read_bytes() == b"half a message"
+
+
+def test_cas_fsync_store_writes_readable_entries(tmp_path):
+    """The durable path has to produce the same result as the fast one."""
+    store = cas.ContentAddressedStorage(
+        root_dir=tmp_path / "cas",
+        suffix=".jsonl",
+        depth=1,
+        fsync=True,
+    )
+
+    status, _, path = store.add(b'{"a":1}\n')
+
+    assert status == "NEW"
+    assert store.read(path) == b'{"a":1}\n'
+    assert store.verify(path)
+
+
+# ---------------------------------------------------------------------------
+# Reading
+# ---------------------------------------------------------------------------
+
+
+def test_cas_read_header_stops_at_the_blank_line(tmp_path):
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    _, _, path = store.add(b"From: someone\r\nSubject: hi\r\n\r\nbody\r\n\r\nmore")
+
+    assert store.read_header(path) == b"From: someone\r\nSubject: hi\r\n\r\n"
+
+
+def test_cas_read_header_honours_the_limit_exactly(tmp_path):
+    """Content with no blank line is cut at the limit, not at a block boundary."""
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    _, _, path = store.add(b"no separator anywhere " * 5000)
+
+    assert store.read_header(path, limit=10) == b"no separat"
+    assert store.read_header(path, limit=0) == b""
+
+
+def test_cas_read_header_of_a_compressed_entry(tmp_path):
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml", compress=True)
+    _, _, path = store.add(b"From: someone\r\n\r\n" + b"attachment" * 100_000)
+
+    assert store.read_header(path) == b"From: someone\r\n\r\n"
+
+
+def test_cas_conversion_failure_is_reported_not_swallowed(tmp_path):
+    """A pass keeps going, but the caller learns which entries it left behind."""
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml", compress=True)
+    _, _, good = store.add(b"a real entry")
+    _, _, broken = store.add(b"about to be corrupted")
+    broken.write_bytes(b"this is not a zstd frame")
+
+    result = store.decompress_all()
+
+    assert result.converted == 1
+    assert result.failed == [broken]
+    assert broken.exists(), "a file that could not be converted is left as it is"
+    assert store.read(good.with_suffix("")) == b"a real entry"

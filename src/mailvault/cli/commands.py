@@ -186,6 +186,28 @@ def report_compact(source: pathlib.Path, result: metalog.CompactResult) -> None:
         print(f"{source}: {dropped:,} duplicate observation(s) dropped")
 
 
+def report_conversion(
+    source: pathlib.Path,
+    result: cas.ConversionResult,
+    done: str,
+    already: str,
+) -> int:
+    """Say what a conversion pass did, and exit non-zero when part of it failed.
+
+    A pass keeps going when one entry fails, so without this the command would
+    report how many files it converted and stay silent about the ones it did
+    not: the archive would look converted when it is not, and a script driving
+    the command would never find out.
+    """
+    print(f"{source}: {result.converted:,} files {done}, {result.skipped:,} {already}")
+    for path in result.failed:
+        print(f"{path}: could not be converted, left as it is")
+    if not result.failed:
+        return 0
+    print(f"{source}: {len(result.failed):,} file(s) failed, see the log for the reason")
+    return 1
+
+
 def run_archive(args: argparse.Namespace) -> int:
     """Run an `archive` subcommand (stats/import/addresses/compress/create-db/...)."""
     cmd = args.archive_command
@@ -204,12 +226,14 @@ def run_archive(args: argparse.Namespace) -> int:
         source.archive_to_cas(destination, move=args.move)
     elif cmd == "compress":
         store = cas.ContentAddressedStorage(args.source, suffix=".eml")
-        compressed, skipped = store.compress_all()
-        print(f"{args.source}: {compressed:,} files compressed, {skipped:,} already compressed")
+        return report_conversion(
+            args.source, store.compress_all(), "compressed", "already compressed"
+        )
     elif cmd == "decompress":
         store = cas.ContentAddressedStorage(args.source, suffix=".eml")
-        decompressed, skipped = store.decompress_all()
-        print(f"{args.source}: {decompressed:,} files decompressed, {skipped:,} already plain")
+        return report_conversion(
+            args.source, store.decompress_all(), "decompressed", "already plain"
+        )
     elif cmd == "create-db":
         result = jobs.create_db(
             args.source, args.database, mailbox=args.mailbox, force=args.force

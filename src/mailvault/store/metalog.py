@@ -56,7 +56,6 @@ from __future__ import annotations
 
 import collections.abc
 import dataclasses
-import hashlib
 import json
 import logging
 import pathlib
@@ -135,7 +134,7 @@ def verify_file(path: pathlib.Path) -> bool:
     except OSError as exc:
         log.warning("%s: unreadable: %s", path, exc)
         return False
-    return hashlib.sha384(raw).hexdigest() == path.name.removesuffix(".jsonl")
+    return cas.DEFAULT_HASH(raw).hexdigest() == path.name.removesuffix(".jsonl")
 
 
 def _serialize(
@@ -265,7 +264,7 @@ def read_log(path: pathlib.Path) -> LogFile | None:
     # a subset of the truth -- which is what every log file is anyway. Throwing
     # away 80,000 readable lines because the last one was cut short would be the
     # worse answer. The warning is what lets someone repair the archive.
-    if hashlib.sha384(raw).hexdigest() != path.name.removesuffix(".jsonl"):
+    if cas.DEFAULT_HASH(raw).hexdigest() != path.name.removesuffix(".jsonl"):
         log.warning("%s: damaged -- content does not match its name", path)
 
     try:

@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Two runs writing into one archive at the same time can no longer damage an entry.** Every
+  message was written to a transient file whose name was derived from the message itself, so two
+  runs storing the same message -- two mailboxes holding the same mail, a backup and a repair
+  overlapping, one run started twice by accident -- opened the *same* file and wrote into it at
+  once. The result was renamed into place looking like a perfectly normal entry, and its content
+  did not match its name. Transient files now belong to one writer alone; racing for the same
+  entry is what makes the store deduplicate and stays harmless
+
+- **An entry written with `fsync` on now survives a power cut, name included.** The content was
+  flushed to the device but the directory entry naming it was not, so the archive could come back
+  up with the bytes on disk and nothing pointing at them. This is what the metadata log turns
+  `fsync` on for, and it was the half of the promise that was missing
+
+- **A store id that is not a hash is refused instead of being followed.** Store ids come back from
+  the database, from the metadata log and from the command line, and a path is derived from one by
+  cutting it into directory names -- so `../..` cut into components climbed out of the store
+  entirely. Now rejected where such a value enters, and an uppercase hash is accepted rather than
+  quietly not found
+
+- **`archive compress` and `archive decompress` report the entries they could not convert**, name
+  them, and exit non-zero. A pass keeps going when one entry fails -- one damaged file should not
+  stop a run over a whole archive -- but it used to count only what worked, so a partly failed
+  conversion was indistinguishable from a complete one unless you read the log
+
+- **A file that is not an entry no longer becomes a database row.** `create-db` turns each file
+  name in the store back into a store id, and the walk handed it everything ending in `.eml` --
+  a message copied in by hand under its subject, the leftover of an interrupted run. Only files
+  actually named after a hash count as entries now
+
+- **`read_header` stops exactly at the limit it was given** instead of wherever the last block
+  happened to end
+
+- **A shard depth the hash is too short for fails when the store is opened**, not on every write;
+  a negative depth is an error rather than being silently turned into the default
+
+### Changed
+
+- **`compress_all` and `decompress_all` return a `ConversionResult`** (`converted`, `skipped`,
+  `failed`) rather than a pair of counts. `result.converted` and `result.skipped` are what the two
+  numbers used to be
+
+- **`ContentAddressedStorage` gained `verify`, `hashval` and `hashval_of`** -- check an entry
+  against the name it is filed under, name content without storing it, and read a store id back
+  out of a path. Checking a file against its own name is the guarantee the whole design exists
+  for, and it was the one thing the store could not do
+
 ## 0.9.2 (2026-08-05)
 
 ### Added

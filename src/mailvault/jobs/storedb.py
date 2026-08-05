@@ -99,7 +99,9 @@ def _insert_message_from_path(
     """
     header = mailutils.decode_email_header(store.read_header(path))
     from_addrs, to_addrs = mailutils.addresses(header)
-    store_id = path.name.split(".")[0]
+    store_id = store.hashval_of(path)
+    if store_id is None:
+        raise ValueError(f"not an entry of the store: {path}")
     email_id = mailutils.message_id(header)
     date = mailutils.date(header)
     subject = mailutils.subject(header)

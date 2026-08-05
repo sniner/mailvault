@@ -323,6 +323,11 @@ $ mailvault archive decompress ./backup
 ./backup: 1,234 files decompressed, 0 already plain
 ```
 
+One entry that cannot be converted does not stop the pass -- a single damaged
+file should not cost you the conversion of a whole archive. Those files are
+named, left exactly as they are, and the command exits non-zero, so a script
+finds out about a conversion that only partly happened.
+
 ### Email addresses
 
 List all sender and recipient addresses found in the archive:

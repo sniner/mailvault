@@ -1,4 +1,4 @@
-"""Tests for the CLI front-end -- so far only how it reports a failed job."""
+"""Tests for the CLI front-end: how it reports a failed job and a partial conversion."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import pytest
 from mailvault import conf, jobs
 from mailvault.backend import base
 from mailvault.cli import commands
+from mailvault.store import cas
 
 
 def _args(**overrides: Any) -> argparse.Namespace:
@@ -130,3 +131,42 @@ class TestJobFailureReporting:
 )
 def test_every_expected_error_is_recognised_as_one(error):
     assert isinstance(error, commands.EXPECTED_ERRORS)
+
+
+def test_archive_decompress_reports_what_it_could_not_convert(tmp_path, capsys):
+    """A conversion pass that left files behind must not report success.
+
+    The pass keeps going when one entry fails, so the exit status is the only
+    thing a script has to go on -- and a run that converted all but one file is
+    exactly the case worth noticing.
+    """
+    root = tmp_path / "cas"
+    store = cas.ContentAddressedStorage(root_dir=root, suffix=".eml", compress=True)
+    _, _, good = store.add(b"a real message")
+    _, _, broken = store.add(b"about to be corrupted")
+    broken.write_bytes(b"this is not a zstd frame")
+
+    exit_code = commands.run_archive(
+        argparse.Namespace(archive_command="decompress", source=root)
+    )
+
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert "1 files decompressed" in out
+    assert str(broken) in out
+    assert "1 file(s) failed" in out
+    assert store.read(good.with_suffix("")) == b"a real message"
+    assert broken.exists(), "what could not be converted is left as it is"
+
+
+def test_archive_decompress_that_works_exits_zero(tmp_path, capsys):
+    root = tmp_path / "cas"
+    store = cas.ContentAddressedStorage(root_dir=root, suffix=".eml", compress=True)
+    store.add(b"a real message")
+
+    exit_code = commands.run_archive(
+        argparse.Namespace(archive_command="decompress", source=root)
+    )
+
+    assert exit_code == 0
+    assert "failed" not in capsys.readouterr().out
