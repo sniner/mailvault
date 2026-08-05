@@ -220,6 +220,15 @@ class SnapshotState:
         """True when no folder is recorded, i.e. a new or unusable state file."""
         return not self._folders
 
+    def mailboxes(self) -> set[str]:
+        """The mailboxes recorded here -- who has written into this archive.
+
+        Answers "does this job belong to this archive" without touching anything
+        else, which is why it is worth having: the metadata log knows the same
+        thing, but only by opening every file it holds.
+        """
+        return set(self._folders)
+
     def _state(self, mailbox: str, folder: str) -> FolderState | None:
         return self._folders.get(mailbox, {}).get(folder)
 

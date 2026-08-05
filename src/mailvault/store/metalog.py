@@ -248,6 +248,74 @@ def _parse_store_id(path: pathlib.Path, number: int, line: str) -> str | None:
     return store_id
 
 
+def _parse_header(path: pathlib.Path, line: str) -> dict | None:
+    """Decode a log file's first line, or None when it cannot be used.
+
+    Without a usable header the lines below it have no place to belong to, so
+    every caller here treats None as "skip this file".
+    """
+    try:
+        header = json.loads(line)
+    except json.JSONDecodeError as exc:
+        log.warning("%s: unreadable header, skipped: %s", path, exc)
+        return None
+    if not isinstance(header, dict):
+        log.warning("%s: header is not an object, skipped", path)
+        return None
+    if header.get("version") != LOG_VERSION:
+        log.warning(
+            "%s: log version %r is not %d, skipped -- it was written by a different"
+            " mailvault version; upgrade mailvault to read it",
+            path,
+            header.get("version"),
+            LOG_VERSION,
+        )
+        return None
+    return header
+
+
+def read_header(path: pathlib.Path) -> dict | None:
+    """Read only a log file's header, without its message lines.
+
+    For the questions the header alone answers -- which mailbox, which folder,
+    when -- and where the message lines would be read and thrown away. No
+    integrity check is possible this way: the file's name is the hash of all of
+    it, so verifying means reading all of it. Use `read_log` where that matters.
+    """
+    try:
+        with path.open("rb") as f:
+            first = f.readline()
+    except OSError as exc:
+        log.warning("%s: unreadable, skipped: %s", path, exc)
+        return None
+    if not first:
+        log.warning("%s: empty, skipped", path)
+        return None
+    try:
+        line = first.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        log.warning("%s: not valid UTF-8, skipped: %s", path, exc)
+        return None
+    return _parse_header(path, line)
+
+
+def mailboxes(root: pathlib.Path) -> set[str]:
+    """The mailbox names below `root`, from the headers alone.
+
+    A log file names its mailbox in its first line, so "who has written into this
+    archive" costs one line per file rather than the whole log.
+    """
+    names = set()
+    for path in log_files(root):
+        header = read_header(path)
+        if header is None:
+            continue
+        mailbox = header.get("mailbox")
+        if isinstance(mailbox, str) and mailbox:
+            names.add(mailbox)
+    return names
+
+
 def read_log(path: pathlib.Path) -> LogFile | None:
     """Read one log file, returning None when it cannot be used at all.
 
@@ -280,22 +348,8 @@ def read_log(path: pathlib.Path) -> LogFile | None:
     if not lines:
         log.warning("%s: empty, skipped", path)
         return None
-    try:
-        header = json.loads(lines[0])
-    except json.JSONDecodeError as exc:
-        log.warning("%s: unreadable header, skipped: %s", path, exc)
-        return None
-    if not isinstance(header, dict):
-        log.warning("%s: header is not an object, skipped", path)
-        return None
-    if header.get("version") != LOG_VERSION:
-        log.warning(
-            "%s: log version %r is not %d, skipped -- it was written by a different"
-            " mailvault version; upgrade mailvault to read it",
-            path,
-            header.get("version"),
-            LOG_VERSION,
-        )
+    header = _parse_header(path, lines[0])
+    if header is None:
         return None
 
     mailbox = header.get("mailbox")

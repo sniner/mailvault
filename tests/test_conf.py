@@ -1,3 +1,4 @@
+import pathlib
 import sys
 
 import pytest
@@ -401,3 +402,49 @@ def test_a_leftover_copy_section_is_reported(tmp_path, caplog):
     assert "removed in 0.9.0" in caplog.text
     assert not hasattr(config, "copy")
     assert config.jobs[0].name == "a"
+
+
+# ---------------------------------------------------------------------------
+# The archive a configuration belongs to
+# ---------------------------------------------------------------------------
+
+
+class TestDestination:
+    """`[global] destination` ties a config to one archive. It stays optional."""
+
+    @staticmethod
+    def _load(tmp_path, line: str = "", name: str = "archive.toml"):
+        path = tmp_path / name
+        path.write_text(f'[global]\n{line}\n[[job]]\nname = "j"\nserver = "s"\n')
+        return conf.load(path)
+
+    def test_a_config_without_one_is_still_valid(self, tmp_path):
+        assert self._load(tmp_path).destination is None
+
+    def test_an_absolute_path_is_taken_as_it_is(self, tmp_path):
+        config = self._load(tmp_path, 'destination = "/archive/private"')
+
+        assert config.destination == pathlib.Path("/archive/private")
+
+    def test_a_relative_path_is_relative_to_the_config_file(self, tmp_path):
+        """Not to the working directory: from cron there is no telling what that is."""
+        config = self._load(tmp_path, 'destination = "mail"')
+
+        assert config.destination == tmp_path / "mail"
+
+    def test_a_tilde_is_expanded(self, tmp_path):
+        config = self._load(tmp_path, 'destination = "~/mail"')
+
+        assert config.destination == pathlib.Path("~/mail").expanduser()
+
+    def test_an_environment_variable_is_expanded(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ARCHIVE_ROOT", "/mnt/backup")
+
+        config = self._load(tmp_path, 'destination = "${ARCHIVE_ROOT}/mail"')
+
+        assert config.destination == pathlib.Path("/mnt/backup/mail")
+
+    @pytest.mark.parametrize("value", ['""', '"   "', "42"])
+    def test_something_that_is_not_a_path_is_refused(self, tmp_path, value):
+        with pytest.raises(conf.ConfigError, match="destination"):
+            self._load(tmp_path, f"destination = {value}")

@@ -277,6 +277,50 @@ class TestDiscovery:
         assert len(list(metalog.read_all(root))) == 1
 
 
+class TestHeaderOnly:
+    """The header alone answers where a file belongs, without its message lines."""
+
+    def test_it_reads_the_place(self, tmp_path):
+        (path,) = _write(tmp_path / "meta", mailbox="gmail.com", folder="Sent")
+
+        header = metalog.read_header(path)
+
+        assert header is not None
+        assert header["mailbox"] == "gmail.com"
+        assert header["folder"] == "Sent"
+
+    def test_an_unusable_file_yields_nothing(self, tmp_path):
+        path = tmp_path / "broken.jsonl"
+        path.write_text("not json\n", encoding="utf-8")
+
+        assert metalog.read_header(path) is None
+
+    def test_an_empty_file_yields_nothing(self, tmp_path):
+        path = tmp_path / "empty.jsonl"
+        path.write_text("", encoding="utf-8")
+
+        assert metalog.read_header(path) is None
+
+    def test_mailboxes_gathers_the_names(self, tmp_path):
+        root = tmp_path / "meta"
+        _write(root, mailbox="gmail.com", folder="INBOX")
+        _write(root, mailbox="gmail.com", folder="Sent")
+        _write(root, mailbox="posteo.de", folder="INBOX")
+
+        assert metalog.mailboxes(root) == {"gmail.com", "posteo.de"}
+
+    def test_mailboxes_of_an_empty_archive(self, tmp_path):
+        assert metalog.mailboxes(tmp_path / "meta") == set()
+
+    def test_a_damaged_file_costs_only_itself(self, tmp_path):
+        root = tmp_path / "meta"
+        _write(root, mailbox="gmail.com")
+        (root / "ff").mkdir(exist_ok=True)
+        (root / "ff" / "ff00.jsonl").write_text("broken", encoding="utf-8")
+
+        assert metalog.mailboxes(root) == {"gmail.com"}
+
+
 class TestCompact:
     @staticmethod
     def _write(root, store_ids, mailbox="job", folder="INBOX", when=WHEN):

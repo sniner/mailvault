@@ -1,5 +1,8 @@
 [global]
 compress = true
+# The archive this file belongs to. Optional -- without it the destination has
+# to be named on the command line. A relative path is relative to this file.
+# destination = "/srv/archive/example"
 
 [[job]]
 name = "example.org"

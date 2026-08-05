@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Added
+
+- **A backup into the wrong archive is refused before it starts.** The configuration file and the
+  destination are two independent arguments, and `--config work.toml backup ~/mail/private` looks
+  perfectly fine until the first message is written. `backup` and `verify` now check, before the
+  first login, that each selected job has written into that archive before -- the archive knows
+  from `state.json`, or from the metadata log if that is gone. A job that has not stops the run
+  and is named. The check looks only in the writing direction: a mailbox in the archive with no
+  job in the configuration is nobody's business, so removing a job, commenting one out or picking
+  a few with `--job` stay free of ceremony, and an archive nobody has written into takes anything
+
+- **`--allow-new-mailbox`** is the way past it for the one case it cannot tell from a mix-up: a
+  genuinely new job. One run with the flag, and from the next one it is known
+
+- **`[global] destination`** names the archive a configuration belongs to, so
+  `mailvault --config private.toml backup` needs no path at all. Optional, and the command line
+  still wins where both name one -- that override is logged, being indistinguishable from having
+  reached for the wrong archive. A relative path is relative to the configuration file, not the
+  working directory, so it means the same archive from cron as from a shell; `~` and `${VAR}`
+  are expanded
+
 ### Changed
 
 - **An incremental backup resumes from where the server says it is, not from a date.** IMAP now

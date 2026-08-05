@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import pathlib
 from datetime import UTC, datetime
 from typing import Any
 
@@ -12,7 +13,14 @@ import pytest
 from mailvault import conf, jobs
 from mailvault.backend import base
 from mailvault.cli import commands
-from mailvault.store import cas, metalog
+from mailvault.store import cas, metalog, state
+
+WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
+
+# A directory that does not exist, which is what an archive nobody has written
+# into looks like -- the mailbox guard has nothing to compare against and lets
+# every job through.
+NEW_ARCHIVE = pathlib.Path("/nonexistent-archive")
 
 
 def _args(**overrides: Any) -> argparse.Namespace:
@@ -21,7 +29,8 @@ def _args(**overrides: Any) -> argparse.Namespace:
         config="mailvault.toml",
         allow_exec=False,
         job=None,
-        destination=None,
+        destination=NEW_ARCHIVE,
+        allow_new_mailbox=False,
         compress=False,
         index_db=False,
         full=False,
@@ -48,7 +57,7 @@ class TestFullFlag:
     def _incremental_of(monkeypatch, args, config) -> bool:
         seen: dict[str, Any] = {}
         monkeypatch.setattr(jobs, "backup", lambda *a, **kw: seen.update(kw))
-        commands._run_job(conf.JobConfig(name="proton.me"), args, config)
+        commands._run_job(conf.JobConfig(name="proton.me"), args, config, NEW_ARCHIVE)
         return seen["incremental"]
 
     def test_full_switches_the_incremental_run_off(self, monkeypatch):
@@ -124,6 +133,122 @@ class TestJobFailureReporting:
 
         assert commands.run_mailbox(_args()) == 1
         assert seen == ["broken", "fine"]
+
+
+class TestArchivePath:
+    """Where the archive comes from when the config names one as well."""
+
+    def test_the_configured_one_is_used_when_the_command_line_is_silent(self):
+        config = conf.Config(destination=pathlib.Path("/archive/private"))
+
+        assert commands.archive_path(_args(destination=None), config) == config.destination
+
+    def test_the_command_line_wins_and_says_so(self, caplog):
+        config = conf.Config(destination=pathlib.Path("/archive/private"))
+        args = _args(destination=pathlib.Path("/archive/scratch"))
+
+        with caplog.at_level(logging.WARNING):
+            assert commands.archive_path(args, config) == pathlib.Path("/archive/scratch")
+
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("overriding" in w for w in warnings)
+
+    def test_naming_the_same_archive_twice_is_not_an_override(self, tmp_path, caplog):
+        """Same place, written differently -- what a shell completion produces."""
+        config = conf.Config(destination=tmp_path / "archive")
+        args = _args(destination=tmp_path / "sub" / ".." / "archive")
+
+        with caplog.at_level(logging.WARNING):
+            commands.archive_path(args, config)
+
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+    def test_neither_of_them_is_an_error(self):
+        with pytest.raises(conf.ConfigError, match="no archive directory"):
+            commands.archive_path(_args(destination=None), conf.Config())
+
+
+class TestMailboxGuard:
+    """A run into an archive the jobs do not belong to is stopped beforehand."""
+
+    @staticmethod
+    def _archive(tmp_path, *mailboxes: str) -> pathlib.Path:
+        s = state.SnapshotState(tmp_path / state.DEFAULT_STATE_NAME)
+        for name in mailboxes:
+            s.record(name, "INBOX", last_run=WHEN, resume=None)
+        s.save()
+        return tmp_path
+
+    @staticmethod
+    def _jobs_run(monkeypatch, jobnames: list[str]) -> list[str]:
+        """Let `run_mailbox` see these jobs, and collect the ones that ran."""
+        config = conf.Config(jobs=[conf.JobConfig(name=n) for n in jobnames])
+        monkeypatch.setattr(conf, "load", lambda *a, **kw: config)
+        seen: list[str] = []
+        monkeypatch.setattr(commands, "_run_job", lambda job, *a, **kw: seen.append(job.name))
+        return seen
+
+    def test_a_configuration_that_never_wrote_here_is_refused(self, monkeypatch, tmp_path):
+        archive = self._archive(tmp_path, "gmail.com", "posteo.de")
+        ran = self._jobs_run(monkeypatch, ["ruhlgroup.com"])
+
+        with pytest.raises(jobs.JobError, match="wrong configuration"):
+            commands.run_mailbox(_args(destination=archive))
+
+        assert ran == []
+
+    def test_nothing_is_touched_before_the_check(self, monkeypatch, tmp_path):
+        """The point of the exercise: it fails before the first job, not during."""
+        archive = self._archive(tmp_path, "gmail.com")
+        ran = self._jobs_run(monkeypatch, ["gmail.com", "ruhlgroup.com"])
+
+        with pytest.raises(jobs.JobError):
+            commands.run_mailbox(_args(destination=archive))
+
+        assert ran == []
+
+    def test_the_flag_lets_a_genuinely_new_job_through(self, monkeypatch, tmp_path):
+        archive = self._archive(tmp_path, "gmail.com")
+        ran = self._jobs_run(monkeypatch, ["posteo.de"])
+
+        assert commands.run_mailbox(_args(destination=archive, allow_new_mailbox=True)) == 0
+        assert ran == ["posteo.de"]
+
+    def test_a_known_job_needs_no_flag(self, monkeypatch, tmp_path):
+        archive = self._archive(tmp_path, "gmail.com", "posteo.de")
+        ran = self._jobs_run(monkeypatch, ["gmail.com"])
+
+        assert commands.run_mailbox(_args(destination=archive)) == 0
+        assert ran == ["gmail.com"]
+
+    def test_a_new_job_among_known_ones_reads_as_a_new_job(self, monkeypatch, tmp_path):
+        """Not the same complaint: one unfamiliar name is rarely the wrong file."""
+        archive = self._archive(tmp_path, "gmail.com")
+        self._jobs_run(monkeypatch, ["gmail.com", "posteo.de"])
+
+        with pytest.raises(jobs.JobError, match="posteo.de has not written here before"):
+            commands.run_mailbox(_args(destination=archive))
+
+    def test_a_job_the_config_no_longer_has_is_nobodys_business(self, monkeypatch, tmp_path):
+        """Removing a job cannot put a message anywhere, so it is not reported."""
+        archive = self._archive(tmp_path, "gmail.com", "posteo.de", "proton.me")
+        ran = self._jobs_run(monkeypatch, ["gmail.com"])
+
+        assert commands.run_mailbox(_args(destination=archive)) == 0
+        assert ran == ["gmail.com"]
+
+    def test_an_empty_archive_takes_anything(self, monkeypatch, tmp_path):
+        ran = self._jobs_run(monkeypatch, ["gmail.com"])
+
+        assert commands.run_mailbox(_args(destination=tmp_path / "new")) == 0
+        assert ran == ["gmail.com"]
+
+    def test_folders_needs_no_archive_at_all(self, monkeypatch):
+        """It only ever talks to the server, so there is nothing to guard."""
+        ran = self._jobs_run(monkeypatch, ["gmail.com"])
+
+        assert commands.run_mailbox(_args(command="folders", destination=None)) == 0
+        assert ran == ["gmail.com"]
 
 
 @pytest.mark.parametrize(

@@ -13,6 +13,7 @@ import pathlib
 
 from mailvault import conf, importer, jobs
 from mailvault.backend import base
+from mailvault.jobs import guard
 from mailvault.store import cas, metalog
 
 log = logging.getLogger(__name__)
@@ -23,6 +24,10 @@ log = logging.getLogger(__name__)
 # the errors nobody anticipated -- where the call stack is the only clue. The
 # traceback is still there under `--verbose` for the rare case it is wanted.
 EXPECTED_ERRORS = (conf.ConfigError, jobs.JobError, base.MailboxError)
+
+# The commands that work on an archive directory, as opposed to `folders`, which
+# only ever talks to the server.
+ARCHIVE_COMMANDS = {"backup", "verify"}
 
 
 # --- folders / backup / verify -------------------------------------------------
@@ -46,11 +51,58 @@ def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: boo
         print(f"{job_name}: {total_restored:,} of {total_missing:,} message(s) restored")
 
 
-def _run_job(job: conf.JobConfig, args: argparse.Namespace, config: conf.Config) -> None:
+def _same_place(first: pathlib.Path, second: pathlib.Path) -> bool:
+    """True when two paths name the same directory, symlinks and `..` aside.
+
+    Neither has to exist -- this is asked before anything is created.
+    """
+    try:
+        return first.resolve() == second.resolve()
+    except OSError:
+        return first == second
+
+
+def archive_path(args: argparse.Namespace, config: conf.Config) -> pathlib.Path:
+    """Decide which archive to work on: the command line, or the configuration.
+
+    The command line wins where both name one, so a one-off run into a different
+    directory needs no edit to the file. That case is reported, though: it is
+    indistinguishable from having reached for the wrong archive, and an override
+    that passes unmentioned is what makes such a mistake hard to notice.
+    """
+    from_cli = getattr(args, "destination", None)
+    if from_cli is None:
+        if config.destination is None:
+            raise conf.ConfigError(
+                "no archive directory -- name one on the command line, or set "
+                "'destination' under [global] in the configuration"
+            )
+        log.info("Archive from the configuration: %s", config.destination)
+        return config.destination
+    if config.destination is not None and not _same_place(from_cli, config.destination):
+        log.warning(
+            "Archive %s given on the command line, overriding %s from the configuration",
+            from_cli,
+            config.destination,
+        )
+    return from_cli
+
+
+def _run_job(
+    job: conf.JobConfig,
+    args: argparse.Namespace,
+    config: conf.Config,
+    destination: pathlib.Path | None = None,
+) -> None:
     log.info(f"Job item: {job.name}")
 
     if args.command == "folders":
         jobs.folder_list(job)
+    elif destination is None:
+        # `run_mailbox` resolves the archive for every command that works on one,
+        # so this does not happen from the CLI. It is here because the argument
+        # may be absent and running the job anyway would mean guessing where.
+        raise jobs.JobError(f"{args.command}: no archive directory")
     elif args.command == "backup":
         compress = args.compress or config.compress
         index_db = args.index_db or config.index_db
@@ -60,14 +112,14 @@ def _run_job(job: conf.JobConfig, args: argparse.Namespace, config: conf.Config)
         incremental = config.incremental and not args.full
         jobs.backup(
             job,
-            args.destination,
+            destination,
             compress=compress,
             index_db=index_db,
             incremental=incremental,
         )
     elif args.command == "verify":
         compress = args.compress or config.compress
-        results = jobs.verify(job, args.destination, repair=args.repair, compress=compress)
+        results = jobs.verify(job, destination, repair=args.repair, compress=compress)
         report_verify(job.name, results, repaired=args.repair)
 
 
@@ -82,11 +134,21 @@ def run_mailbox(args: argparse.Namespace) -> int:
         for name in unknown:
             log.error("Unknown job: %s", name)
             exit_code = 1
+
+    # Both of these come before the first job, and deliberately so: they decide
+    # whether this configuration and this archive belong together, and the answer
+    # is worth nothing once a message has been written -- or, with
+    # `delete_after_export`, removed from the server.
+    destination = None
+    if args.command in ARCHIVE_COMMANDS:
+        destination = archive_path(args, config)
+        guard.check_jobs(destination, selected, allow_new=args.allow_new_mailbox)
+
     for job in selected:
         # One broken job must not stop the remaining ones, but the run as a
         # whole reports failure so callers/cron can react.
         try:
-            _run_job(job, args, config)
+            _run_job(job, args, config, destination)
         except EXPECTED_ERRORS as exc:
             # A misconfigured or refused job is a user error, not a crash --
             # reported as one line here for the same reason `main` does it.

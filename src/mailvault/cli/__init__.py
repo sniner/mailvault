@@ -81,6 +81,15 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="Run only the named job(s); may be repeated (folders/backup/verify)",
     )
+    parser.add_argument(
+        "--allow-new-mailbox",
+        action="store_true",
+        help=(
+            "Let a job write into an archive it has never written into before"
+            " (backup/verify); without it such a run is refused, on the assumption"
+            " that the configuration and the archive do not belong together"
+        ),
+    )
 
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
@@ -108,7 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Re-read every folder in full, ignoring where the last run left off",
     )
-    p_backup.add_argument("destination", type=pathlib.Path, help="Destination base directory")
+    p_backup.add_argument(
+        "destination",
+        type=pathlib.Path,
+        nargs="?",
+        help="Destination base directory (default: 'destination' from the config)",
+    )
 
     p_verify = sub.add_parser(
         "verify",
@@ -121,7 +135,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument(
         "--compress", action="store_true", help="Compress stored emails with zstd"
     )
-    p_verify.add_argument("destination", type=pathlib.Path, help="Archive directory to check")
+    p_verify.add_argument(
+        "destination",
+        type=pathlib.Path,
+        nargs="?",
+        help="Archive directory to check (default: 'destination' from the config)",
+    )
 
     p_archive = sub.add_parser(
         "archive",

@@ -84,7 +84,7 @@ Wheels and pre-compiled Windows executables are also available on the
   statistics, build a database for querying, etc.)
 
 Global options (`--config`, `-v/--verbose`, `-q/--quiet`, `--log-file`,
-`--allow-exec`, `--job`) are given **before** the command.
+`--allow-exec`, `--job`, `--allow-new-mailbox`) are given **before** the command.
 
 
 ## Backing up mailboxes
@@ -135,6 +135,50 @@ $ mailvault --config example.toml backup ./backup
 
 Use `--compress` to store emails compressed with zstd. Use `--job NAME` to run
 only specific jobs from the configuration file.
+
+### Which archive a configuration belongs to
+
+The configuration and the destination are two independent arguments, and nothing
+about `mailvault --config work.toml backup ~/mail/private` looks wrong until the
+first message has been written. Two things stand in the way of that pairing.
+
+A configuration can name the archive it belongs to:
+
+```toml
+[global]
+destination = "/srv/archive/private"
+```
+
+`mailvault --config private.toml backup` is then enough. A relative path is
+taken relative to the configuration file rather than the working directory, so
+it means the same archive from cron as from a shell; `~` and `${VAR}` are
+expanded. The option is optional, and naming a destination on the command line
+still works and still wins -- for the one-off run into a scratch directory --
+but the override is logged rather than passed over in silence.
+
+Independently of that, `backup` and `verify` stop **before the first login** when
+a job has never written into the archive they were pointed at:
+
+```console
+$ mailvault --config work.toml backup ~/mail/private
+ERROR -- /Users/jd/mail/private: the archive holds gmail.com, posteo.de, and none of
+its jobs (work.example.com) has ever written here -- this looks like the wrong
+configuration for this archive. Check that the configuration and the archive belong
+together, then pass --allow-new-mailbox to go ahead
+```
+
+The archive answers this itself: `state.json` (or, if that is missing, the
+metadata log) records which mailboxes have written into it, and a job's `name` is
+what it appears under. A genuinely new job is the one case this cannot tell apart
+from a mix-up, so it costs one run with `--allow-new-mailbox`; from the run after
+that it is known and needs nothing.
+
+The check only ever looks in one direction. A mailbox in the archive with no job
+in the configuration is not reported -- removing a job, commenting one out or
+selecting a few with `--job` are everyday things, and none of them can put a
+message where it does not belong. Only writing can, so only writing is checked.
+An archive nobody has written into yet accepts anything: there is nothing there
+to contaminate.
 
 ### Deleting from the server after export
 
@@ -658,13 +702,14 @@ etc.) work the same as with IMAP. Three do not:
 ### Global options
 
 Some options apply to the whole run rather than to a single mailbox and are set
-in a `[global]` section: `compress`, `index_db`, and `incremental`. They are
-marked *(global option)* in the tables below.
+in a `[global]` section: `compress`, `index_db`, `incremental`, and
+`destination`. They are marked *(global option)* in the tables below.
 
 ```toml
 [global]
 compress = true
 incremental = true   # the default; set to false to re-fetch every folder in full
+destination = "/srv/archive/private"   # optional, see above
 
 [[job]]
 name = "gmail.com"
@@ -741,6 +786,7 @@ with a warning.
 | `incremental` | `true` | Only download messages added since the last backup run (global option) |
 | `compress` | `false` | Compress stored emails with zstd (global option) |
 | `index_db` | `false` | Maintain a queryable `index.db` alongside the archive, refreshed after each backup (global option) |
+| `destination` | — | The archive this configuration belongs to, used when the command line names none; relative to the configuration file (global option, see [Which archive a configuration belongs to](#which-archive-a-configuration-belongs-to)) |
 
 
 ## Metadata
