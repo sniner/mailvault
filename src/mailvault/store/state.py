@@ -220,15 +220,6 @@ class SnapshotState:
         """True when no folder is recorded, i.e. a new or unusable state file."""
         return not self._folders
 
-    def mailboxes(self) -> set[str]:
-        """The mailboxes recorded here -- who has written into this archive.
-
-        Answers "does this job belong to this archive" without touching anything
-        else, which is why it is worth having: the metadata log knows the same
-        thing, but only by opening every file it holds.
-        """
-        return set(self._folders)
-
     def _state(self, mailbox: str, folder: str) -> FolderState | None:
         return self._folders.get(mailbox, {}).get(folder)
 
@@ -299,6 +290,41 @@ class SnapshotState:
         body = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
         atomic.write_text(self.path, body)
         log.debug("%s: resume state written", self.path)
+
+
+def mailboxes(path: pathlib.Path) -> set[str]:
+    """The mailboxes a state file records -- who has written into this archive.
+
+    Deliberately not `load(path)` followed by a look at the result. Loading is a
+    statement about a run: it reports what an older format or a damaged entry
+    will cost the folders it is about to resume, and rightly says so. This
+    question resumes nothing, and having those remarks appear a second time --
+    for a caller they do not apply to -- is how a log stops being read.
+
+    Nothing here is interpreted beyond the mailbox names, which is why a version
+    1 file answers just as well as a version 2 one: who wrote where does not
+    depend on the shape of what they wrote. Anything unusable yields an empty
+    set, and the caller falls back to the metadata log.
+    """
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return set()
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        log.debug("%s: no mailboxes to name: %s", path, exc)
+        return set()
+    if not isinstance(payload, dict):
+        return set()
+    if payload.get("version") not in SUPPORTED_STATE_VERSIONS:
+        return set()
+    snapshots = payload.get("snapshots")
+    if not isinstance(snapshots, dict):
+        return set()
+    return {
+        name
+        for name, entries in snapshots.items()
+        if isinstance(name, str) and name and isinstance(entries, dict) and entries
+    }
 
 
 def _is_usable_resume(value: object) -> bool:

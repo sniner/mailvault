@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 
@@ -54,6 +55,42 @@ class TestKnownMailboxes:
         _with_log(tmp_path, "gmail.com")
 
         assert guard.known_mailboxes(tmp_path) == {"gmail.com"}
+
+    def test_a_version_1_state_file_answers_too(self, tmp_path):
+        """Who wrote where does not depend on the shape of what they wrote."""
+        (tmp_path / state.DEFAULT_STATE_NAME).write_text(
+            json.dumps(
+                {
+                    "version": state.LEGACY_STATE_VERSION,
+                    "snapshots": {"gmail.com": {"INBOX": "2026-02-01T12:30:00+00:00"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert guard.known_mailboxes(tmp_path) == {"gmail.com"}
+
+    def test_asking_says_nothing_about_resuming(self, tmp_path, caplog):
+        """The run says what an old state file costs it. The guard is not the run.
+
+        Both used to load the file the same way, so every remark `load` makes --
+        an older format, a dropped entry -- appeared twice per run, once for a
+        caller it did not apply to.
+        """
+        (tmp_path / state.DEFAULT_STATE_NAME).write_text(
+            json.dumps(
+                {
+                    "version": state.LEGACY_STATE_VERSION,
+                    "snapshots": {"gmail.com": {"INBOX": "2026-02-01T12:30:00+00:00"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.INFO):
+            guard.check_jobs(tmp_path, _jobs("gmail.com"))
+
+        assert caplog.records == []
 
 
 class TestCheckJobs:

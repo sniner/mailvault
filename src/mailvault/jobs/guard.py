@@ -42,9 +42,12 @@ def known_mailboxes(store_path: pathlib.Path) -> set[str]:
     is one: an archive whose state file was lost, emptied or never written still
     knows perfectly well who wrote into it, and a guard that waved everything
     through in exactly that case would be worth little.
+
+    Neither is read as the run itself reads it: this asks who has written here,
+    which needs the names and nothing else -- no resume points, no message lines,
+    and none of the remarks either file makes about what it will cost to use.
     """
-    snapshot = state.SnapshotState.load(store_path / state.DEFAULT_STATE_NAME)
-    names = snapshot.mailboxes()
+    names = state.mailboxes(store_path / state.DEFAULT_STATE_NAME)
     if names:
         return names
     return metalog.mailboxes(store_path / metalog.DEFAULT_LOG_DIR)

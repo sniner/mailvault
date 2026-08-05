@@ -6,6 +6,8 @@ import json
 import logging
 from datetime import UTC, datetime
 
+import pytest
+
 from mailvault.store import state
 
 LAST_RUN = datetime(2026, 2, 1, 12, 30, tzinfo=UTC)
@@ -288,3 +290,59 @@ class TestTimezones:
         s.save()
 
         assert state.SnapshotState.load(path).last_run("job", "INBOX") == LAST_RUN
+
+
+class TestMailboxes:
+    """Who has written into an archive, without reading the file as a run does."""
+
+    def test_a_missing_file_names_nobody(self, tmp_path):
+        assert state.mailboxes(tmp_path / "state.json") == set()
+
+    def test_the_recorded_mailboxes(self, tmp_path):
+        path = tmp_path / "state.json"
+        _write(path, _v2({"gmail.com": {"INBOX": {}}, "posteo.de": {"Sent": {}}}))
+
+        assert state.mailboxes(path) == {"gmail.com", "posteo.de"}
+
+    def test_a_version_1_file_answers_as_well(self, tmp_path):
+        path = tmp_path / "state.json"
+        _write(path, _v1({"gmail.com": {"INBOX": "2026-02-01T12:30:00+00:00"}}))
+
+        assert state.mailboxes(path) == {"gmail.com"}
+
+    def test_it_stays_quiet_about_what_the_run_would_be_told(self, tmp_path, caplog):
+        """The version 1 notice belongs to the run that resumes, not to this."""
+        path = tmp_path / "state.json"
+        _write(path, _v1({"gmail.com": {"INBOX": "2026-02-01T12:30:00+00:00"}}))
+
+        with caplog.at_level(logging.INFO):
+            state.mailboxes(path)
+
+        assert caplog.records == []
+
+    def test_a_mailbox_without_folders_is_not_one(self, tmp_path):
+        path = tmp_path / "state.json"
+        _write(path, _v2({"gmail.com": {"INBOX": {}}, "empty.example": {}}))
+
+        assert state.mailboxes(path) == {"gmail.com"}
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"version": 99, "snapshots": {"gmail.com": {"INBOX": {}}}},
+            {"version": state.STATE_VERSION, "snapshots": []},
+            ["not", "an", "object"],
+        ],
+    )
+    def test_anything_unusable_names_nobody(self, tmp_path, payload):
+        """The caller falls back to the metadata log, which is the safe answer."""
+        path = tmp_path / "state.json"
+        _write(path, payload)
+
+        assert state.mailboxes(path) == set()
+
+    def test_broken_json_names_nobody(self, tmp_path):
+        path = tmp_path / "state.json"
+        path.write_text("{ not json", encoding="utf-8")
+
+        assert state.mailboxes(path) == set()
