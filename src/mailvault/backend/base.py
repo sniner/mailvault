@@ -206,9 +206,7 @@ class MailboxClient(Protocol):
         ...
 
     def message_index(
-        self,
-        folder_name: str,
-        since: datetime | None = ...,
+        self, folder_name: str
     ) -> collections.abc.Generator[MessageRef, None, None]: ...
 
     def fetch_message(self, msg_id: Any, folder_name: str) -> bytes: ...

@@ -335,16 +335,13 @@ class MSGraphClient:
         yield from self._paginate(url, params)
 
     def message_index(
-        self,
-        folder_name: str,
-        since: datetime | None = None,
+        self, folder_name: str
     ) -> collections.abc.Generator[base.MessageRef, None, None]:
-        """List the folder's messages by Message-ID only, without downloading bodies."""
+        """List the folder's messages by Message-ID only, without fetching bodies."""
         folder_id = self._resolve_folder(folder_name)
         for item in self._iter_messages(
             folder_name,
             folder_id,
-            since=since,
             select="id,internetMessageId,receivedDateTime",
             page_size=INDEX_PAGE_SIZE,
         ):

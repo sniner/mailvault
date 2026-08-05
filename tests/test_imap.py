@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import imaplib
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, call, patch
@@ -231,9 +232,7 @@ class TestWalkFolder:
 
         results = list(client._walk_folder("INBOX", [1, 2], chunk_size=10))
         assert len(results) == 2
-        assert results[0][0] == 1
-        assert results[0][1] == DUMMY_EML
-        assert results[0][2] == msg_date
+        assert results[0] == (1, DUMMY_EML)
 
     def test_chunked_fetching(self):
         conn = _make_mock_conn()
@@ -263,6 +262,99 @@ class TestWalkFolder:
 # ---------------------------------------------------------------------------
 
 
+class TestUidResume:
+    """The UID watermark: what it asks for, and what it hands back."""
+
+    @staticmethod
+    def _point(uidvalidity: int = 42, uid: int = 4711) -> dict:
+        return {"kind": imap.UID_RESUME_KIND, "uidvalidity": uidvalidity, "uid": uid}
+
+    @staticmethod
+    def _select(uidvalidity: int | None = 42) -> dict:
+        info: dict = {b"EXISTS": 0}
+        if uidvalidity is not None:
+            info[b"UIDVALIDITY"] = uidvalidity
+        return info
+
+    def test_a_matching_uidvalidity_resumes_above_the_watermark(self):
+        resume = imap._UidResume(self._point())
+
+        assert resume.accept(self._select(), "job::INBOX") == 4711
+
+    def test_a_changed_uidvalidity_forces_a_full_read(self, caplog):
+        """The server saying its UID space was rebuilt, not something to guess."""
+        resume = imap._UidResume(self._point(uidvalidity=42))
+
+        with caplog.at_level(logging.INFO):
+            assert resume.accept(self._select(uidvalidity=43), "job::INBOX") is None
+
+        assert "UIDVALIDITY changed" in caplog.text
+
+    def test_a_missing_uidvalidity_forces_a_full_read(self, caplog):
+        """RFC 3501 makes it mandatory, so its absence is a broken server."""
+        resume = imap._UidResume(self._point())
+
+        assert resume.accept(self._select(uidvalidity=None), "job::INBOX") is None
+        assert "no UIDVALIDITY" in caplog.text
+
+    def test_a_point_from_another_backend_forces_a_full_read(self, caplog):
+        with caplog.at_level(logging.INFO):
+            resume = imap._UidResume({"kind": "graph-delta", "delta_link": "https://x"})
+
+        assert resume.accept(self._select(), "job::INBOX") is None
+        assert "is not ours" in caplog.text
+
+    def test_an_incomplete_point_forces_a_full_read(self, caplog):
+        resume = imap._UidResume({"kind": imap.UID_RESUME_KIND, "uid": 5})
+
+        assert resume.accept(self._select(), "job::INBOX") is None
+        assert "incomplete" in caplog.text
+
+    def test_a_boolean_is_not_a_uid(self):
+        """`True == 1` in Python, and a UID of True would resume from nowhere sane."""
+        resume = imap._UidResume({"kind": imap.UID_RESUME_KIND, "uidvalidity": 42, "uid": True})
+
+        assert resume.accept(self._select(), "job::INBOX") is None
+
+    def test_the_token_is_the_highest_uid_actually_archived(self):
+        resume = imap._UidResume(None)
+        resume.accept(self._select(), "job::INBOX")
+
+        resume.saw(7)
+        resume.saw(12)
+        resume.saw(9)
+
+        assert resume.token() == self._point(uid=12)
+
+    def test_a_pass_that_archived_nothing_earns_no_token(self):
+        """The Proton Bridge case, in UID terms: no mail, no claim."""
+        resume = imap._UidResume(self._point())
+        resume.accept(self._select(), "job::INBOX")
+
+        assert resume.token() is None
+
+
+class TestSearchFolder:
+    def test_the_star_range_trap_is_filtered_out(self):
+        """RFC 3501: `4712:*` still matches the newest message when it is older.
+
+        Without dropping those, a folder where nothing has arrived would re-fetch
+        its last message on every single run.
+        """
+        conn = _make_mock_conn()
+        conn.search.return_value = [4700]
+        client = _make_client(conn=conn)
+
+        assert client._search_folder(above_uid=4711) == []
+
+    def test_genuinely_newer_uids_survive(self):
+        conn = _make_mock_conn()
+        conn.search.return_value = [4700, 4712, 4713]
+        client = _make_client(conn=conn)
+
+        assert client._search_folder(above_uid=4711) == [4712, 4713]
+
+
 class TestIterFolder:
     def test_basic_iteration(self):
         conn = _make_mock_conn()
@@ -279,19 +371,26 @@ class TestIterFolder:
         assert results[0][0] == 1
         conn.unselect_folder.assert_called_once()
 
-    def test_since_filter(self):
+    def test_a_resume_point_narrows_the_search_to_new_uids(self):
         conn = _make_mock_conn()
-        conn.select_folder.return_value = {b"EXISTS": 0}
+        conn.select_folder.return_value = {b"EXISTS": 0, b"UIDVALIDITY": 42}
         conn.search.return_value = []
         client = _make_client(conn=conn)
 
-        since = datetime(2026, 2, 15, tzinfo=UTC)
-        list(client._iter_folder("INBOX", since=since))
+        resume = imap._UidResume({"kind": imap.UID_RESUME_KIND, "uidvalidity": 42, "uid": 4711})
+        list(client._iter_folder("INBOX", resume))
 
-        search_query = conn.search.call_args[0][0]
-        assert "NOT" in search_query
-        assert "DELETED" in search_query
-        assert "SINCE" in search_query
+        assert conn.search.call_args[0][0] == ["NOT", "DELETED", "UID", "4712:*"]
+
+    def test_without_a_resume_point_the_whole_folder_is_searched(self):
+        conn = _make_mock_conn()
+        conn.select_folder.return_value = {b"EXISTS": 0, b"UIDVALIDITY": 42}
+        conn.search.return_value = []
+        client = _make_client(conn=conn)
+
+        list(client._iter_folder("INBOX", imap._UidResume(None)))
+
+        assert conn.search.call_args[0][0] == ["NOT", "DELETED"]
 
     def test_unselect_on_exception(self):
         conn = _make_mock_conn()
@@ -843,15 +942,15 @@ class TestMessageIndex:
         conn.select_folder.assert_called_with("Archive", readonly=True)
         conn.unselect_folder.assert_called_once()
 
-    def test_since_narrows_the_search(self):
+    def test_it_always_lists_the_whole_folder(self):
+        """verify needs everything; a filtered index could only hide a gap."""
         conn = _make_mock_conn()
         conn.search.return_value = []
         client = _make_client(conn=conn)
 
-        list(client.message_index("INBOX", since=datetime(2026, 2, 20, tzinfo=UTC)))
+        list(client.message_index("INBOX"))
 
-        query = conn.search.call_args[0][0]
-        assert "SINCE" in query
+        assert conn.search.call_args[0][0] == ["NOT", "DELETED"]
 
     def test_fetch_failure_is_reported(self):
         conn = _make_mock_conn()
