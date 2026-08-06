@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -11,7 +12,7 @@ import pytest
 from mailvault import conf, jobs
 from mailvault.backend import base
 from mailvault.cli import commands
-from mailvault.store import cas
+from mailvault.store import cas, metalog
 
 
 def _args(**overrides: Any) -> argparse.Namespace:
@@ -170,3 +171,46 @@ def test_archive_decompress_that_works_exits_zero(tmp_path, capsys):
 
     assert exit_code == 0
     assert "failed" not in capsys.readouterr().out
+
+
+def _check_args(source, **overrides):
+    defaults = dict(archive_command="check", source=source, contents=False, quarantine=False)
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+def _archive_with_a_log(root, extra_store_ids=()):
+    store = cas.ContentAddressedStorage(root_dir=root, suffix=".eml")
+    _status, store_id, _path = store.add(b"a real message")
+    writer = metalog.LogWriter(root / metalog.DEFAULT_LOG_DIR)
+    for known in (store_id, *extra_store_ids):
+        writer.add("job", ["INBOX"], known)
+    writer.seal(datetime(2026, 8, 1, tzinfo=UTC))
+    return store, store_id
+
+
+def test_archive_check_that_finds_nothing_exits_zero(tmp_path, capsys):
+    _archive_with_a_log(tmp_path)
+
+    exit_code = commands.run_archive(_check_args(tmp_path))
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "1 entries" in out
+    assert "contents not read" in out, "a run that did not look must say so"
+
+
+def test_archive_check_exits_non_zero_when_the_archive_is_not_what_it_claims(tmp_path, capsys):
+    _archive_with_a_log(tmp_path, extra_store_ids=["aa" * 48])
+
+    exit_code = commands.run_archive(_check_args(tmp_path))
+
+    assert exit_code == 1
+    assert "1 entry/entries named in the log are missing" in capsys.readouterr().out
+
+
+def test_archive_check_quarantine_without_contents_is_refused(tmp_path):
+    _archive_with_a_log(tmp_path)
+
+    with pytest.raises(jobs.JobError, match="needs --contents"):
+        commands.run_archive(_check_args(tmp_path, quarantine=True))

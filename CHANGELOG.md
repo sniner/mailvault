@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.9.4 (2026-08-06)
+
+### Added
+
+- **`mailvault archive check` holds an archive against what it claims.** The store is built so
+  that an entry cannot be written half-way, but nothing covered the time afterwards -- bit rot, a
+  restore that dropped a file, a copy that ran out of disk, an entry written by a version that did
+  not yet flush. The archive could not notice any of it on its own, because it asks whether a
+  *name* is there, never whether the bytes behind it are still the ones it was named for. This
+  checks that every file lying in a shard is an entry, that every entry the metadata log names is
+  there, and that every log file still matches its own name. It repairs nothing and exits non-zero
+  when the archive is not what it says it is
+
+- **`--contents` reads every entry and holds it against the name it is filed under.** The only way
+  to find one whose bytes have changed under it -- and an order of magnitude more work than the
+  rest, so it is asked for rather than assumed. A run without it says so in its last line, because
+  otherwise "nothing found" would mean two different things on two different days
+
+- **`--quarantine` takes the name away from an entry that fails that check.** Renamed to
+  `<hash>.eml.corrupt`, never deleted: a message with a flipped bit is still almost all of the
+  message, and what has to stop is the *claim*, not the bytes. Out of the store's name space the
+  message counts as missing again, so `verify --repair` or `backup --full` will fetch it. Refused
+  without `--contents`, where it could not find anything to act on and would look effective while
+  doing nothing
+
 ## 0.9.3 (2026-08-06)
 
 ### Added

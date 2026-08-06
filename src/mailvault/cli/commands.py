@@ -193,6 +193,68 @@ def report_compact(source: pathlib.Path, result: metalog.CompactResult) -> None:
         )
 
 
+# How many of a kind a report names before it stops listing them. A check on a
+# damaged archive can find tens of thousands; the count is the finding, the
+# names are there to give someone a place to start.
+REPORT_LIMIT = 20
+
+
+def _report_paths(source: pathlib.Path, finding: str, paths: list[pathlib.Path]) -> None:
+    """Print a finding's count and the first few of whatever it found."""
+    if not paths:
+        return
+    print(f"{source}: {len(paths):,} {finding}")
+    for path in paths[:REPORT_LIMIT]:
+        print(f"  {path}")
+    if len(paths) > REPORT_LIMIT:
+        print(f"  ... and {len(paths) - REPORT_LIMIT:,} more")
+
+
+def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
+    """Say what the archive turned out to be, and whether that is all right.
+
+    The last line is not decoration. A check that did not read the contents
+    cannot have found an entry whose bytes changed under it, and without saying
+    so a clean run would mean two different things on two different days.
+    """
+    print(
+        f"{source}: {result.entries:,} entries, {result.observations:,} observation(s)"
+        f" in {result.log_files:,} log file(s)"
+    )
+    if result.missing:
+        print(f"{source}: {len(result.missing):,} entry/entries named in the log are missing")
+        for store_id, where in list(result.missing.items())[:REPORT_LIMIT]:
+            print(f"  {store_id}  {where}")
+        if len(result.missing) > REPORT_LIMIT:
+            print(f"  ... and {len(result.missing) - REPORT_LIMIT:,} more")
+    _report_paths(source, "log file(s) do not match their own name", result.damaged_logs)
+    _report_paths(
+        source, "entry/entries do not match the name they are filed under", result.corrupt
+    )
+    _report_paths(source, "entry/entries could not be read", result.unreadable)
+    _report_paths(source, "file(s) in the store are not entries", result.foreign)
+    if result.orphans:
+        print(f"{source}: {result.orphans:,} entry/entries are named in no log file")
+    if result.quarantined_before:
+        print(f"{source}: {result.quarantined_before:,} entry/entries quarantined earlier")
+    if result.transient_removed:
+        print(
+            f"{source}: {result.transient_removed:,} leftover(s) of an interrupted"
+            " write removed"
+        )
+    if result.quarantined:
+        print(
+            f"{source}: {len(result.quarantined):,} entry/entries quarantined -- they count"
+            " as missing now, fetch them with `verify --repair` or `backup --full`"
+        )
+    if not result.contents_checked:
+        print(
+            f"{source}: contents not read -- use --contents to check every entry"
+            " against its name"
+        )
+    return 0 if result.sound else 1
+
+
 def report_conversion(
     source: pathlib.Path,
     result: cas.ConversionResult,
@@ -250,5 +312,10 @@ def run_archive(args: argparse.Namespace) -> int:
         report_migration(args.source, jobs.migrate_archive(args.source))
     elif cmd == "compact":
         report_compact(args.source, metalog.compact(args.source / metalog.DEFAULT_LOG_DIR))
+    elif cmd == "check":
+        return report_check(
+            args.source,
+            jobs.check(args.source, contents=args.contents, quarantine=args.quarantine),
+        )
 
     return 0
