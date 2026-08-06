@@ -279,24 +279,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Check that the archive is what it says it is",
         description=(
             "Hold an archive against what it claims: every file in a shard is an"
-            " entry, every entry the metadata log names is there, every log file"
-            " still matches its own name. With --contents every entry is read and"
-            " held against the name it is filed under, which is the only way to"
-            " find one whose bytes have changed under it -- and an order of"
-            " magnitude more work, so it is asked for rather than assumed. Reports"
-            " what it finds and repairs nothing; the only thing it removes is the"
-            " transient file of a write that was interrupted."
+            " entry, every message the metadata log references is there, every log"
+            " file still matches its own name, and every message still matches its"
+            " checksum -- the last one being the only way to find one whose bytes"
+            " have changed under it. --no-integrity-check leaves that last check out."
+            " Reports what it finds and repairs nothing; the only thing it removes"
+            " is the transient file of a write that was interrupted."
         ),
     )
     a_check.add_argument(
-        "--contents",
+        "--no-integrity-check",
         action="store_true",
-        help="Read every entry and check it against the name it is filed under",
+        help="Skip the integrity check: read no message, answer everything from names",
     )
     a_check.add_argument(
         "--quarantine",
         action="store_true",
-        help="Rename entries that fail that check, so they count as missing again",
+        help="Rename damaged messages, so they count as missing and can be fetched again",
     )
     a_check.add_argument("source", type=pathlib.Path, help="Email archive directory")
 

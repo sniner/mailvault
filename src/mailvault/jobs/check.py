@@ -11,14 +11,20 @@ whether the bytes behind it are still the ones it was named for.
 So this reads the archive and holds it against what it claims:
 
 - every file lying in a shard is an entry, not something that wandered in
-- every entry the metadata log names is there
+- every message the metadata log references is there
 - every log file still matches its own name
-- and, with `contents`, every entry still hashes to the name it is filed under
+- and every message still hashes to the name it is filed under
 
-The first three cost a walk of the directory tree. The last one reads every
-byte in the archive, which is an order of magnitude more, so it is asked for
-rather than assumed -- and a run that did not do it says so, because otherwise
-"nothing found" would mean two different things on two different days.
+The last one is the integrity check, and it is on by default because it turned
+out to be far cheaper than it sounds. It reads twenty times the bytes of the
+walk above it, but bytes are not what a network share charges for: the walk pays
+a round trip per shard directory and the read one per message, and at two
+messages per shard those come out level. Measured over SMB on a 131,000-message
+archive: 16 minutes for the walk, 17 for reading every message.
+
+`contents=False` leaves it out for whoever wants the tree checked without the second
+half of the wait -- and a run that did that says so, because otherwise "nothing
+found" would mean two different things on two different days.
 
 Nothing here repairs. What it removes is what cannot be data: the transient file
 of a write that was interrupted, under the same age rule `compact` uses. A
@@ -256,24 +262,25 @@ def quarantine_entry(
 
 def check(
     store_path: pathlib.Path,
-    contents: bool = False,
+    contents: bool = True,
     quarantine: bool = False,
 ) -> CheckResult:
     """Check an archive against what it claims, and report what it found.
 
-    `contents` reads every entry and holds it against its name, which is the
-    only way to find one whose bytes have changed under it -- an order of
-    magnitude more work than the rest, so it is asked for.
+    `contents` reads every message and holds it against its name, which is the
+    only way to find one whose bytes have changed under it. On by default; see
+    the module docstring for why it costs less than it looks.
 
-    `quarantine` takes the name away from the entries that fail, so that the
-    store stops reporting them as present. It needs `contents`, and is refused
-    without it rather than quietly doing nothing: an option that looks effective
-    while it cannot be is the kind that gets trusted.
+    `quarantine` takes the name away from the messages that fail, so that the
+    store stops reporting them as present. It cannot be combined with
+    `contents=False`, and says so rather than quietly doing nothing: an option
+    that looks effective while it cannot be is the kind that gets trusted.
     """
     if quarantine and not contents:
         raise JobError(
-            "check: --quarantine needs --contents, because a damaged entry is only"
-            " found by reading it; without it there would be nothing to quarantine"
+            "check: --quarantine cannot be combined with --no-integrity-check,"
+            " because a damaged message is only found by reading it; there would"
+            " be nothing to quarantine"
         )
 
     result = CheckResult()

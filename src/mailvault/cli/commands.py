@@ -355,8 +355,8 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
         print(f"{source}: sound -- every message was read and matches its checksum")
     else:
         print(
-            f"{source}: sound as far as this went -- nothing was read, so no damaged"
-            " message could have been found. Use --contents for the integrity check"
+            f"{source}: sound as far as this went -- the integrity check was skipped,"
+            " so no damaged message could have been found"
         )
     return 0 if result.sound else 1
 
@@ -430,7 +430,9 @@ def run_archive(args: argparse.Namespace) -> int:
     elif cmd == "check":
         return report_check(
             args.source,
-            jobs.check(args.source, contents=args.contents, quarantine=args.quarantine),
+            jobs.check(
+                args.source, contents=not args.no_integrity_check, quarantine=args.quarantine
+            ),
         )
 
     return 0

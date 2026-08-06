@@ -16,12 +16,24 @@
 - **`--allow-new-mailbox`** is the way past it for the one case it cannot tell from a mix-up: a
   genuinely new job. One run with the flag, and from the next one it is known
 
+- **`archive check` runs the integrity check by default.** `--contents` is gone; the check it
+  asked for is what the command does, and **`--no-integrity-check`** leaves it out. It was made
+  optional on the assumption that reading every message costs an order of magnitude more than
+  walking the tree, and measurement says otherwise: on a 131,000-message archive over SMB the walk
+  took 16 minutes and reading every message 17. A network share charges for round trips, not for
+  bytes -- the walk pays one per shard directory, the read one per message, and at a couple of
+  messages per shard those come out level. Being able to find a message whose bytes changed under
+  it is worth a factor of two. `--quarantine` no longer needs a companion flag; it refuses to be
+  combined with `--no-integrity-check` instead
+
 - **`archive check` says whether the archive is all right**, in words, instead of leaving the
   verdict to an exit code nobody reads unless they went looking for it -- and it says which kind
-  of clean run it was, because one without `--contents` never read a message and cannot have found
-  one whose bytes changed. Its counts are in plain terms too: `5 message(s) stored, filed in 7
-  place(s) by 2 log file(s)`, since more places than messages is the normal case for a message
-  filed in two folders, not a discrepancy to worry about. The long passes now number themselves
+  of run it was, because one with `--no-integrity-check` never read a message and cannot have
+  found one whose bytes changed. Its counts are in plain terms too: `5 message(s) stored, filed in
+  7 place(s) by 2 log file(s)`, since more places than messages is the normal case for a message
+  filed in two folders, not a discrepancy to worry about. Findings say what is wrong rather than
+  how the store found out -- a message is *damaged* when its content does not match its checksum,
+  where it used to "not match the name it is filed under". The long passes number themselves
   (`step 1 of 3: looking through the archive`), so a run that takes half an hour says how much of
   it is still ahead
 

@@ -299,7 +299,9 @@ def test_archive_decompress_that_works_exits_zero(tmp_path, capsys):
 
 
 def _check_args(source, **overrides):
-    defaults = dict(archive_command="check", source=source, contents=False, quarantine=False)
+    defaults = dict(
+        archive_command="check", source=source, no_integrity_check=False, quarantine=False
+    )
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
 
@@ -317,18 +319,18 @@ def _archive_with_a_log(root, extra_store_ids=()):
 def test_archive_check_that_finds_nothing_exits_zero(tmp_path, capsys):
     _archive_with_a_log(tmp_path)
 
-    exit_code = commands.run_archive(_check_args(tmp_path))
+    exit_code = commands.run_archive(_check_args(tmp_path, no_integrity_check=True))
 
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "1 message(s) stored" in out
-    assert "nothing was read" in out, "a run that did not look must say so"
+    assert "the integrity check was skipped" in out, "a run that did not look must say so"
 
 
 def test_a_check_that_read_the_contents_says_so_rather_than_just_exiting_zero(tmp_path, capsys):
     _archive_with_a_log(tmp_path)
 
-    exit_code = commands.run_archive(_check_args(tmp_path, contents=True))
+    exit_code = commands.run_archive(_check_args(tmp_path))
 
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -347,8 +349,8 @@ def test_archive_check_exits_non_zero_when_the_archive_is_not_what_it_claims(tmp
     assert "NOT sound -- 1 finding(s)" in out, "the verdict, not just the exit code"
 
 
-def test_archive_check_quarantine_without_contents_is_refused(tmp_path):
+def test_archive_check_quarantine_without_the_integrity_check_is_refused(tmp_path):
     _archive_with_a_log(tmp_path)
 
-    with pytest.raises(jobs.JobError, match="needs --contents"):
-        commands.run_archive(_check_args(tmp_path, quarantine=True))
+    with pytest.raises(jobs.JobError, match="cannot be combined with --no-integrity-check"):
+        commands.run_archive(_check_args(tmp_path, quarantine=True, no_integrity_check=True))

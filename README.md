@@ -502,31 +502,37 @@ it was named for.
 ```console
 $ mailvault archive check ./backup
 ./backup: 130,997 message(s) stored, filed in 219,690 place(s) by 60 log file(s)
-./backup: 3 message(s) named in the log are missing
+./backup: 3 message(s) referenced in the log are missing
   6f3ac1…  mail.example.org::INBOX
 ./backup: NOT sound -- 3 finding(s) above
 ```
 
 More places than messages is the normal case, not a discrepancy: a message filed
-in two folders is one entry the log names twice.
+in two folders is one entry the log references twice.
 
-The last line is the verdict, and it says which kind of clean run it was:
+The last line is the verdict, and it says which kind of run it was:
 
 ```console
-$ mailvault archive check --contents ./backup
+$ mailvault archive check ./backup
 ./backup: 130,997 message(s) stored, filed in 219,690 place(s) by 60 log file(s)
 ./backup: sound -- every message was read and matches its checksum
 ```
 
-By default it walks the archive: every file lying in a shard is an entry, every
-entry the metadata log names is there, every log file still matches its own name.
-That costs a pass over the directory tree, no more.
+It walks the archive first: every file lying in a shard is an entry, every
+message the metadata log references is there, every log file still matches its
+own name. That costs a pass over the directory tree.
 
-`--contents` reads every entry and hashes it, which is the only way to find one
-whose bytes have changed under it. On a large archive over a network share that
-is an order of magnitude more work -- reckon with the better part of an hour for
-200,000 messages -- which is why it is asked for rather than assumed. A run
-without it says so, so that "nothing found" cannot mean two different things.
+The integrity check reads every message and hashes it, which is the only way to
+find one whose bytes have changed under it. It sounds like the expensive half and
+barely is: it reads twenty times the bytes of the walk above it, but a network
+share does not charge for bytes -- the walk pays a round trip per shard directory
+and the read one per message, and at a couple of messages per shard those come
+out level. Measured over SMB on a 131,000-message archive: 16 minutes for the
+walk, 17 for reading every message.
+
+That is why it is on by default. `--no-integrity-check` leaves it out for whoever
+wants the tree checked without the second half of the wait, and such a run says
+so, so that "nothing found" cannot mean two different things.
 
 The passes that take a while number themselves, so a long run says how much of
 it is still ahead:
@@ -542,8 +548,9 @@ it claims. The only thing it removes is the transient file of a write that was
 interrupted, by the same rule `compact` uses. A file that is not an entry is
 reported and left where it is -- it may well be someone's.
 
-`--quarantine` is the one exception, and it needs `--contents`. An entry whose
-content does not match its name is the one finding where doing nothing is bad:
+`--quarantine` is the one exception, and it cannot be combined with
+`--no-integrity-check`. A message whose content does not match its checksum is
+the one finding where doing nothing is bad:
 the archive goes on answering that the message is present, so nothing ever
 fetches it again. This renames it to `<hash>.eml.corrupt` -- it keeps every byte,
 it just stops claiming to be that message. Out of the way, the message counts as

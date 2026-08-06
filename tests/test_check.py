@@ -48,19 +48,21 @@ class TestASoundArchive:
         assert not result.foreign
         assert result.orphans == 0
 
-    def test_contents_finds_nothing_either(self, tmp_path):
+    def test_the_integrity_check_finds_nothing_either(self, tmp_path):
         _archive(tmp_path)
 
-        result = check(tmp_path, contents=True)
+        result = check(tmp_path)
 
         assert result.sound
         assert result.contents_checked
         assert not result.corrupt
 
-    def test_without_contents_it_says_so(self, tmp_path):
+    def test_a_run_that_skipped_the_integrity_check_says_so(self, tmp_path):
+        """Otherwise "nothing found" would mean two different things."""
         _archive(tmp_path)
 
-        assert not check(tmp_path).contents_checked
+        assert check(tmp_path).contents_checked
+        assert not check(tmp_path, contents=False).contents_checked
 
 
 class TestWhatItFinds:
@@ -81,9 +83,9 @@ class TestWhatItFinds:
         assert victim is not None
         victim.write_bytes(b"not what the name says")
 
-        assert check(tmp_path).sound, "a walk cannot see this, only reading can"
+        assert check(tmp_path, contents=False).sound, "a walk cannot see this, only reading can"
 
-        result = check(tmp_path, contents=True)
+        result = check(tmp_path)
         assert result.corrupt == [victim]
         assert not result.sound
 
@@ -175,11 +177,11 @@ class TestQuarantine:
         victim.write_bytes(b"not what the name says")
         return store, ids, victim
 
-    def test_without_contents_it_is_refused(self, tmp_path):
+    def test_with_names_only_it_is_refused(self, tmp_path):
         _archive(tmp_path)
 
-        with pytest.raises(JobError, match="needs --contents"):
-            check(tmp_path, quarantine=True)
+        with pytest.raises(JobError, match="cannot be combined with --no-integrity-check"):
+            check(tmp_path, contents=False, quarantine=True)
 
     def test_the_entry_loses_its_name_and_keeps_its_bytes(self, tmp_path):
         store, ids, victim = self._with_a_damaged_entry(tmp_path)
