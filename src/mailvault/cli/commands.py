@@ -264,15 +264,22 @@ def report_compact(source: pathlib.Path, result: metalog.CompactResult) -> None:
 REPORT_LIMIT = 20
 
 
-def _report_paths(source: pathlib.Path, finding: str, paths: list[pathlib.Path]) -> None:
-    """Print a finding's count and the first few of whatever it found."""
-    if not paths:
+def _report_items(source: pathlib.Path, finding: str, items: list[str]) -> None:
+    """Print a finding's count and the first few of whatever it found.
+
+    What each line names depends on what the finding is about. A message is
+    named by its id, because that is what every other command takes and the
+    only handle its owner has any use for; where the file happens to lie is the
+    store's business. A finding *about a file* -- one that is not a message at
+    all, or a log file -- names the path, because there the file is the thing.
+    """
+    if not items:
         return
-    print(f"{source}: {len(paths):,} {finding}")
-    for path in paths[:REPORT_LIMIT]:
-        print(f"  {path}")
-    if len(paths) > REPORT_LIMIT:
-        print(f"  ... and {len(paths) - REPORT_LIMIT:,} more")
+    print(f"{source}: {len(items):,} {finding}")
+    for item in items[:REPORT_LIMIT]:
+        print(f"  {item}")
+    if len(items) > REPORT_LIMIT:
+        print(f"  ... and {len(items) - REPORT_LIMIT:,} more")
 
 
 def report_import(
@@ -293,7 +300,7 @@ def report_import(
         f"{source}: {total:,} message(s) read -- {result.stored:,} {verb},"
         f" {result.present:,} already in {destination}"
     )
-    _report_paths(source, "message(s) could not be read", result.failed)
+    _report_items(source, "message(s) could not be read", [str(p) for p in result.failed])
     return 1 if result.failed else 0
 
 
@@ -311,33 +318,42 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
     filed in two folders is one entry the log names twice. Said in words for
     that reason -- two bare numbers that do not match invite the wrong worry.
     """
+    store = cas.ContentAddressedStorage(source, suffix=".eml")
+
+    def ids(paths: list[pathlib.Path]) -> list[str]:
+        """The message ids of entries -- what `archive export` and the log take."""
+        return [store.hashval_of(path) or str(path) for path in paths]
+
     print(
         f"{source}: {result.entries:,} message(s) stored,"
         f" filed in {result.observations:,} place(s) by {result.log_files:,} log file(s)"
     )
-    if result.missing:
-        print(f"{source}: {len(result.missing):,} message(s) referenced in the log are missing")
-        for store_id, where in list(result.missing.items())[:REPORT_LIMIT]:
-            print(f"  {store_id}  {where}")
-        if len(result.missing) > REPORT_LIMIT:
-            print(f"  ... and {len(result.missing) - REPORT_LIMIT:,} more")
-    _report_paths(
+    _report_items(
+        source,
+        "message(s) referenced in the log are missing",
+        [f"{store_id}  {where}" for store_id, where in result.missing.items()],
+    )
+    _report_items(
         source,
         "log file(s) are damaged -- the content does not match its checksum",
-        result.damaged_logs,
+        [str(path) for path in result.damaged_logs],
     )
-    _report_paths(
+    _report_items(
         source,
         "message(s) are damaged -- the content does not match its checksum",
-        result.corrupt,
+        ids(result.corrupt),
     )
-    _report_paths(source, "message(s) could not be read", result.unreadable)
-    _report_paths(source, "file(s) in the archive are not messages", result.foreign)
-    _report_paths(
+    _report_items(source, "message(s) could not be read", ids(result.unreadable))
+    _report_items(
+        source,
+        "file(s) in the archive are not messages",
+        [str(path) for path in result.foreign],
+    )
+    _report_items(
         source,
         "message(s) are not referenced in any log file -- nothing records which folder"
         " they came from",
-        result.orphans,
+        ids(result.orphans),
     )
     if result.quarantined_before:
         print(f"{source}: {result.quarantined_before:,} message(s) set aside by an earlier run")
@@ -386,12 +402,12 @@ def report_conversion(
 
 
 def _entry_path(store: cas.ContentAddressedStorage, wanted: str) -> pathlib.Path:
-    """Find the entry a store id or a path names.
+    """Find the entry a message id names.
 
-    Both, because both are what someone has in hand: a store id comes out of
-    the log, a database or another message's duplicate; a path comes out of
-    `archive check`, which prints them when it has something to report. Copying
-    one from a report and pasting it here should not need an edit.
+    A path is accepted too, and only its file name is looked at -- someone who
+    has been in the directory with `ls` should not be sent away. But an id is
+    what the reports print and what every other command takes; where an entry
+    lies is the store's business and no part of the interface.
     """
     # A store id has no suffix, so `hashval_of` declines it and the fallback
     # takes over; only what the directories say is ignored, which is why a path
@@ -414,10 +430,10 @@ def export_entries(
 ) -> int:
     """Write out what an entry holds, decompressed, exactly as it was stored.
 
-    The way to look at a message the reports can only name. `check` prints a
-    path when it has something to say about a message, but the file behind it
-    may be zstd-compressed, and either way it is a hash in a shard directory --
-    the point of this is to get the bytes out without having to know that.
+    The way to look at a message the reports can only name. What lies in the
+    archive under that id may be a zstd frame in a sharded directory, and none
+    of that is anyone's business outside the store -- this hands over the
+    message.
 
     Raw and unmodified: whatever comes out here hashes back to the name it came
     from, so it is also the way to hand a message to another tool without the

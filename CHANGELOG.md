@@ -16,10 +16,10 @@
 - **`--allow-new-mailbox`** is the way past it for the one case it cannot tell from a mix-up: a
   genuinely new job. One run with the flag, and from the next one it is known
 
-- **`archive export`** writes a stored message back out, decompressed and byte for byte as it
-  went in -- to standard output, or to a file with `--output`. It takes a store id or the path of
-  an entry, so a path `archive check` printed can be pasted straight in, and it undoes zstd
-  compression, which is what `cat` cannot. The way to look at a message the reports can only name
+- **`archive export`** writes a message back out, byte for byte as it went in -- to standard
+  output, or to a file with `--output`. It takes the message id the reports print, and that is all
+  it takes: whether the message lies compressed, and where in the archive it lies, is the store's
+  business. The way to look at a message the reports can only name
 
 - **`archive check` runs the integrity check by default.** `--contents` is gone; the check it
   asked for is what the command does, and **`--no-integrity-check`** leaves it out. It was made

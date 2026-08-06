@@ -362,18 +362,17 @@ that is what happened.
 
 ### Looking at a single message
 
-`archive check` names the messages it has something to say about, but the file
-behind such a path is a hash in a shard directory and may be zstd-compressed.
-`archive export` gets the bytes out:
+Every report names a message by its id, and that id is what the commands take.
+`archive export` writes the message back out:
 
 ```console
 $ mailvault archive export ./backup 6f3ac1… | head -20
-$ mailvault archive export ./backup ./backup/6f/3a/6f3ac1….eml -o message.eml
+$ mailvault archive export ./backup 6f3ac1… -o message.eml
 ```
 
-It takes a store id or the path of an entry -- what a report prints can be pasted
-straight in -- and writes the message exactly as it was stored, decompressed. Name
-several and give `--output` a directory to get one file each.
+Exactly as it was stored. Whether it lies compressed, and where in the archive it
+lies, is the store's business -- what comes out is the message. Name several and
+give `--output` a directory to get one file each.
 
 ### Statistics
 
