@@ -72,18 +72,21 @@ class CheckResult:
     """What an archive turned out to be.
 
     The lists hold what a reader has to be able to name -- a count alone does
-    not tell anyone which file to look at. `orphans` is a count on purpose:
-    after `archive import`, which writes no log, every message is one.
+    not tell anyone which file to look at, and "110 messages have no
+    provenance" is not something anyone can act on without seeing which. Long
+    lists are not the worry: a report prints the first few and says how many
+    more there are, which is what makes even an archive of nothing but imported
+    mail -- where every message is an orphan -- readable.
     """
 
     entries: int = 0
     observations: int = 0
     log_files: int = 0
-    orphans: int = 0
     transient_removed: int = 0
     quarantined_before: int = 0
     contents_checked: bool = False
     missing: dict[str, str] = dataclasses.field(default_factory=dict)
+    orphans: list[pathlib.Path] = dataclasses.field(default_factory=list)
     foreign: list[pathlib.Path] = dataclasses.field(default_factory=list)
     damaged_logs: list[pathlib.Path] = dataclasses.field(default_factory=list)
     corrupt: list[pathlib.Path] = dataclasses.field(default_factory=list)
@@ -309,7 +312,7 @@ def check(
     for store_id, where in places.items():
         if store_id not in entries:
             result.missing[store_id] = where
-    result.orphans = sum(1 for store_id in entries if store_id not in places)
+    result.orphans = [path for store_id, path in entries.items() if store_id not in places]
 
     if contents:
         # The count belongs in the announcement, not after it: this is the step

@@ -332,11 +332,12 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
     )
     _report_paths(source, "message(s) could not be read", result.unreadable)
     _report_paths(source, "file(s) in the archive are not messages", result.foreign)
-    if result.orphans:
-        print(
-            f"{source}: {result.orphans:,} message(s) are not referenced in any log file"
-            " -- nothing records which folder they came from"
-        )
+    _report_paths(
+        source,
+        "message(s) are not referenced in any log file -- nothing records which folder"
+        " they came from",
+        result.orphans,
+    )
     if result.quarantined_before:
         print(f"{source}: {result.quarantined_before:,} message(s) set aside by an earlier run")
     if result.transient_removed:

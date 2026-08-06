@@ -46,7 +46,7 @@ class TestASoundArchive:
         assert result.log_files == 1
         assert not result.missing
         assert not result.foreign
-        assert result.orphans == 0
+        assert not result.orphans
 
     def test_the_integrity_check_finds_nothing_either(self, tmp_path):
         _archive(tmp_path)
@@ -111,13 +111,17 @@ class TestWhatItFinds:
         assert result.foreign == [stray]
         assert result.sound, "somebody's file is not the archive being wrong"
 
-    def test_an_entry_no_log_file_names(self, tmp_path):
-        """What `archive import` leaves behind: it writes no log at all."""
-        _archive(tmp_path, messages=3, logged=2)
+    def test_a_message_no_log_file_references_is_named(self, tmp_path):
+        """What `archive import` leaves behind: it writes no log at all.
+
+        Named rather than counted, because "one message has no provenance" is
+        not something anyone can act on without knowing which.
+        """
+        store, ids = _archive(tmp_path, messages=3, logged=2)
 
         result = check(tmp_path)
 
-        assert result.orphans == 1
+        assert result.orphans == [store.locate(ids[2], exists=True)]
         assert result.sound
 
 
