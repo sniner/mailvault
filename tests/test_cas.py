@@ -1,4 +1,6 @@
 import io
+import os
+import pathlib
 
 import pytest
 
@@ -150,11 +152,13 @@ def test_cas_compress_add(tmp_path):
     assert path.stat().st_size < len(data)
 
 
-def test_cas_compress_add_with_fsync(tmp_path):
-    """A compressed store with fsync on still writes a valid, readable file."""
-    store = cas.ContentAddressedStorage(
-        root_dir=tmp_path / "cas", suffix=".eml", compress=True, fsync=True
-    )
+def test_cas_compress_add_survives_the_flush(tmp_path):
+    """A compressed entry is flushed through its compressor and still readable.
+
+    The compressor is closed while the file underneath it is still open, so the
+    frame it writes is covered by the flush and the fsync that follow.
+    """
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml", compress=True)
     data = b"compressible " * 100
     status, _hashval, path = store.add(data)
     assert status == "NEW"
@@ -503,20 +507,53 @@ def test_cas_write_is_not_seen_before_it_is_complete(tmp_path):
     assert destination.read_bytes() == b"half a message"
 
 
-def test_cas_fsync_store_writes_readable_entries(tmp_path):
-    """The durable path has to produce the same result as the fast one."""
-    store = cas.ContentAddressedStorage(
-        root_dir=tmp_path / "cas",
-        suffix=".jsonl",
-        depth=1,
-        fsync=True,
+def test_cas_content_is_on_the_device_before_the_entry_has_a_name(tmp_path, monkeypatch):
+    """The content is flushed before the rename, the directory entry after it.
+
+    Both halves matter, and so does the order. A rename that overtakes the
+    content can publish a file whose bytes are not the ones its name claims --
+    which nothing would ever notice, because the store answers "is it there?"
+    by looking at names. A directory entry that never reaches the device leaves
+    the bytes behind with nothing pointing at them.
+
+    Asserted through what the two calls can see: when the content is flushed
+    the entry must not exist yet, and when the directory is flushed it must.
+    """
+    destination = tmp_path / "cas" / "aa" / "aabbcc.eml"
+    seen: list[str] = []
+
+    real_fsync = os.fsync
+
+    def recording_fsync(fd):
+        seen.append(f"content, entry exists: {destination.exists()}")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(cas.os, "fsync", recording_fsync)
+    monkeypatch.setattr(
+        cas.atomic,
+        "sync_directory",
+        lambda path: seen.append(f"directory, entry exists: {destination.exists()}"),
     )
 
-    status, _, path = store.add(b'{"a":1}\n')
+    with cas._writing_to(destination) as f:
+        f.write(b"a whole message")
 
-    assert status == "NEW"
-    assert store.read(path) == b'{"a":1}\n'
-    assert store.verify(path)
+    assert seen == ["content, entry exists: False", "directory, entry exists: True"]
+
+
+def test_cas_a_failed_write_syncs_nothing(tmp_path, monkeypatch):
+    """A write that never produced an entry has no directory entry to flush."""
+    destination = tmp_path / "cas" / "aa" / "aabbcc.eml"
+    synced: list[pathlib.Path] = []
+    monkeypatch.setattr(cas.atomic, "sync_directory", synced.append)
+
+    with pytest.raises(OSError), cas._writing_to(destination) as f:
+        f.write(b"half a message")
+        raise OSError("the network went away")
+
+    assert synced == []
+    assert not destination.exists()
+    assert [p for p in (tmp_path / "cas").rglob("*") if p.is_file()] == []
 
 
 # ---------------------------------------------------------------------------

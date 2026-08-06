@@ -6,12 +6,14 @@ carries its own integrity check; adding the same bytes twice is a no-op. Entries
 can be transparently zstd-compressed (through `mailvault.store.zstd`), and the
 header of a stored message can be read without pulling the whole body.
 
-Two rules keep an entry from ever being seen half-written. It is written to a
+Three rules keep an entry from ever being seen half-written. It is written to a
 transient file and renamed into place only once complete -- a rename within one
 directory is atomic on every filesystem in practical use, so a reader sees the
-whole entry or nothing at all. And that transient file's name belongs to one
-writer alone, so two runs storing the same message at the same time cannot write
-into the same file and rename the mixture into place.
+whole entry or nothing at all. That transient file's name belongs to one writer
+alone, so two runs storing the same message at the same time cannot write into
+the same file and rename the mixture into place. And the content reaches the
+device before the rename, the directory entry naming it after it, so a power cut
+cannot publish a name whose content never arrived.
 """
 
 from __future__ import annotations
@@ -55,6 +57,16 @@ _serial = itertools.count()
 _TEMP_ATTEMPTS = 100
 
 
+def is_hashval(value: str) -> bool:
+    """True when `value` has the shape of a name entries are filed under.
+
+    The lenient counterpart to `normalize_hashval`, for a value that comes out
+    of a file which is allowed to be damaged. The metadata log is such a file:
+    a store id it cannot offer is a line to skip, not a caller to correct.
+    """
+    return _HEX.match(value) is not None
+
+
 def normalize_hashval(hashval: str) -> str:
     """Check that `hashval` is a hash and return it in the form entries use.
 
@@ -64,7 +76,7 @@ def normalize_hashval(hashval: str) -> str:
     `../..` would cut into components that climb out of the store entirely.
     Rejected here, at the one place such a value enters.
     """
-    if not _HEX.match(hashval):
+    if not is_hashval(hashval):
         raise ValueError(f"not a hash: {hashval!r}")
     return hashval.lower()
 
@@ -114,10 +126,7 @@ def _open_transient(destination: pathlib.Path) -> tuple[pathlib.Path, io.Buffere
 
 
 @contextlib.contextmanager
-def _writing_to(
-    destination: pathlib.Path,
-    fsync: bool = False,
-) -> collections.abc.Iterator[io.BufferedWriter]:
+def _writing_to(destination: pathlib.Path) -> collections.abc.Iterator[io.BufferedWriter]:
     """Yield a file to write, and rename it onto `destination` on success.
 
     The transient file is created in the destination's own directory, because a
@@ -126,9 +135,17 @@ def _writing_to(
     would be enough for a single writer; two runs storing the same message at
     the same time would write into one file and rename the mixture into place.
 
-    With `fsync` the content is on the device before the rename and the
-    directory entry after it -- an entry whose bytes survive a power cut but
-    whose name does not is no better than no entry at all.
+    Both halves of the durability are unconditional, and their order is the
+    point. The content reaches the device *before* the rename, or a power cut
+    can publish a file under a name that claims to be the hash of bytes which
+    never arrived -- and nothing would ever find out, because the store answers
+    "is this entry here?" by looking at names. The directory entry follows the
+    rename, or the bytes survive with nothing pointing at them.
+
+    Neither is optional, because neither failure is recoverable by fetching the
+    message again: an entry that is there but wrong is indistinguishable from a
+    good one, and an entry that is gone was already accounted for by the run
+    that stored it.
 
     Nothing is left behind when the write fails: the transient file goes and
     the destination is untouched.
@@ -140,8 +157,7 @@ def _writing_to(
         with f:
             yield f
             f.flush()
-            if fsync:
-                os.fsync(f.fileno())
+            os.fsync(f.fileno())
         tmp_path.replace(destination)
         renamed = True
     finally:
@@ -149,8 +165,7 @@ def _writing_to(
             log.debug("%s: write failed, removing transient file", destination)
             tmp_path.unlink(missing_ok=True)
 
-    if fsync:
-        atomic.sync_directory(destination.parent)
+    atomic.sync_directory(destination.parent)
 
 
 @dataclasses.dataclass
@@ -183,7 +198,6 @@ class ContentAddressedStorage:
         depth: int = 2,
         compress: bool = False,
         hashfactory: collections.abc.Callable[..., hashlib._Hash] | None = None,
-        fsync: bool = False,
     ):
         self.root_dir = pathlib.Path(root_dir)
         pathlib.Path.mkdir(self.root_dir, parents=True, exist_ok=True)
@@ -191,12 +205,6 @@ class ContentAddressedStorage:
         self.hashfactory = hashfactory if hashfactory else DEFAULT_HASH
         self.depth = _checked_depth(depth, self.hashfactory)
         self.suffix = suffix
-        # Flush each entry to the device before it is renamed into place. Off by
-        # default: for mail a lost entry is re-fetched on the next run, and one
-        # fsync per message is a real cost over a large archive. Callers whose
-        # entries are not re-fetchable that cheaply -- the metadata log -- turn
-        # it on.
-        self.fsync = fsync
         self.blocksize = 16384
         if self.compress:
             zstd.require()  # fail fast if no zstd implementation is available
@@ -292,7 +300,7 @@ class ContentAddressedStorage:
             return "EXISTS", hashval, existing
         path, filename = self._destination(hashval)
         file = path / filename
-        with _writing_to(file, self.fsync) as f:
+        with _writing_to(file) as f:
             if self.compress:
                 # The compressor is closed -- its frame flushed into f -- while f
                 # is still open, so the flush covers the whole compressed file.
@@ -402,7 +410,7 @@ class ContentAddressedStorage:
                 result.skipped += 1
                 continue
             try:
-                with path.open("rb") as src, _writing_to(target_fn(path), self.fsync) as dst:
+                with path.open("rb") as src, _writing_to(target_fn(path)) as dst:
                     converter(src, dst)
                 path.unlink()
             except Exception as exc:

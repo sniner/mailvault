@@ -206,15 +206,41 @@ class TestReading:
             + "\n"
             + json.dumps({"nothing": "useful"})
             + "\n"
-            + json.dumps({"store_id": "ok"})
+            + json.dumps({"store_id": "abc"})
             + "\n",
             encoding="utf-8",
         )
 
         logfile = metalog.read_log(path)
         assert logfile is not None
-        assert logfile.store_ids == ["ok"]
+        assert logfile.store_ids == ["abc"]
         assert "no usable store_id" in caplog.text
+
+    def test_store_id_that_is_not_a_hash_is_skipped(self, tmp_path, caplog):
+        """A store id the store would refuse costs its line, not the file.
+
+        The store cuts a path out of a store id and rejects anything that is not
+        a hash. That value came out of a file which is allowed to be damaged, so
+        it has to be dropped here -- passing it on would turn one broken line
+        into a refusal at whoever asks the store next, and cost them the whole
+        place they were reading.
+        """
+        path = tmp_path / "log.jsonl"
+        path.write_text(
+            json.dumps({"version": 1, "mailbox": "j", "folder": "INBOX"})
+            + "\n"
+            # A single flipped bit is enough: 'a' (0x61) becomes 'i' (0x69).
+            + json.dumps({"store_id": "iaa"})
+            + "\n"
+            + json.dumps({"store_id": "aaa"})
+            + "\n",
+            encoding="utf-8",
+        )
+
+        logfile = metalog.read_log(path)
+        assert logfile is not None
+        assert logfile.store_ids == ["aaa"]
+        assert "store_id is not a hash" in caplog.text
 
 
 class TestDiscovery:

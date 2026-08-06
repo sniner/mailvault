@@ -99,14 +99,10 @@ def as_text(value: object) -> str:
 def open_store(root: pathlib.Path) -> cas.ContentAddressedStorage:
     """Open the log's content-addressed store.
 
-    `fsync` is on, unlike for mail: a lost mail is re-fetched by the next run,
-    while a lost observation is only covered by the overlap window and may not
-    come back at all. It is a handful of small files per run, so it costs nothing.
-
     Depth 1 is enough. The mail store uses 2 because it has to carry hundreds of
     thousands of entries; the log has orders of magnitude fewer.
     """
-    return cas.ContentAddressedStorage(root, suffix=".jsonl", depth=1, fsync=True)
+    return cas.ContentAddressedStorage(root, suffix=".jsonl", depth=1)
 
 
 def log_files(root: pathlib.Path) -> list[pathlib.Path]:
@@ -239,6 +235,15 @@ def _parse_store_id(path: pathlib.Path, number: int, line: str) -> str | None:
     store_id = data.get("store_id")
     if not isinstance(store_id, str) or not store_id:
         log.warning("%s:%d: no usable store_id, skipped", path, number)
+        return None
+    if not cas.is_hashval(store_id):
+        # The store cuts a path out of a store id and refuses one that is not a
+        # hash -- rightly, since `../..` would climb out of it. Here that value
+        # came out of a file which is allowed to be damaged, so it is a line to
+        # skip like any other unusable one. Letting it through would hand the
+        # refusal to whoever asks the store next, and cost them the whole folder
+        # they were reading for one broken line.
+        log.warning("%s:%d: store_id is not a hash, skipped", path, number)
         return None
     return store_id
 

@@ -12,16 +12,28 @@
   did not match its name. Transient files now belong to one writer alone; racing for the same
   entry is what makes the store deduplicate and stays harmless
 
-- **An entry written with `fsync` on now survives a power cut, name included.** The content was
-  flushed to the device but the directory entry naming it was not, so the archive could come back
-  up with the bytes on disk and nothing pointing at them. This is what the metadata log turns
-  `fsync` on for, and it was the half of the promise that was missing
+- **An entry now survives a power cut, name included.** The content reaches the device before the
+  entry is renamed into place and the directory entry naming it afterwards -- neither used to
+  happen for messages, and only the first for the metadata log. Both are failures nothing in the
+  archive could have found later: a rename that overtakes the content publishes a file under a
+  name claiming to be the hash of bytes that never arrived, and the store answers "is this message
+  here?" by looking at names, not by reading them. The reasoning this was once left off for -- a
+  lost message is fetched again next run -- does not hold either: the resume point has already
+  moved past it, so an incremental run only re-fetches it if it falls inside IMAP's one-day
+  overlap window, and on Microsoft 365 not at all. One flush per message is nothing next to the
+  download that produced it
+
+- **`archive compress` and `archive decompress` no longer delete the original before the converted
+  entry is durable.** Convert, rename, unlink -- with nothing flushed in between, a power cut in
+  that window could take both copies. It is the one path in the archive where a message could be
+  lost outright rather than merely re-fetched, and it runs over every entry there is
 
 - **A store id that is not a hash is refused instead of being followed.** Store ids come back from
   the database, from the metadata log and from the command line, and a path is derived from one by
   cutting it into directory names -- so `../..` cut into components climbed out of the store
   entirely. Now rejected where such a value enters, and an uppercase hash is accepted rather than
-  quietly not found
+  quietly not found. In the metadata log, which is allowed to be damaged and says so, such a line
+  is skipped with a warning instead: one unusable entry must not cost the readable ones beside it
 
 - **`archive compress` and `archive decompress` report the entries they could not convert**, name
   them, and exit non-zero. A pass keeps going when one entry fails -- one damaged file should not
@@ -44,6 +56,11 @@
 - **`compress_all` and `decompress_all` return a `ConversionResult`** (`converted`, `skipped`,
   `failed`) rather than a pair of counts. `result.converted` and `result.skipped` are what the two
   numbers used to be
+
+- **`ContentAddressedStorage` no longer takes an `fsync` argument.** Flushing an entry to the
+  device is what the store does, not something a caller decides: an entry that is there but wrong,
+  or gone without the run that wrote it noticing, is not a state any caller should be able to opt
+  into
 
 - **`ContentAddressedStorage` gained `verify`, `hashval` and `hashval_of`** -- check an entry
   against the name it is filed under, name content without storing it, and read a store id back
