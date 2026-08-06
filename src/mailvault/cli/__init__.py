@@ -228,6 +228,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     a_compact.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
+    a_check = asub.add_parser(
+        "check",
+        help="Check that the archive is what it says it is",
+        description=(
+            "Hold an archive against what it claims: every file in a shard is an"
+            " entry, every entry the metadata log names is there, every log file"
+            " still matches its own name. With --contents every entry is read and"
+            " held against the name it is filed under, which is the only way to"
+            " find one whose bytes have changed under it -- and an order of"
+            " magnitude more work, so it is asked for rather than assumed. Reports"
+            " what it finds and repairs nothing; the only thing it removes is the"
+            " transient file of a write that was interrupted."
+        ),
+    )
+    a_check.add_argument(
+        "--contents",
+        action="store_true",
+        help="Read every entry and check it against the name it is filed under",
+    )
+    a_check.add_argument(
+        "--quarantine",
+        action="store_true",
+        help="Rename entries that fail that check, so they count as missing again",
+    )
+    a_check.add_argument("source", type=pathlib.Path, help="Email archive directory")
+
     return parser
 
 

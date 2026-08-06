@@ -431,6 +431,46 @@ in `meta/` -- the messages are left alone, because looking through them means
 walking every directory in the archive for a few kilobytes.
 
 
+### Checking an archive
+
+A message file is named after the hash of its content, is never modified and is
+written so that it cannot appear half-way. What none of that covers is the time
+afterwards: bit rot, a restore that dropped a file, a copy that ran out of disk.
+The archive cannot notice any of it on its own, because everything it does asks
+whether a *name* is there -- never whether the bytes behind it are still the ones
+it was named for.
+
+```console
+$ mailvault archive check ./backup
+./backup: 130,997 entries, 219,690 observation(s) in 60 log file(s)
+./backup: 3 entry/entries named in the log are missing
+  6f3ac1…  mail.example.org::INBOX
+./backup: contents not read -- use --contents to check every entry against its name
+```
+
+By default it walks the archive: every file lying in a shard is an entry, every
+entry the metadata log names is there, every log file still matches its own name.
+That costs a pass over the directory tree, no more.
+
+`--contents` reads every entry and hashes it, which is the only way to find one
+whose bytes have changed under it. On a large archive over a network share that
+is an order of magnitude more work -- reckon with the better part of an hour for
+200,000 messages -- which is why it is asked for rather than assumed. A run
+without it says so, so that "nothing found" cannot mean two different things.
+
+The command **repairs nothing** and exits non-zero when the archive is not what
+it claims. The only thing it removes is the transient file of a write that was
+interrupted, by the same rule `compact` uses. A file that is not an entry is
+reported and left where it is -- it may well be someone's.
+
+`--quarantine` is the one exception, and it needs `--contents`. An entry whose
+content does not match its name is the one finding where doing nothing is bad:
+the archive goes on answering that the message is present, so nothing ever
+fetches it again. This renames it to `<hash>.eml.corrupt` -- it keeps every byte,
+it just stops claiming to be that message. Out of the way, the message counts as
+missing again, and `verify --repair` or a `backup --full` brings it back.
+
+
 ## Migrating from ib-*
 
 The former `ib-mailbox` and `ib-archive` commands are now subcommands of a single

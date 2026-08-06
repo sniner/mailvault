@@ -457,13 +457,17 @@ class ContentAddressedStorage:
             operation="decompression",
         )
 
-    def _transient_origin(self, path: pathlib.Path) -> str | None:
+    def transient_origin(self, path: pathlib.Path) -> str | None:
         """The store id a transient file was being written for, or None.
 
         What makes a leftover this store's to remove. A directory tree collects
         other people's transient files too -- `state.json` and `index.db` are
         replaced through one of their own -- and a store that swept every name
         ending in the suffix would delete files it never wrote.
+
+        Public for the same reason `hashval_of` is: whoever walks the tree has
+        to tell an entry, a leftover of this store and a file that is neither
+        apart, and the store is what knows the difference.
         """
         name = path.name
         if not name.endswith(TEMP_SUFFIX):
@@ -472,6 +476,24 @@ class ContentAddressedStorage:
         if not destination or not serial:
             return None
         return self.hashval_of(path.with_name(destination))
+
+    def is_stale_transient(
+        self, path: pathlib.Path, min_age: float = TRANSIENT_MIN_AGE
+    ) -> bool:
+        """True when `path` is a leftover of this store, old enough to remove.
+
+        Both halves have to hold: written by this store, and lying there long
+        enough that no live writer can still have it open. Separate from the
+        sweep below so that a pass which is walking the tree for its own reasons
+        does not have to walk it a second time to clear up.
+        """
+        if self.transient_origin(path) is None:
+            return False
+        try:
+            return path.stat().st_mtime <= time.time() - min_age
+        except OSError as exc:
+            log.debug(f"{path}: kept: {exc}")
+            return False
 
     def prune_transient_files(self, min_age: float = TRANSIENT_MIN_AGE) -> int:
         """Remove this store's leftover transient files, if they are old enough.
@@ -491,22 +513,26 @@ class ContentAddressedStorage:
         leaves behind.
         """
         removed = 0
-        cutoff = time.time() - min_age
         for path, _, files in os.walk(self.root_dir):
             for fname in files:
                 entry = pathlib.Path(path, fname)
-                if self._transient_origin(entry) is None:
-                    continue
-                try:
-                    if entry.stat().st_mtime > cutoff:
-                        continue
-                    entry.unlink()
-                except OSError as exc:
-                    log.debug(f"{entry}: kept: {exc}")
-                    continue
-                log.info(f"{entry}: leftover of an interrupted write, removed")
-                removed += 1
+                if self.is_stale_transient(entry, min_age) and self.drop_transient(entry):
+                    removed += 1
         return removed
+
+    def drop_transient(self, path: pathlib.Path) -> bool:
+        """Remove one leftover transient file, reporting whether it went.
+
+        Says so in the log rather than doing it quietly: such a file is the one
+        trace an interrupted write leaves behind.
+        """
+        try:
+            path.unlink()
+        except OSError as exc:
+            log.debug(f"{path}: kept: {exc}")
+            return False
+        log.info(f"{path}: leftover of an interrupted write, removed")
+        return True
 
     def prune_empty_dirs(self) -> int:
         """Remove the shard directories that no longer hold anything.
