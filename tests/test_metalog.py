@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import time
 from datetime import UTC, datetime
 
-from mailvault.store import metalog
+from mailvault.store import cas, metalog
 
 WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
 STORE_ID = "df3823f1cd1638d0f374745bb0e200e3"
@@ -206,15 +208,41 @@ class TestReading:
             + "\n"
             + json.dumps({"nothing": "useful"})
             + "\n"
-            + json.dumps({"store_id": "ok"})
+            + json.dumps({"store_id": "abc"})
             + "\n",
             encoding="utf-8",
         )
 
         logfile = metalog.read_log(path)
         assert logfile is not None
-        assert logfile.store_ids == ["ok"]
+        assert logfile.store_ids == ["abc"]
         assert "no usable store_id" in caplog.text
+
+    def test_store_id_that_is_not_a_hash_is_skipped(self, tmp_path, caplog):
+        """A store id the store would refuse costs its line, not the file.
+
+        The store cuts a path out of a store id and rejects anything that is not
+        a hash. That value came out of a file which is allowed to be damaged, so
+        it has to be dropped here -- passing it on would turn one broken line
+        into a refusal at whoever asks the store next, and cost them the whole
+        place they were reading.
+        """
+        path = tmp_path / "log.jsonl"
+        path.write_text(
+            json.dumps({"version": 1, "mailbox": "j", "folder": "INBOX"})
+            + "\n"
+            # A single flipped bit is enough: 'a' (0x61) becomes 'i' (0x69).
+            + json.dumps({"store_id": "iaa"})
+            + "\n"
+            + json.dumps({"store_id": "aaa"})
+            + "\n",
+            encoding="utf-8",
+        )
+
+        logfile = metalog.read_log(path)
+        assert logfile is not None
+        assert logfile.store_ids == ["aaa"]
+        assert "store_id is not a hash" in caplog.text
 
 
 class TestDiscovery:
@@ -256,6 +284,25 @@ class TestCompact:
         for store_id in store_ids:
             writer.add(mailbox, [folder], store_id)
         writer.seal(when)
+
+    def test_sweeps_up_after_an_interrupted_write(self, tmp_path):
+        """Compaction is the pass that has the log open, so it tidies it.
+
+        Only the log: sweeping the mail store would mean walking a hundred
+        thousand directories, which is not what this command is for.
+        """
+        root = tmp_path / "meta"
+        self._write(root, ["a", "b"])
+        (logfile,) = metalog.log_files(root)
+        leftover = logfile.with_name(f"{logfile.name}.4711-0{cas.TEMP_SUFFIX}")
+        leftover.write_bytes(b'{"version":1,"mailbox":"job"')
+        os.utime(leftover, (0, time.time() - cas.TRANSIENT_MIN_AGE - 60))
+
+        result = metalog.compact(root)
+
+        assert result.transient_removed == 1
+        assert not leftover.exists()
+        assert [f.store_ids for f in metalog.read_all(root)] == [["a", "b"]]
 
     def test_consolidates_and_deduplicates_a_place(self, tmp_path):
         root = tmp_path / "meta"

@@ -323,6 +323,11 @@ $ mailvault archive decompress ./backup
 ./backup: 1,234 files decompressed, 0 already plain
 ```
 
+One entry that cannot be converted does not stop the pass -- a single damaged
+file should not cost you the conversion of a whole archive. Those files are
+named, left exactly as they are, and the command exits non-zero, so a script
+finds out about a conversion that only partly happened.
+
 ### Email addresses
 
 List all sender and recipient addresses found in the archive:
@@ -413,6 +418,17 @@ It rewrites one file per mailbox/folder holding each observation once, verifies
 the new files, and only then removes the originals -- so it is lossless and safe
 to interrupt: a half-done run just leaves both, and the next one finishes. Run it
 occasionally; there is no hurry, but do not put it off for years.
+
+Since it is the one pass that has the log open, it also clears away what an
+interrupted write left behind there, and says so when it finds anything:
+
+```console
+./backup: 2 leftover(s) of an interrupted write removed
+```
+
+Only files old enough that no running backup can still be writing them, and only
+in `meta/` -- the messages are left alone, because looking through them means
+walking every directory in the archive for a few kilobytes.
 
 
 ## Migrating from ib-*

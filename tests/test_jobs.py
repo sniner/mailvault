@@ -781,7 +781,9 @@ class TestMetadataLog:
         """An archive filled by an earlier version is protected straight away."""
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
             mb_id = db.add_mailbox("old-job")
-            msg_id = db.add_message("old", "<old@example.com>", None, "Subject")
+            # Store ids are hashes wherever they are real, and the log skips a
+            # line whose store id is not one -- so the stand-ins here are hex.
+            msg_id = db.add_message("decade", "<old@example.com>", None, "Subject")
             db.assign_message_to_mailbox(msg_id, mb_id)
             db.add_message_labels(msg_id, "Archiv/2016")
 
@@ -795,7 +797,7 @@ class TestMetadataLog:
         assert len(logs) == 1
         assert logs[0].mailbox == "old-job"
         assert logs[0].folder == "Archiv/2016"
-        assert logs[0].store_ids == ["old"]
+        assert logs[0].store_ids == ["decade"]
 
     def test_existing_log_is_not_bootstrapped_again(self, tmp_path):
         job = _make_job(folders=["INBOX"])
@@ -905,12 +907,12 @@ class TestMigration:
             imapbox = db.add_mailbox("other.example.org")
             db.set_snapshot(imapbox, db.add_label("Archiv/Chat"), date=datetime.now(UTC))
             for n, extra in enumerate(([], ["\\Important"])):
-                msg = db.add_message(f"m{n}", f"<m{n}@example.com>", None, "Subject")
+                msg = db.add_message(f"beef{n}", f"<m{n}@example.com>", None, "Subject")
                 db.assign_message_to_mailbox(msg, gmail)
                 db.assign_message_to_mailbox(msg, imapbox)
                 db.add_message_labels(msg, "Archiv/Chat", "Chat", *extra)
             # Witness that '\Important' can only be the Gmail-style mailbox's.
-            solo = db.add_message("solo", "<solo@example.com>", None, "Subject")
+            solo = db.add_message("aced", "<solo@example.com>", None, "Subject")
             db.assign_message_to_mailbox(solo, gmail)
             db.add_message_labels(solo, "\\Important")
 
@@ -920,8 +922,8 @@ class TestMigration:
         places = {
             (f.mailbox, f.folder): set(f.store_ids) for f in metalog.read_all(tmp_path / "meta")
         }
-        assert places[("mail.example.org", "Chat")] == {"m0", "m1"}
-        assert places[("other.example.org", "Archiv/Chat")] == {"m0", "m1"}
+        assert places[("mail.example.org", "Chat")] == {"beef0", "beef1"}
+        assert places[("other.example.org", "Archiv/Chat")] == {"beef0", "beef1"}
 
     def test_undecidable_folder_is_left_out_rather_than_guessed(self, tmp_path):
         """Two mailboxes with the same folder name and no way to tell them apart."""

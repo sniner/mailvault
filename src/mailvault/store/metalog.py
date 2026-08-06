@@ -56,7 +56,6 @@ from __future__ import annotations
 
 import collections.abc
 import dataclasses
-import hashlib
 import json
 import logging
 import pathlib
@@ -100,14 +99,10 @@ def as_text(value: object) -> str:
 def open_store(root: pathlib.Path) -> cas.ContentAddressedStorage:
     """Open the log's content-addressed store.
 
-    `fsync` is on, unlike for mail: a lost mail is re-fetched by the next run,
-    while a lost observation is only covered by the overlap window and may not
-    come back at all. It is a handful of small files per run, so it costs nothing.
-
     Depth 1 is enough. The mail store uses 2 because it has to carry hundreds of
     thousands of entries; the log has orders of magnitude fewer.
     """
-    return cas.ContentAddressedStorage(root, suffix=".jsonl", depth=1, fsync=True)
+    return cas.ContentAddressedStorage(root, suffix=".jsonl", depth=1)
 
 
 def log_files(root: pathlib.Path) -> list[pathlib.Path]:
@@ -135,7 +130,7 @@ def verify_file(path: pathlib.Path) -> bool:
     except OSError as exc:
         log.warning("%s: unreadable: %s", path, exc)
         return False
-    return hashlib.sha384(raw).hexdigest() == path.name.removesuffix(".jsonl")
+    return cas.DEFAULT_HASH(raw).hexdigest() == path.name.removesuffix(".jsonl")
 
 
 def _serialize(
@@ -241,6 +236,15 @@ def _parse_store_id(path: pathlib.Path, number: int, line: str) -> str | None:
     if not isinstance(store_id, str) or not store_id:
         log.warning("%s:%d: no usable store_id, skipped", path, number)
         return None
+    if not cas.is_hashval(store_id):
+        # The store cuts a path out of a store id and refuses one that is not a
+        # hash -- rightly, since `../..` would climb out of it. Here that value
+        # came out of a file which is allowed to be damaged, so it is a line to
+        # skip like any other unusable one. Letting it through would hand the
+        # refusal to whoever asks the store next, and cost them the whole folder
+        # they were reading for one broken line.
+        log.warning("%s:%d: store_id is not a hash, skipped", path, number)
+        return None
     return store_id
 
 
@@ -265,7 +269,7 @@ def read_log(path: pathlib.Path) -> LogFile | None:
     # a subset of the truth -- which is what every log file is anyway. Throwing
     # away 80,000 readable lines because the last one was cut short would be the
     # worse answer. The warning is what lets someone repair the archive.
-    if hashlib.sha384(raw).hexdigest() != path.name.removesuffix(".jsonl"):
+    if cas.DEFAULT_HASH(raw).hexdigest() != path.name.removesuffix(".jsonl"):
         log.warning("%s: damaged -- content does not match its name", path)
 
     try:
@@ -342,6 +346,7 @@ class CompactResult:
     entries_before: int = 0
     entries_after: int = 0
     verified: bool = True
+    transient_removed: int = 0
 
 
 def compact(root: pathlib.Path) -> CompactResult:
@@ -411,6 +416,12 @@ def compact(root: pathlib.Path) -> CompactResult:
     # Folding a hundred files into one empties most of the shard directories, and
     # nothing else ever removes them -- a store that only grows, like the mail, has
     # no reason to look.
+    #
+    # The same goes for what an interrupted write leaves behind. Only the log is
+    # swept here, and only because this pass has it open anyway: the mail store
+    # would mean walking a hundred thousand directories over whatever the archive
+    # is mounted on, which belongs to a pass that walks it for its own reasons.
+    result.transient_removed = store.prune_transient_files()
     store.prune_empty_dirs()
 
     result.files_after = len(log_files(root))
