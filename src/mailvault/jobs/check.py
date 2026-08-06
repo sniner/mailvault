@@ -85,15 +85,25 @@ class CheckResult:
     quarantined: list[pathlib.Path] = dataclasses.field(default_factory=list)
 
     @property
-    def sound(self) -> bool:
-        """True when nothing found says the archive is not what it claims.
+    def findings(self) -> int:
+        """How many things were found that say the archive is not what it claims.
 
-        A foreign file and an orphan are deliberately not part of this. Neither
+        A foreign file and an orphan are deliberately not among them. Neither
         says anything is wrong with the archive: somebody put a file in a
         directory, and an imported message has no log entry because an import
         writes none.
         """
-        return not (self.missing or self.damaged_logs or self.corrupt or self.unreadable)
+        return (
+            len(self.missing)
+            + len(self.damaged_logs)
+            + len(self.corrupt)
+            + len(self.unreadable)
+        )
+
+    @property
+    def sound(self) -> bool:
+        """True when nothing found says the archive is not what it claims."""
+        return not self.findings
 
 
 def _store_files(root: pathlib.Path, log_dir: str) -> collections.abc.Iterator[pathlib.Path]:
@@ -131,6 +141,7 @@ def _classify(
     root: pathlib.Path,
     log_dir: str,
     result: CheckResult,
+    step: str,
 ) -> dict[str, pathlib.Path]:
     """Walk the shards once, sorting what is there and clearing away leftovers.
 
@@ -143,7 +154,7 @@ def _classify(
     for path in _store_files(root, log_dir):
         seen += 1
         if seen % WALK_PROGRESS_EVERY == 0:
-            log.info("%s: %s file(s) seen", root, f"{seen:,}")
+            log.info("%s: %s file(s) seen", step, f"{seen:,}")
         hashval = store.hashval_of(path)
         if hashval is not None:
             entries[hashval] = path
@@ -187,6 +198,7 @@ def _check_contents(
     store: cas.ContentAddressedStorage,
     entries: dict[str, pathlib.Path],
     result: CheckResult,
+    step: str,
 ) -> None:
     """Hold every entry against the name it is filed under.
 
@@ -194,10 +206,9 @@ def _check_contents(
     not the ones it was named for. Everything else in the archive answers that
     question by looking at the name.
     """
-    log.info("reading %s entry/entries", f"{len(entries):,}")
     for read, path in enumerate(entries.values(), start=1):
         if read % CONTENTS_PROGRESS_EVERY == 0:
-            log.info("%s of %s entry/entries read", f"{read:,}", f"{len(entries):,}")
+            log.info("%s: %s of %s read", step, f"{read:,}", f"{len(entries):,}")
         try:
             if not store.verify(path):
                 log.error("%s: content does not match the name it is filed under", path)
@@ -267,9 +278,26 @@ def check(
 
     result = CheckResult()
     store = cas.ContentAddressedStorage(store_path, suffix=".eml")
-    log.info("%s: looking through the archive", store_path)
-    entries = _classify(store, store_path, metalog.DEFAULT_LOG_DIR, result)
+    # Numbered because the second one is instant and the third takes half an
+    # hour: someone watching a command they have not run before should be able
+    # to tell how much of it is still ahead.
+    steps = 3 if contents else 2
+
+    log.info("%s: step 1 of %s: looking through the archive", store_path, steps)
+    entries = _classify(
+        store, store_path, metalog.DEFAULT_LOG_DIR, result, step=f"step 1 of {steps}"
+    )
+    log.info("step 1 of %s: %s message(s) found", steps, f"{result.entries:,}")
+
+    log.info("%s: step 2 of %s: reading the metadata log", store_path, steps)
     places = _read_log(store_path / metalog.DEFAULT_LOG_DIR, result)
+    log.info(
+        "step 2 of %s: %s log file(s) file %s message(s) in %s place(s)",
+        steps,
+        f"{result.log_files:,}",
+        f"{len(places):,}",
+        f"{result.observations:,}",
+    )
 
     for store_id, where in places.items():
         if store_id not in entries:
@@ -277,7 +305,15 @@ def check(
     result.orphans = sum(1 for store_id in entries if store_id not in places)
 
     if contents:
-        _check_contents(store, entries, result)
+        # The count belongs in the announcement, not after it: this is the step
+        # that takes half an hour, and how long is the first thing anyone asks.
+        log.info(
+            "%s: step 3 of %s: reading %s message(s), each against its own name",
+            store_path,
+            steps,
+            f"{result.entries:,}",
+        )
+        _check_contents(store, entries, result, step=f"step 3 of {steps}")
     if quarantine:
         result.quarantined = [
             target for path in result.corrupt if (target := quarantine_entry(path))

@@ -501,10 +501,21 @@ it was named for.
 
 ```console
 $ mailvault archive check ./backup
-./backup: 130,997 entries, 219,690 observation(s) in 60 log file(s)
+./backup: 130,997 message(s) stored, filed in 219,690 place(s) by 60 log file(s)
 ./backup: 3 entry/entries named in the log are missing
   6f3ac1…  mail.example.org::INBOX
-./backup: contents not read -- use --contents to check every entry against its name
+./backup: NOT sound -- 3 finding(s) above
+```
+
+More places than messages is the normal case, not a discrepancy: a message filed
+in two folders is one entry the log names twice.
+
+The last line is the verdict, and it says which kind of clean run it was:
+
+```console
+$ mailvault archive check --contents ./backup
+./backup: 130,997 message(s) stored, filed in 219,690 place(s) by 60 log file(s)
+./backup: sound -- every message was read and is what its name says
 ```
 
 By default it walks the archive: every file lying in a shard is an entry, every
@@ -516,6 +527,15 @@ whose bytes have changed under it. On a large archive over a network share that
 is an order of magnitude more work -- reckon with the better part of an hour for
 200,000 messages -- which is why it is asked for rather than assumed. A run
 without it says so, so that "nothing found" cannot mean two different things.
+
+The passes that take a while number themselves, so a long run says how much of
+it is still ahead:
+
+```
+step 1 of 3: 20,000 file(s) seen
+step 2 of 3: 60 log file(s) file 130,997 message(s) in 219,690 place(s)
+step 3 of 3: 4,000 of 130,997 read
+```
 
 The command **repairs nothing** and exits non-zero when the archive is not what
 it claims. The only thing it removes is the transient file of a write that was

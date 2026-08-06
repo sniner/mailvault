@@ -299,13 +299,20 @@ def report_import(
 def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
     """Say what the archive turned out to be, and whether that is all right.
 
-    The last line is not decoration. A check that did not read the contents
-    cannot have found an entry whose bytes changed under it, and without saying
-    so a clean run would mean two different things on two different days.
+    The verdict at the end is not decoration, and neither is its wording. A
+    check that did not read the contents cannot have found an entry whose bytes
+    changed under it, so a clean run means two different things depending on how
+    it was asked -- and a reader who is told only "sound" has no way to know
+    which of the two they got. The exit code says the same thing, but nobody
+    reads an exit code they did not go looking for.
+
+    More places than messages is the normal case, not a discrepancy: a message
+    filed in two folders is one entry the log names twice. Said in words for
+    that reason -- two bare numbers that do not match invite the wrong worry.
     """
     print(
-        f"{source}: {result.entries:,} entries, {result.observations:,} observation(s)"
-        f" in {result.log_files:,} log file(s)"
+        f"{source}: {result.entries:,} message(s) stored,"
+        f" filed in {result.observations:,} place(s) by {result.log_files:,} log file(s)"
     )
     if result.missing:
         print(f"{source}: {len(result.missing):,} entry/entries named in the log are missing")
@@ -333,10 +340,14 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
             f"{source}: {len(result.quarantined):,} entry/entries quarantined -- they count"
             " as missing now, fetch them with `verify --repair` or `backup --full`"
         )
-    if not result.contents_checked:
+    if not result.sound:
+        print(f"{source}: NOT sound -- {result.findings:,} finding(s) above")
+    elif result.contents_checked:
+        print(f"{source}: sound -- every message was read and is what its name says")
+    else:
         print(
-            f"{source}: contents not read -- use --contents to check every entry"
-            " against its name"
+            f"{source}: sound as far as this went -- the names and the log agree, but no"
+            " message was read. Use --contents to check every one against its name"
         )
     return 0 if result.sound else 1
 
