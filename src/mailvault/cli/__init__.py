@@ -199,6 +199,31 @@ def build_parser() -> argparse.ArgumentParser:
     a_import.add_argument("source", type=pathlib.Path, help="Directory to copy/move mails from")
     a_import.add_argument("destination", type=pathlib.Path, help="Archive directory")
 
+    a_export = asub.add_parser(
+        "export",
+        help="Write out a stored message, decompressed and unchanged",
+        description=(
+            "Write out what an entry holds, exactly as it was stored and with any"
+            " compression undone. Takes a store id or the path of an entry -- the"
+            " paths `archive check` prints can be pasted straight in. Without"
+            " --output the message goes to standard output, which is the way to"
+            " look at one the reports could only name."
+        ),
+    )
+    a_export.add_argument(
+        "--output",
+        "-o",
+        type=pathlib.Path,
+        help="Write to this file, or into this directory when several are named",
+    )
+    a_export.add_argument("source", type=pathlib.Path, help="Email archive directory")
+    a_export.add_argument(
+        "entry",
+        nargs="+",
+        metavar="ID|PATH",
+        help="Store id, or the path of an entry in the archive",
+    )
+
     a_addr = asub.add_parser(
         "addresses",
         help="List all email addresses in the archive",

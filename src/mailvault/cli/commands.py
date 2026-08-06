@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import pathlib
+import sys
 
 from mailvault import conf, importer, jobs
 from mailvault.backend import base
@@ -384,11 +385,77 @@ def report_conversion(
     return 1
 
 
+def _entry_path(store: cas.ContentAddressedStorage, wanted: str) -> pathlib.Path:
+    """Find the entry a store id or a path names.
+
+    Both, because both are what someone has in hand: a store id comes out of
+    the log, a database or another message's duplicate; a path comes out of
+    `archive check`, which prints them when it has something to report. Copying
+    one from a report and pasting it here should not need an edit.
+    """
+    # A store id has no suffix, so `hashval_of` declines it and the fallback
+    # takes over; only what the directories say is ignored, which is why a path
+    # copied from a report written on another machine still finds its entry.
+    hashval = store.hashval_of(pathlib.Path(wanted))
+    if hashval is None:
+        if not cas.is_hashval(wanted):
+            raise jobs.JobError(f"{wanted}: neither a store id nor the path of an entry")
+        hashval = cas.normalize_hashval(wanted)
+    found = store.locate(hashval, exists=True)
+    if found is None:
+        raise jobs.JobError(f"{hashval}: not in this archive")
+    return found
+
+
+def export_entries(
+    source: pathlib.Path,
+    wanted: list[str],
+    output: pathlib.Path | None,
+) -> int:
+    """Write out what an entry holds, decompressed, exactly as it was stored.
+
+    The way to look at a message the reports can only name. `check` prints a
+    path when it has something to say about a message, but the file behind it
+    may be zstd-compressed, and either way it is a hash in a shard directory --
+    the point of this is to get the bytes out without having to know that.
+
+    Raw and unmodified: whatever comes out here hashes back to the name it came
+    from, so it is also the way to hand a message to another tool without the
+    archive having an opinion about it.
+    """
+    store = cas.ContentAddressedStorage(source, suffix=".eml")
+    paths = [_entry_path(store, one) for one in wanted]
+
+    if output is None:
+        if len(paths) > 1:
+            raise jobs.JobError(
+                "export: several messages need --output, or they would arrive as one"
+                " stream with nothing between them"
+            )
+        sys.stdout.buffer.write(store.read(paths[0]))
+        return 0
+
+    if len(paths) > 1 or output.is_dir():
+        if not output.is_dir():
+            raise jobs.JobError(f"{output}: not a directory")
+        for path in paths:
+            target = output / path.name.removesuffix(".zst")
+            target.write_bytes(store.read(path))
+            print(f"{target}")
+        return 0
+
+    output.write_bytes(store.read(paths[0]))
+    print(f"{output}")
+    return 0
+
+
 def run_archive(args: argparse.Namespace) -> int:
     """Run an `archive` subcommand (stats/import/addresses/compress/create-db/...)."""
     cmd = args.archive_command
 
-    if cmd == "stats":
+    if cmd == "export":
+        return export_entries(args.source, args.entry, args.output)
+    elif cmd == "stats":
         count, size = _archive(args).stats()
         print(f"{args.source}: {count:,} emails, {_human_size(size)} total")
     elif cmd == "addresses":

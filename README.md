@@ -360,6 +360,21 @@ different name, and afterwards nothing tells it apart from one that really is
 new. If almost everything counts as new when you expected almost nothing to,
 that is what happened.
 
+### Looking at a single message
+
+`archive check` names the messages it has something to say about, but the file
+behind such a path is a hash in a shard directory and may be zstd-compressed.
+`archive export` gets the bytes out:
+
+```console
+$ mailvault archive export ./backup 6f3ac1… | head -20
+$ mailvault archive export ./backup ./backup/6f/3a/6f3ac1….eml -o message.eml
+```
+
+It takes a store id or the path of an entry -- what a report prints can be pasted
+straight in -- and writes the message exactly as it was stored, decompressed. Name
+several and give `--output` a directory to get one file each.
+
 ### Statistics
 
 Show the number of emails and total size of an archive:

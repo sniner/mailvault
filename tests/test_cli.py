@@ -354,3 +354,76 @@ def test_archive_check_quarantine_without_the_integrity_check_is_refused(tmp_pat
 
     with pytest.raises(jobs.JobError, match="cannot be combined with --no-integrity-check"):
         commands.run_archive(_check_args(tmp_path, quarantine=True, no_integrity_check=True))
+
+
+class TestExport:
+    """Getting a stored message back out, by store id or by the path a report printed."""
+
+    @staticmethod
+    def _archive(tmp_path, compress=False):
+        store = cas.ContentAddressedStorage(root_dir=tmp_path, suffix=".eml", compress=compress)
+        _status, store_id, path = store.add(b"From: a@b\r\nSubject: hello\r\n\r\nbody")
+        return store_id, path
+
+    @staticmethod
+    def _export_args(source, entry, output=None):
+        return argparse.Namespace(
+            archive_command="export", source=source, entry=entry, output=output
+        )
+
+    def test_a_store_id_goes_to_standard_output(self, tmp_path, capsysbinary):
+        store_id, _path = self._archive(tmp_path)
+
+        assert commands.run_archive(self._export_args(tmp_path, [store_id])) == 0
+
+        assert capsysbinary.readouterr().out == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
+
+    def test_the_path_a_report_printed_works_just_as_well(self, tmp_path, capsysbinary):
+        _store_id, path = self._archive(tmp_path)
+
+        assert commands.run_archive(self._export_args(tmp_path, [str(path)])) == 0
+
+        assert capsysbinary.readouterr().out == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
+
+    def test_a_compressed_entry_comes_out_as_it_went_in(self, tmp_path, capsysbinary):
+        """The whole point over `cat`: the file on disk is a zstd frame."""
+        store_id, path = self._archive(tmp_path, compress=True)
+        assert path.suffix == ".zst"
+
+        commands.run_archive(self._export_args(tmp_path, [store_id]))
+
+        assert capsysbinary.readouterr().out == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
+
+    def test_output_writes_a_file(self, tmp_path):
+        store_id, _path = self._archive(tmp_path)
+        target = tmp_path / "out.eml"
+
+        commands.run_archive(self._export_args(tmp_path, [store_id], output=target))
+
+        assert target.read_bytes() == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
+
+    def test_several_messages_need_somewhere_to_go(self, tmp_path):
+        store_id, _path = self._archive(tmp_path)
+
+        with pytest.raises(jobs.JobError, match="need --output"):
+            commands.run_archive(self._export_args(tmp_path, [store_id, store_id]))
+
+    def test_a_store_id_the_archive_does_not_have(self, tmp_path):
+        self._archive(tmp_path)
+
+        with pytest.raises(jobs.JobError, match="not in this archive"):
+            commands.run_archive(self._export_args(tmp_path, ["ab" * 48]))
+
+    def test_something_that_is_neither_an_id_nor_a_path(self, tmp_path):
+        self._archive(tmp_path)
+
+        with pytest.raises(jobs.JobError, match="neither a store id nor the path"):
+            commands.run_archive(self._export_args(tmp_path, ["Subject: hello"]))
+
+    def test_a_bare_file_name_is_enough(self, tmp_path):
+        """What is left after copying a path out of a report and cutting it short."""
+        _store_id, path = self._archive(tmp_path)
+
+        commands.run_archive(self._export_args(tmp_path, [path.name], output=tmp_path / "o"))
+
+        assert (tmp_path / "o").read_bytes() == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
