@@ -315,7 +315,7 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
         f" filed in {result.observations:,} place(s) by {result.log_files:,} log file(s)"
     )
     if result.missing:
-        print(f"{source}: {len(result.missing):,} message(s) named in the log are missing")
+        print(f"{source}: {len(result.missing):,} message(s) referenced in the log are missing")
         for store_id, where in list(result.missing.items())[:REPORT_LIMIT]:
             print(f"  {store_id}  {where}")
         if len(result.missing) > REPORT_LIMIT:
@@ -333,7 +333,10 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
     _report_paths(source, "message(s) could not be read", result.unreadable)
     _report_paths(source, "file(s) in the archive are not messages", result.foreign)
     if result.orphans:
-        print(f"{source}: {result.orphans:,} message(s) are named in no log file")
+        print(
+            f"{source}: {result.orphans:,} message(s) are not referenced in any log file"
+            " -- nothing records which folder they came from"
+        )
     if result.quarantined_before:
         print(f"{source}: {result.quarantined_before:,} message(s) set aside by an earlier run")
     if result.transient_removed:

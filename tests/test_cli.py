@@ -343,7 +343,7 @@ def test_archive_check_exits_non_zero_when_the_archive_is_not_what_it_claims(tmp
 
     out = capsys.readouterr().out
     assert exit_code == 1
-    assert "1 message(s) named in the log are missing" in out
+    assert "1 message(s) referenced in the log are missing" in out
     assert "NOT sound -- 1 finding(s)" in out, "the verdict, not just the exit code"
 
 
