@@ -208,10 +208,10 @@ def _check_contents(
     """
     for read, path in enumerate(entries.values(), start=1):
         if read % CONTENTS_PROGRESS_EVERY == 0:
-            log.info("%s: %s of %s read", step, f"{read:,}", f"{len(entries):,}")
+            log.info("%s: %s of %s checked", step, f"{read:,}", f"{len(entries):,}")
         try:
             if not store.verify(path):
-                log.error("%s: content does not match the name it is filed under", path)
+                log.error("%s: damaged -- the content does not match its checksum", path)
                 result.corrupt.append(path)
         except OSError as exc:
             log.error("%s: unreadable: %s", path, exc)
@@ -308,7 +308,7 @@ def check(
         # The count belongs in the announcement, not after it: this is the step
         # that takes half an hour, and how long is the first thing anyone asks.
         log.info(
-            "%s: step 3 of %s: reading %s message(s), each against its own name",
+            "%s: step 3 of %s: integrity check on %s message(s) -- each one is read in full",
             store_path,
             steps,
             f"{result.entries:,}",

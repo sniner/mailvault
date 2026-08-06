@@ -502,7 +502,7 @@ it was named for.
 ```console
 $ mailvault archive check ./backup
 ./backup: 130,997 message(s) stored, filed in 219,690 place(s) by 60 log file(s)
-./backup: 3 entry/entries named in the log are missing
+./backup: 3 message(s) named in the log are missing
   6f3ac1…  mail.example.org::INBOX
 ./backup: NOT sound -- 3 finding(s) above
 ```
@@ -515,7 +515,7 @@ The last line is the verdict, and it says which kind of clean run it was:
 ```console
 $ mailvault archive check --contents ./backup
 ./backup: 130,997 message(s) stored, filed in 219,690 place(s) by 60 log file(s)
-./backup: sound -- every message was read and is what its name says
+./backup: sound -- every message was read and matches its checksum
 ```
 
 By default it walks the archive: every file lying in a shard is an entry, every
@@ -534,7 +534,7 @@ it is still ahead:
 ```
 step 1 of 3: 20,000 file(s) seen
 step 2 of 3: 60 log file(s) file 130,997 message(s) in 219,690 place(s)
-step 3 of 3: 4,000 of 130,997 read
+step 3 of 3: 4,000 of 130,997 checked
 ```
 
 The command **repairs nothing** and exits non-zero when the archive is not what

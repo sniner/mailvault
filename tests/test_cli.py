@@ -322,7 +322,7 @@ def test_archive_check_that_finds_nothing_exits_zero(tmp_path, capsys):
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "1 message(s) stored" in out
-    assert "no message was read" in out, "a run that did not look must say so"
+    assert "nothing was read" in out, "a run that did not look must say so"
 
 
 def test_a_check_that_read_the_contents_says_so_rather_than_just_exiting_zero(tmp_path, capsys):
@@ -332,7 +332,7 @@ def test_a_check_that_read_the_contents_says_so_rather_than_just_exiting_zero(tm
 
     assert exit_code == 0
     out = capsys.readouterr().out
-    assert "sound -- every message was read" in out
+    assert "sound -- every message was read and matches its checksum" in out
     assert "as far as this went" not in out, "that is the other kind of clean run"
 
 
@@ -343,7 +343,7 @@ def test_archive_check_exits_non_zero_when_the_archive_is_not_what_it_claims(tmp
 
     out = capsys.readouterr().out
     assert exit_code == 1
-    assert "1 entry/entries named in the log are missing" in out
+    assert "1 message(s) named in the log are missing" in out
     assert "NOT sound -- 1 finding(s)" in out, "the verdict, not just the exit code"
 
 

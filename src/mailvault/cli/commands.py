@@ -315,21 +315,27 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
         f" filed in {result.observations:,} place(s) by {result.log_files:,} log file(s)"
     )
     if result.missing:
-        print(f"{source}: {len(result.missing):,} entry/entries named in the log are missing")
+        print(f"{source}: {len(result.missing):,} message(s) named in the log are missing")
         for store_id, where in list(result.missing.items())[:REPORT_LIMIT]:
             print(f"  {store_id}  {where}")
         if len(result.missing) > REPORT_LIMIT:
             print(f"  ... and {len(result.missing) - REPORT_LIMIT:,} more")
-    _report_paths(source, "log file(s) do not match their own name", result.damaged_logs)
     _report_paths(
-        source, "entry/entries do not match the name they are filed under", result.corrupt
+        source,
+        "log file(s) are damaged -- the content does not match its checksum",
+        result.damaged_logs,
     )
-    _report_paths(source, "entry/entries could not be read", result.unreadable)
-    _report_paths(source, "file(s) in the store are not entries", result.foreign)
+    _report_paths(
+        source,
+        "message(s) are damaged -- the content does not match its checksum",
+        result.corrupt,
+    )
+    _report_paths(source, "message(s) could not be read", result.unreadable)
+    _report_paths(source, "file(s) in the archive are not messages", result.foreign)
     if result.orphans:
-        print(f"{source}: {result.orphans:,} entry/entries are named in no log file")
+        print(f"{source}: {result.orphans:,} message(s) are named in no log file")
     if result.quarantined_before:
-        print(f"{source}: {result.quarantined_before:,} entry/entries quarantined earlier")
+        print(f"{source}: {result.quarantined_before:,} message(s) set aside by an earlier run")
     if result.transient_removed:
         print(
             f"{source}: {result.transient_removed:,} leftover(s) of an interrupted"
@@ -337,17 +343,17 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
         )
     if result.quarantined:
         print(
-            f"{source}: {len(result.quarantined):,} entry/entries quarantined -- they count"
-            " as missing now, fetch them with `verify --repair` or `backup --full`"
+            f"{source}: {len(result.quarantined):,} damaged message(s) set aside -- they"
+            " count as missing now, fetch them with `verify --repair` or `backup --full`"
         )
     if not result.sound:
         print(f"{source}: NOT sound -- {result.findings:,} finding(s) above")
     elif result.contents_checked:
-        print(f"{source}: sound -- every message was read and is what its name says")
+        print(f"{source}: sound -- every message was read and matches its checksum")
     else:
         print(
-            f"{source}: sound as far as this went -- the names and the log agree, but no"
-            " message was read. Use --contents to check every one against its name"
+            f"{source}: sound as far as this went -- nothing was read, so no damaged"
+            " message could have been found. Use --contents for the integrity check"
         )
     return 0 if result.sound else 1
 
