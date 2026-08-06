@@ -274,6 +274,28 @@ def _report_paths(source: pathlib.Path, finding: str, paths: list[pathlib.Path])
         print(f"  ... and {len(paths) - REPORT_LIMIT:,} more")
 
 
+def report_import(
+    source: pathlib.Path,
+    destination: pathlib.Path,
+    result: importer.ImportResult,
+) -> int:
+    """Say what the import did, or what it would have done.
+
+    Both counts are named even when one of them is zero. "How many were already
+    there" is what tells a dry run apart from a disaster: a source that has been
+    through a converter on its way here looks exactly like a source full of new
+    mail, and the difference only shows in the ratio.
+    """
+    total = result.stored + result.present
+    verb = "would be imported" if result.dry_run else "imported"
+    print(
+        f"{source}: {total:,} message(s) read -- {result.stored:,} {verb},"
+        f" {result.present:,} already in {destination}"
+    )
+    _report_paths(source, "message(s) could not be read", result.failed)
+    return 1 if result.failed else 0
+
+
 def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
     """Say what the archive turned out to be, and whether that is all right.
 
@@ -358,7 +380,11 @@ def run_archive(args: argparse.Namespace) -> int:
             suffix=".eml",
             compress=args.compress,
         )
-        source.archive_to_cas(destination, move=args.move)
+        return report_import(
+            args.source,
+            args.destination,
+            source.archive_to_cas(destination, move=args.move, dry_run=args.dry_run),
+        )
     elif cmd == "compress":
         store = cas.ContentAddressedStorage(args.source, suffix=".eml")
         return report_conversion(

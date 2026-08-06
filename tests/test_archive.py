@@ -82,6 +82,60 @@ def test_mail_archive_to_cas(tmp_path, dummy_eml_bytes):
     assert not eml_file.exists()
 
 
+def test_import_dry_run_writes_nothing_and_counts_both_kinds(tmp_path, dummy_eml_bytes):
+    src = tmp_path / "src"
+    src.mkdir()
+    known = src / "known.eml"
+    known.write_bytes(dummy_eml_bytes)
+    fresh = src / "fresh.eml"
+    fresh.write_bytes(b"From: someone\r\n\r\nnot in the archive yet")
+
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    store.add(dummy_eml_bytes)
+    arch = importer.ExternalMailArchive(root_dir=src)
+
+    result = arch.archive_to_cas(store, move=True, dry_run=True)
+
+    assert result.dry_run
+    assert result.stored == 1, "the one the archive does not have"
+    assert result.present == 1, "the one it does"
+    assert not result.failed
+    assert len(list(store.walk())) == 1, "a dry run writes nothing"
+    assert known.exists() and fresh.exists(), "and removes nothing, --move or not"
+
+
+def test_a_dry_run_predicts_what_the_real_import_then_does(tmp_path, dummy_eml_bytes):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "one.eml").write_bytes(dummy_eml_bytes)
+    (src / "two.eml").write_bytes(b"From: someone\r\n\r\nanother one")
+
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    arch = importer.ExternalMailArchive(root_dir=src)
+
+    predicted = arch.archive_to_cas(store, dry_run=True)
+    actual = arch.archive_to_cas(store)
+
+    assert (predicted.stored, predicted.present) == (actual.stored, actual.present)
+
+
+def test_an_unreadable_message_is_named_rather_than_counted(tmp_path, monkeypatch):
+    src = tmp_path / "src"
+    src.mkdir()
+    broken = src / "broken.eml"
+    broken.write_bytes(b"whatever")
+
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    monkeypatch.setattr(
+        importer, "_read_eml", lambda path: (_ for _ in ()).throw(OSError("unreadable"))
+    )
+
+    result = importer.ExternalMailArchive(root_dir=src).archive_to_cas(store)
+
+    assert result.failed == [broken]
+    assert (result.stored, result.present) == (0, 0)
+
+
 def test_docuware_archive_walk(tmp_path, dummy_eml_bytes):
     arch_dir = tmp_path / "dw"
     arch_dir.mkdir()

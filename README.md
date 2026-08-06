@@ -344,6 +344,22 @@ $ mailvault --verbose archive import ./my_mails ./backup
 Use `--move` to remove source files after import, `--compress` to store them
 compressed, and `--docuware` if the source is a Docuware email archive.
 
+Either way the run says what it did, and `--dry-run` says what it would do
+without writing anything or removing a single source file:
+
+```console
+$ mailvault archive import --dry-run ./my_mails ./backup
+./my_mails: 20,431 message(s) read -- 38 would be imported, 20,393 already in ./backup
+```
+
+That second number is worth a look before a large import, especially when the
+mail has been through another program on its way here. A message whose bytes
+were altered -- a header added or stripped, line endings rewritten -- is not the
+message the archive already holds, so it is stored a second time under a
+different name, and afterwards nothing tells it apart from one that really is
+new. If almost everything counts as new when you expected almost nothing to,
+that is what happened.
+
 ### Statistics
 
 Show the number of emails and total size of an archive:

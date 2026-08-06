@@ -191,6 +191,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Compress stored emails with zstd",
     )
+    a_import.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Only count what would be imported: nothing is written, nothing is removed",
+    )
     a_import.add_argument("source", type=pathlib.Path, help="Directory to copy/move mails from")
     a_import.add_argument("destination", type=pathlib.Path, help="Archive directory")
 

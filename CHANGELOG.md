@@ -16,6 +16,15 @@
 - **`--allow-new-mailbox`** is the way past it for the one case it cannot tell from a mix-up: a
   genuinely new job. One run with the flag, and from the next one it is known
 
+- **`archive import --dry-run`** reads and hashes every message and reports how many the archive
+  would gain, without writing anything or removing a source file. Mail that has been through
+  another program on its way here may not be byte-identical to what the archive already holds --
+  a header added or stripped is enough -- and such a message is stored a second time under a
+  different name, after which nothing tells it apart from one that really is new. A "would be
+  imported" count where a small one was expected is the only warning there is, and this is how to
+  see it beforehand. `import` now also reports what it did on a real run, and exits non-zero when
+  a source file could not be read
+
 - **`[global] destination`** names the archive a configuration belongs to, so
   `mailvault --config private.toml backup` needs no path at all. Optional, and the command line
   still wins where both name one -- that override is logged, being indistinguishable from having
