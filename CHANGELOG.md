@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- **`archive compact` clears away what an interrupted write left behind in `meta/`**, and reports
+  how many it found -- each one is a write that did not finish, which is worth saying rather than
+  tidying up quietly. Only files old enough that no running backup can still hold them, and only
+  in the metadata log: sweeping the messages too would mean walking every directory in the archive
+  for a few kilobytes, on a command that otherwise touches nothing but the log
+
 ### Fixed
 
 - **Two runs writing into one archive at the same time can no longer damage an entry.** Every

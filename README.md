@@ -419,6 +419,17 @@ the new files, and only then removes the originals -- so it is lossless and safe
 to interrupt: a half-done run just leaves both, and the next one finishes. Run it
 occasionally; there is no hurry, but do not put it off for years.
 
+Since it is the one pass that has the log open, it also clears away what an
+interrupted write left behind there, and says so when it finds anything:
+
+```console
+./backup: 2 leftover(s) of an interrupted write removed
+```
+
+Only files old enough that no running backup can still be writing them, and only
+in `meta/` -- the messages are left alone, because looking through them means
+walking every directory in the archive for a few kilobytes.
+
 
 ## Migrating from ib-*
 

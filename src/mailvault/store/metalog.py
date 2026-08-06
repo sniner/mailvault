@@ -346,6 +346,7 @@ class CompactResult:
     entries_before: int = 0
     entries_after: int = 0
     verified: bool = True
+    transient_removed: int = 0
 
 
 def compact(root: pathlib.Path) -> CompactResult:
@@ -415,6 +416,12 @@ def compact(root: pathlib.Path) -> CompactResult:
     # Folding a hundred files into one empties most of the shard directories, and
     # nothing else ever removes them -- a store that only grows, like the mail, has
     # no reason to look.
+    #
+    # The same goes for what an interrupted write leaves behind. Only the log is
+    # swept here, and only because this pass has it open anyway: the mail store
+    # would mean walking a hundred thousand directories over whatever the archive
+    # is mounted on, which belongs to a pass that walks it for its own reasons.
+    result.transient_removed = store.prune_transient_files()
     store.prune_empty_dirs()
 
     result.files_after = len(log_files(root))

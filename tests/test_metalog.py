@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import time
 from datetime import UTC, datetime
 
-from mailvault.store import metalog
+from mailvault.store import cas, metalog
 
 WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
 STORE_ID = "df3823f1cd1638d0f374745bb0e200e3"
@@ -282,6 +284,25 @@ class TestCompact:
         for store_id in store_ids:
             writer.add(mailbox, [folder], store_id)
         writer.seal(when)
+
+    def test_sweeps_up_after_an_interrupted_write(self, tmp_path):
+        """Compaction is the pass that has the log open, so it tidies it.
+
+        Only the log: sweeping the mail store would mean walking a hundred
+        thousand directories, which is not what this command is for.
+        """
+        root = tmp_path / "meta"
+        self._write(root, ["a", "b"])
+        (logfile,) = metalog.log_files(root)
+        leftover = logfile.with_name(f"{logfile.name}.4711-0{cas.TEMP_SUFFIX}")
+        leftover.write_bytes(b'{"version":1,"mailbox":"job"')
+        os.utime(leftover, (0, time.time() - cas.TRANSIENT_MIN_AGE - 60))
+
+        result = metalog.compact(root)
+
+        assert result.transient_removed == 1
+        assert not leftover.exists()
+        assert [f.store_ids for f in metalog.read_all(root)] == [["a", "b"]]
 
     def test_consolidates_and_deduplicates_a_place(self, tmp_path):
         root = tmp_path / "meta"

@@ -1,6 +1,7 @@
 import io
 import os
 import pathlib
+import time
 
 import pytest
 
@@ -539,6 +540,48 @@ def test_cas_content_is_on_the_device_before_the_entry_has_a_name(tmp_path, monk
         f.write(b"a whole message")
 
     assert seen == ["content, entry exists: False", "directory, entry exists: True"]
+
+
+def test_cas_prune_transient_files_removes_only_old_leftovers(tmp_path):
+    """An interrupted write leaves a file nothing else would ever remove.
+
+    Age is what separates it from one a writer still has open -- the pid in the
+    name cannot, because an archive is reachable from more than one host.
+    """
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    _status, _hashval, entry = store.add(b"a message that made it")
+    stale = entry.with_name(f"{entry.name}.4711-0{cas.TEMP_SUFFIX}")
+    fresh = entry.with_name(f"{entry.name}.4711-1{cas.TEMP_SUFFIX}")
+    for path in (stale, fresh):
+        path.write_bytes(b"half a message")
+    os.utime(stale, (0, time.time() - cas.TRANSIENT_MIN_AGE - 60))
+
+    assert store.prune_transient_files() == 1
+
+    assert not stale.exists()
+    assert fresh.exists()
+    assert store.read(entry) == b"a message that made it"
+
+
+def test_cas_prune_transient_files_leaves_other_writers_alone(tmp_path):
+    """The store removes what it wrote, not everything with the suffix.
+
+    `state.json` and `index.db` are replaced through a transient file of their
+    own, and they sit in the same directory tree.
+    """
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    long_ago = (0, time.time() - cas.TRANSIENT_MIN_AGE - 60)
+    strangers = [
+        store.root_dir / f"index.db{cas.TEMP_SUFFIX}",
+        store.root_dir / f"state.json{cas.TEMP_SUFFIX}",
+        store.root_dir / f"notes.eml.1-0{cas.TEMP_SUFFIX}",
+    ]
+    for path in strangers:
+        path.write_bytes(b"not mine")
+        os.utime(path, long_ago)
+
+    assert store.prune_transient_files() == 0
+    assert all(path.exists() for path in strangers)
 
 
 def test_cas_a_failed_write_syncs_nothing(tmp_path, monkeypatch):

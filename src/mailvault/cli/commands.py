@@ -184,6 +184,13 @@ def report_compact(source: pathlib.Path, result: metalog.CompactResult) -> None:
     dropped = result.entries_before - result.entries_after
     if dropped:
         print(f"{source}: {dropped:,} duplicate observation(s) dropped")
+    if result.transient_removed:
+        # Said out loud rather than swept up quietly: each one is a write that
+        # was interrupted, and that is worth knowing about.
+        print(
+            f"{source}: {result.transient_removed:,} leftover(s) of an interrupted"
+            " write removed"
+        )
 
 
 def report_conversion(

@@ -28,6 +28,7 @@ import logging
 import os
 import pathlib
 import re
+import time
 from typing import Any
 
 from mailvault.store import atomic, zstd
@@ -55,6 +56,13 @@ _serial = itertools.count()
 # A name collision means a transient file of an earlier run with this process's
 # pid is still lying there. Retrying a few times gets past it.
 _TEMP_ATTEMPTS = 100
+
+# How long a transient file has to have been lying around before a cleanup pass
+# may remove it. One is open for as long as a single entry takes to write, so
+# even a very large message is orders of magnitude below this; anything this old
+# belongs to a run that is over. Generous on purpose -- the cost of waiting a day
+# is a few kilobytes, the cost of being wrong is another writer's entry.
+TRANSIENT_MIN_AGE = 24 * 60 * 60
 
 
 def is_hashval(value: str) -> bool:
@@ -440,6 +448,57 @@ class ContentAddressedStorage:
             converter=zstd.decompress_stream,
             operation="decompression",
         )
+
+    def _transient_origin(self, path: pathlib.Path) -> str | None:
+        """The store id a transient file was being written for, or None.
+
+        What makes a leftover this store's to remove. A directory tree collects
+        other people's transient files too -- `state.json` and `index.db` are
+        replaced through one of their own -- and a store that swept every name
+        ending in the suffix would delete files it never wrote.
+        """
+        name = path.name
+        if not name.endswith(TEMP_SUFFIX):
+            return None
+        destination, _, serial = name[: -len(TEMP_SUFFIX)].rpartition(".")
+        if not destination or not serial:
+            return None
+        return self.hashval_of(path.with_name(destination))
+
+    def prune_transient_files(self, min_age: float = TRANSIENT_MIN_AGE) -> int:
+        """Remove this store's leftover transient files, if they are old enough.
+
+        A write that is interrupted leaves one behind, and because the name
+        belongs to one writer, no later run reuses or overwrites it -- so
+        nothing ever removes them. They are inert (`walk` does not yield them,
+        `add` never looks at them), which is exactly why they would go on
+        collecting unseen.
+
+        Only ones old enough that no live writer can still hold them. Age is the
+        only criterion available: the pid in the name says nothing about a
+        process on another host, and an archive is reachable from more than one.
+
+        Returns how many went away -- worth reporting rather than doing
+        quietly, because such a file is the one trace an interrupted write
+        leaves behind.
+        """
+        removed = 0
+        cutoff = time.time() - min_age
+        for path, _, files in os.walk(self.root_dir):
+            for fname in files:
+                entry = pathlib.Path(path, fname)
+                if self._transient_origin(entry) is None:
+                    continue
+                try:
+                    if entry.stat().st_mtime > cutoff:
+                        continue
+                    entry.unlink()
+                except OSError as exc:
+                    log.debug(f"{entry}: kept: {exc}")
+                    continue
+                log.info(f"{entry}: leftover of an interrupted write, removed")
+                removed += 1
+        return removed
 
     def prune_empty_dirs(self) -> int:
         """Remove the shard directories that no longer hold anything.
