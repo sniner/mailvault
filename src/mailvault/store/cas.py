@@ -155,6 +155,14 @@ def _writing_to(destination: pathlib.Path) -> collections.abc.Iterator[io.Buffer
     good one, and an entry that is gone was already accounted for by the run
     that stored it.
 
+    One gap is left open deliberately. When this entry is the first of its
+    shard, the directory holding it is itself a new name in the directory above,
+    and that one is not flushed here -- what is synced is the shard, not its
+    parent. Every filesystem in practical use commits the creation along with
+    the transaction this sync forces; POSIX does not say it has to. Closing it
+    properly would mean a second sync per shard, for a window that only exists
+    for the first entry to land in one of 65,536 directories.
+
     Nothing is left behind when the write fails: the transient file goes and
     the destination is untouched.
     """
