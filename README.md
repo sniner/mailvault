@@ -1,14 +1,25 @@
 # mailvault -- Back up and archive email from IMAP and Microsoft 365 mailboxes
 
 > [!IMPORTANT]
-> **0.8.0 changes how an archive stores its metadata.** The SQLite database that
-> used to live inside the archive is gone; what it knew is now kept in files that
-> are only ever written once or replaced atomically.
+> **0.10.0 changes where things live inside an archive.** The messages move out
+> of the archive root into `mail/`, the resume points move out of `state.json`
+> into one small file per place under `heads/`, and the archive gains a `FORMAT`
+> file that says which layout it is written in.
 >
 > **Your existing archive keeps working and needs nothing from you.** The next
-> backup migrates it automatically, and nothing is deleted — the old database is
-> renamed to `store.db.migrated` and left where it is, so you can go back to it
-> until you are satisfied and remove it yourself.
+> backup lifts it automatically, or run `mailvault archive migrate` when you
+> would rather choose the moment. Nothing is deleted — see
+> [Migrating an older archive](#migrating-an-older-archive).
+>
+> **The command line changed too.** No command takes the archive as a positional
+> argument any more: it is the directory you are standing in, or `--archive DIR`.
+> And the configuration belongs *in* the archive now, as `mailvault.toml` — see
+> [Where the archive is, and which file describes it](#where-the-archive-is-and-which-file-describes-it).
+>
+> **0.8.0 removed the SQLite database** that used to live inside the archive;
+> what it knew is now kept in files that are only ever written once or replaced
+> atomically. An archive still carrying a `store.db` is lifted by the same
+> command, and the database is renamed rather than removed.
 >
 > **If you queried that database with SQL, read this.** There is no longer a
 > database inside the archive to point your tools at. You build one from the
@@ -209,7 +220,7 @@ configuration for this archive. Check that the configuration and the archive bel
 together, then pass --allow-new-mailbox to go ahead
 ```
 
-The archive answers this itself: `state.json` (or, if that is missing, the
+The archive answers this itself: `heads/` (or, if that is missing, the
 metadata log) records which mailboxes have written into it, and a job's `name` is
 what it appears under. A genuinely new job is the one case this cannot tell apart
 from a mix-up, so it costs one run with `--allow-new-mailbox`; from the run after
@@ -498,21 +509,35 @@ name.
 
 ### Migrating an older archive
 
-Archives written before 0.8.0 keep their metadata in `store.db` inside the
-archive. The next backup moves it out by itself, but you can also do it
-deliberately:
+An archive written by an earlier version is lifted to the current layout by one
+command. The next backup does it by itself, but you can also do it deliberately:
 
 ```console
 $ mailvault --archive ./backup archive migrate
+./backup: 46 resume point(s) moved into heads/
 ./backup: 130,887 message(s) moved into 59 mailbox/folder place(s)
-./backup: 46 resume timestamp(s) moved into state.json
 ./backup: the database is now store.db.migrated and is no longer used
 ./backup: delete it once you are satisfied with the archive
+./backup: 256 shard(s) moved into mail/
+./backup: 1,204 log file(s) -> 59 across 59 place(s)
+./backup: mailvault archive format 1
 ```
 
+What it lifts, in the order the pieces depend on each other: `state.json` into
+`heads/`, then a pre-0.8.0 `store.db` into the metadata log, then the messages
+out of the archive root and into `mail/`, then the log consolidated so every
+place has one file to start its chain from -- and only then the mark.
+
+**The mark is written last on purpose.** An interruption anywhere above leaves
+the older number standing, so the next run picks the work up where it stopped;
+everything before the mark is idempotent, so repeating it costs nothing. A mark
+written first would claim a layout that only half exists.
+
 Nothing is deleted. The database is renamed and left alone, so you keep a way
-back until you remove it yourself. Running the command again on a migrated
-archive does nothing, and an interrupted migration is simply repeated.
+back until you remove it yourself. Moving the messages is at most 256 directory
+renames -- a rename within a filesystem moves no data, so the cost does not grow
+with the number of messages. Running the command again on a current archive
+reads one small file and stops.
 
 
 ### Consolidating the metadata log
@@ -662,16 +687,24 @@ The filename is the SHA-384 hash of the file content and serves as the key to
 the archive. This makes it easy to verify file integrity by comparing the hash
 with the filename.
 
-Two more things live beside the messages:
+The archive around them:
 
 ```
 ./archive
-├── 00/ … ff/            the messages
+├── FORMAT               which layout this archive is written in
+├── mailvault.toml       the configuration, optional
+├── mail/                the messages
+│   └── 00/ … ff/
 ├── meta/                where each message was seen
 │   └── a1/
 │       └── a1b2c3….jsonl
-└── state.json           where the next incremental run picks up
+└── heads/               where the next run picks up, one file per place
+    └── gmail_com-INBOX.3f9a1c2b
 ```
+
+The messages have their own directory rather than the root, because the root is
+what somebody standing in the archive sees, and 256 shard directories there bury
+the handful of files worth looking at.
 
 `meta/` answers the one question the messages cannot: which mailbox and which
 folder each was seen in. **One file is one place** -- its first line names a
@@ -684,20 +717,42 @@ one carries its own integrity check:
 $ sha384sum meta/a1/a1b2c3….jsonl     # matches the filename, or the file is damaged
 ```
 
-They are written once and never modified. `state.json` records, per folder, when
-a run last read it and where the next one carries on; it is small and always
-replaced atomically, never edited in place.
+They are written once and never modified. `heads/` holds **one small file per
+place**, replaced atomically, never edited:
 
 ```json
-"INBOX": {
+{
+  "job": "gmail.com",
+  "folder": "INBOX",
   "last_run": "2026-08-05T19:00:00+00:00",
-  "resume": { "kind": "imap-uid", "uidvalidity": 1239278212, "uid": 48127 }
+  "resume": { "kind": "imap-uid", "uidvalidity": 1239278212, "uid": 48127 },
+  "log": "a1b2c3…"
 }
 ```
 
 `last_run` is the wall clock and purely for reading -- nothing resumes from it.
 The resume point is what decides what gets fetched, and its shape belongs to the
 backend that made it: a UID watermark on IMAP, a delta link on Microsoft 365.
+`log` names the newest log file of that place, which is what lets `archive
+check` notice that one has gone missing.
+
+One file per place rather than one for all of them, because a damaged file then
+costs one folder instead of every folder of every job. The name is a readable
+part plus eight hex characters; only the readable part may be shortened, the
+rest is the identity.
+
+`FORMAT` holds one line, and it is meant to be read without this program:
+
+```console
+$ cat ./archive/FORMAT
+mailvault archive format 1
+```
+
+A layout can only be recognised by its structure *backwards* -- a newer one
+looks familiar in exactly the wrong way, since all the directories a reader
+knows are present. So an archive says what it is instead of being guessed at,
+and a version that finds a number it does not know refuses the archive rather
+than misreading it.
 Both mean "everything up to here is in the archive" in the server's own terms,
 which a date never could -- a message copied or moved into a folder keeps its
 original date and would fall behind any date filter, but it gets a new UID and
@@ -892,7 +947,7 @@ with a warning.
 ## Metadata
 
 Besides the messages, a backup records two things: where each message was seen,
-into `meta/`, and where the next run should resume, into `state.json`. That is
+into `meta/`, and where the next run should resume, into `heads/`. That is
 all -- there is no database in the archive, and nothing is modified in place. See
 [Why an archive holds no database](#why-an-archive-holds-no-database).
 

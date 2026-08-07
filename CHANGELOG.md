@@ -8,7 +8,7 @@
   destination are two independent arguments, and `--config work.toml backup ~/mail/private` looks
   perfectly fine until the first message is written. `backup` and `verify` now check, before the
   first login, that each selected job has written into that archive before -- the archive knows
-  from `state.json`, or from the metadata log if that is gone. A job that has not stops the run
+  from `heads/`, or from the metadata log if that is gone. A job that has not stops the run
   and is named. The check looks only in the writing direction: a mailbox in the archive with no
   job in the configuration is nobody's business, so removing a job, commenting one out or picking
   a few with `--job` stay free of ceremony, and an archive nobody has written into takes anything
@@ -63,6 +63,39 @@
   `git -C` is. It applies to every command, so `mailvault --archive /srv/archive/private archive
   check` works from anywhere
 
+- **An archive says which layout it is written in.** A `FORMAT` file in its root holds one
+  self-explanatory line -- `mailvault archive format 1` -- so a `cat` five years from now answers
+  the question without this program. Recognising a layout by its structure only works backwards: a
+  newer one looks familiar in exactly the wrong way, because every directory the reader knows is
+  present. A version that finds a number it does not know refuses the archive and says to upgrade,
+  rather than misreading it. No file means the layout as it was before the mark existed
+
+- **The messages live in `mail/`**, not in the archive root. The root is what somebody standing in
+  the archive sees, and 256 shard directories there bury the handful of files worth looking at. It
+  also gives the root back to the archive: while the store claimed it, a stray file lying there was
+  nobody's to judge and `archive check` had to pass over it in silence
+
+- **The resume points live in `heads/`, one small file per place**, where `state.json` held them
+  all in one structure. A backup writes after every folder, so a run over forty of them rewrote the
+  whole thing forty times -- but the reason is what a damaged file costs: `state.json` was decoded
+  as a whole, so one bad byte discarded every folder of every job and sent the next run over all of
+  them in full. One file per place makes the same bad byte cost one folder
+
+- **`archive migrate` lifts an archive of any earlier shape**, in one command: `state.json` into
+  `heads/`, a pre-0.8.0 `store.db` into the metadata log, the messages into `mail/`, the log
+  consolidated, and only then the mark. The next backup does it by itself. The mark is written last
+  on purpose -- an interruption leaves the older number standing and the next run picks the work up,
+  where a mark written first would claim a layout that only half exists. Moving the messages is at
+  most 256 directory renames, so it does not grow with the size of the archive
+
+- **A place's log files form a chain.** Each header names the file that held that place before it,
+  and `heads/` names the newest. The chain is the check, never the enumeration -- reading still goes
+  through the directory, so a broken link hides nothing. What it catches is narrow and worth saying
+  exactly: a lost log file usually announces itself already, because its messages turn up in
+  `archive check` as having no provenance. That does not happen when the same message is recorded
+  elsewhere too -- a Gmail message filed under three labels lives in three files -- and then the
+  loss of one of its places is completely silent
+
 ### Breaking changes
 
 - **No command takes an archive as a positional argument any more.** The archive is the directory
@@ -79,6 +112,12 @@
   this for you and nothing looks for the old location, so a run without `--config` after
   upgrading says which file it wanted and did not find. `archive check` knows the file as a
   legitimate inhabitant and does not report it
+
+- **The archive layout moved**, and an archive written by 0.10.0 cannot be read by an earlier
+  version. The migration is automatic on the next backup, or explicit with `archive migrate`;
+  nothing is deleted either way. Worth knowing if you back up the same archive from two machines
+  and upgrade them at different times: the older one will refuse the lifted archive rather than
+  misread it
 
 ### Changed
 
@@ -104,6 +143,16 @@
   the read that trusts nothing
 
 ### Fixed
+
+- **Gmail recorded mail as being somewhere else.** `X-GM-LABELS` leaves out the label of the
+  folder currently selected -- measured: of 80 messages in `INBOX` not one reported a label, while
+  the same messages fetched from All Mail report `\Inbox`. The labels alone were taken as the whole
+  location, so backing up any Gmail folder but All Mail recorded every message as being "somewhere
+  in All Mail" instead of in the folder being backed up. The folder being read is now always among
+  the places recorded. Three more things follow from that one line: `verify` looked up what was
+  archived by folder name and found nothing, so a Gmail job reported the *entire* folder as
+  unarchived; the backup's catch-up used the same key and therefore read Gmail folders in full
+  instead of listing them; and a repaired message is now filed where a backup would file it
 
 - **`verify` says what it is doing while it does it.** Every line it logged reported completion, so
   the two passes that take the time announced themselves only once they were over -- minutes of
