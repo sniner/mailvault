@@ -224,40 +224,15 @@ class JobConfig:
         return remaining
 
 
-def _archive_path(value: object, base_dir: pathlib.Path | None) -> pathlib.Path:
-    """Turn a configured `destination` into a path.
-
-    `~` and `${VAR}` are expanded, and a relative path is taken relative to the
-    configuration file rather than the working directory: a configuration names
-    one particular archive, and which one that is must not depend on where the
-    command happened to be started from -- least of all from cron.
-    """
-    if not isinstance(value, str) or not value.strip():
-        raise ConfigError("[global] destination must be a non-empty path")
-    path = pathlib.Path(_expand_env(value)).expanduser()
-    if not path.is_absolute() and base_dir is not None:
-        path = base_dir / path
-    return path
-
-
 @dataclasses.dataclass
 class Config:
     jobs: list[JobConfig] = dataclasses.field(default_factory=list)
     compress: bool = False
     index_db: bool = False
     incremental: bool = True
-    # The archive this configuration belongs to, if it says. Optional: the
-    # command line still names one, and naming it in both places is allowed --
-    # see `mailvault.cli.commands.archive_path` for which one wins.
-    destination: pathlib.Path | None = None
 
     @classmethod
-    def from_toml(
-        cls,
-        data: dict,
-        allow_exec: bool = False,
-        base_dir: pathlib.Path | None = None,
-    ) -> Config:
+    def from_toml(cls, data: dict, allow_exec: bool = False) -> Config:
         if "copy" in data:
             log.warning("[copy] no longer does anything -- %s", RETIRED_SECTIONS["copy"])
 
@@ -267,11 +242,6 @@ class Config:
         unknown_global = set(global_data.keys()) - fields
         if unknown_global:
             log.warning("Unknown global config fields: %s", ", ".join(sorted(unknown_global)))
-
-        # TOML gives a string where the dataclass wants a path, and the expansion
-        # needs the file's directory, which the other options have no use for.
-        if "destination" in known_global:
-            known_global["destination"] = _archive_path(known_global["destination"], base_dir)
 
         jobs = []
         for job_data in data.get("job", []):
@@ -300,4 +270,4 @@ def load(path: pathlib.Path | str, allow_exec: bool = False) -> Config:
         raise ConfigError(f"{path}: cannot read configuration: {exc.strerror or exc}") from exc
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path}: not a valid TOML configuration: {exc}") from exc
-    return Config.from_toml(data, allow_exec=allow_exec, base_dir=path.parent)
+    return Config.from_toml(data, allow_exec=allow_exec)

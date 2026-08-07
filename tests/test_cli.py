@@ -26,10 +26,10 @@ NEW_ARCHIVE = pathlib.Path("/nonexistent-archive")
 def _args(**overrides: Any) -> argparse.Namespace:
     defaults: dict[str, Any] = dict(
         command="backup",
-        config="mailvault.toml",
+        archive=NEW_ARCHIVE,
+        config=None,
         allow_exec=False,
         job=None,
-        destination=NEW_ARCHIVE,
         allow_new_mailbox=False,
         compress=False,
         index_db=False,
@@ -135,37 +135,56 @@ class TestJobFailureReporting:
         assert seen == ["broken", "fine"]
 
 
-class TestArchivePath:
-    """Where the archive comes from when the config names one as well."""
+class TestArchiveAndConfig:
+    """Two independent knobs: where the archive is, and which file describes it."""
 
-    def test_the_configured_one_is_used_when_the_command_line_is_silent(self):
-        config = conf.Config(destination=pathlib.Path("/archive/private"))
+    def test_the_archive_is_where_you_are_standing(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
 
-        assert commands.archive_path(_args(destination=None), config) == config.destination
+        assert commands.archive_path(_args(archive=None)) == tmp_path
 
-    def test_the_command_line_wins_and_says_so(self, caplog):
-        config = conf.Config(destination=pathlib.Path("/archive/private"))
-        args = _args(destination=pathlib.Path("/archive/scratch"))
+    def test_or_wherever_the_option_points(self):
+        assert commands.archive_path(_args(archive=NEW_ARCHIVE)) == NEW_ARCHIVE
 
-        with caplog.at_level(logging.WARNING):
-            assert commands.archive_path(args, config) == pathlib.Path("/archive/scratch")
+    def test_the_configuration_comes_out_of_the_archive(self):
+        wanted = NEW_ARCHIVE / commands.DEFAULT_CONFIG_NAME
 
-        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("overriding" in w for w in warnings)
+        assert commands.config_file(_args(), NEW_ARCHIVE) == wanted
 
-    def test_naming_the_same_archive_twice_is_not_an_override(self, tmp_path, caplog):
-        """Same place, written differently -- what a shell completion produces."""
-        config = conf.Config(destination=tmp_path / "archive")
-        args = _args(destination=tmp_path / "sub" / ".." / "archive")
+    def test_unless_one_is_named(self):
+        named = pathlib.Path("/home/jd/private.toml")
 
-        with caplog.at_level(logging.WARNING):
-            commands.archive_path(args, config)
+        assert commands.config_file(_args(config=named), NEW_ARCHIVE) == named
 
-        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+    def test_a_named_configuration_without_an_archive_is_refused(self, monkeypatch, tmp_path):
+        """Reaching elsewhere for the file says one is not standing in the archive.
 
-    def test_neither_of_them_is_an_error(self):
-        with pytest.raises(conf.ConfigError, match="no archive directory"):
-            commands.archive_path(_args(destination=None), conf.Config())
+        There is nothing left to derive the archive from -- a configuration
+        names none any more -- and the directory one happens to be in is the
+        last thing that should decide where the mail goes.
+        """
+        monkeypatch.chdir(tmp_path)
+        args = _args(archive=None, config=pathlib.Path("/home/jd/private.toml"))
+
+        with pytest.raises(conf.ConfigError, match="no archive"):
+            commands.run_mailbox(args)
+
+    def test_an_archive_without_a_configuration_says_which_rule_looked(
+        self, monkeypatch, tmp_path
+    ):
+        """Naming the path alone leaves a reader wondering why that path."""
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(conf.ConfigError, match="an archive carries its own"):
+            commands.run_mailbox(_args(archive=None))
+
+    def test_folders_needs_no_archive_and_so_takes_one_anyway(self, monkeypatch, tmp_path):
+        """It only talks to the server, so nothing about it can go anywhere wrong."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(conf, "load", lambda *a, **kw: conf.Config())
+        args = _args(command="folders", archive=None, config=pathlib.Path("/home/jd/p.toml"))
+
+        assert commands.run_mailbox(args) == 0
 
 
 class TestMailboxGuard:
@@ -193,7 +212,7 @@ class TestMailboxGuard:
         ran = self._jobs_run(monkeypatch, ["ruhlgroup.com"])
 
         with pytest.raises(jobs.JobError, match="wrong configuration"):
-            commands.run_mailbox(_args(destination=archive))
+            commands.run_mailbox(_args(archive=archive))
 
         assert ran == []
 
@@ -203,7 +222,7 @@ class TestMailboxGuard:
         ran = self._jobs_run(monkeypatch, ["gmail.com", "ruhlgroup.com"])
 
         with pytest.raises(jobs.JobError):
-            commands.run_mailbox(_args(destination=archive))
+            commands.run_mailbox(_args(archive=archive))
 
         assert ran == []
 
@@ -211,14 +230,14 @@ class TestMailboxGuard:
         archive = self._archive(tmp_path, "gmail.com")
         ran = self._jobs_run(monkeypatch, ["posteo.de"])
 
-        assert commands.run_mailbox(_args(destination=archive, allow_new_mailbox=True)) == 0
+        assert commands.run_mailbox(_args(archive=archive, allow_new_mailbox=True)) == 0
         assert ran == ["posteo.de"]
 
     def test_a_known_job_needs_no_flag(self, monkeypatch, tmp_path):
         archive = self._archive(tmp_path, "gmail.com", "posteo.de")
         ran = self._jobs_run(monkeypatch, ["gmail.com"])
 
-        assert commands.run_mailbox(_args(destination=archive)) == 0
+        assert commands.run_mailbox(_args(archive=archive)) == 0
         assert ran == ["gmail.com"]
 
     def test_a_new_job_among_known_ones_reads_as_a_new_job(self, monkeypatch, tmp_path):
@@ -227,27 +246,27 @@ class TestMailboxGuard:
         self._jobs_run(monkeypatch, ["gmail.com", "posteo.de"])
 
         with pytest.raises(jobs.JobError, match="posteo.de has not written here before"):
-            commands.run_mailbox(_args(destination=archive))
+            commands.run_mailbox(_args(archive=archive))
 
     def test_a_job_the_config_no_longer_has_is_nobodys_business(self, monkeypatch, tmp_path):
         """Removing a job cannot put a message anywhere, so it is not reported."""
         archive = self._archive(tmp_path, "gmail.com", "posteo.de", "proton.me")
         ran = self._jobs_run(monkeypatch, ["gmail.com"])
 
-        assert commands.run_mailbox(_args(destination=archive)) == 0
+        assert commands.run_mailbox(_args(archive=archive)) == 0
         assert ran == ["gmail.com"]
 
     def test_an_empty_archive_takes_anything(self, monkeypatch, tmp_path):
         ran = self._jobs_run(monkeypatch, ["gmail.com"])
 
-        assert commands.run_mailbox(_args(destination=tmp_path / "new")) == 0
+        assert commands.run_mailbox(_args(archive=tmp_path / "new")) == 0
         assert ran == ["gmail.com"]
 
     def test_folders_needs_no_archive_at_all(self, monkeypatch):
         """It only ever talks to the server, so there is nothing to guard."""
         ran = self._jobs_run(monkeypatch, ["gmail.com"])
 
-        assert commands.run_mailbox(_args(command="folders", destination=None)) == 0
+        assert commands.run_mailbox(_args(command="folders", archive=None)) == 0
         assert ran == ["gmail.com"]
 
 
@@ -273,7 +292,7 @@ def test_archive_decompress_reports_what_it_could_not_convert(tmp_path, capsys):
     broken.write_bytes(b"this is not a zstd frame")
 
     exit_code = commands.run_archive(
-        argparse.Namespace(archive_command="decompress", source=root)
+        argparse.Namespace(archive_command="decompress", archive=root)
     )
 
     assert exit_code == 1
@@ -291,16 +310,16 @@ def test_archive_decompress_that_works_exits_zero(tmp_path, capsys):
     store.add(b"a real message")
 
     exit_code = commands.run_archive(
-        argparse.Namespace(archive_command="decompress", source=root)
+        argparse.Namespace(archive_command="decompress", archive=root)
     )
 
     assert exit_code == 0
     assert "failed" not in capsys.readouterr().out
 
 
-def _check_args(source, **overrides):
+def _check_args(archive, **overrides):
     defaults = dict(
-        archive_command="check", source=source, no_integrity_check=False, quarantine=False
+        archive_command="check", archive=archive, no_integrity_check=False, quarantine=False
     )
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -338,6 +357,17 @@ def test_a_check_that_read_the_contents_says_so_rather_than_just_exiting_zero(tm
     assert "as far as this went" not in out, "that is the other kind of clean run"
 
 
+def test_archive_check_takes_the_directory_you_are_standing_in(tmp_path, monkeypatch, capsys):
+    """The whole point: in the archive, `mailvault archive check` and nothing else."""
+    _archive_with_a_log(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = commands.run_archive(_check_args(None))
+
+    assert exit_code == 0
+    assert "1 message(s) stored" in capsys.readouterr().out
+
+
 def test_archive_check_exits_non_zero_when_the_archive_is_not_what_it_claims(tmp_path, capsys):
     _archive_with_a_log(tmp_path, extra_store_ids=["aa" * 48])
 
@@ -366,9 +396,9 @@ class TestExport:
         return store_id, path
 
     @staticmethod
-    def _export_args(source, entry, output=None):
+    def _export_args(archive, entry, output=None):
         return argparse.Namespace(
-            archive_command="export", source=source, entry=entry, output=output
+            archive_command="export", archive=archive, entry=entry, output=output
         )
 
     def test_a_store_id_goes_to_standard_output(self, tmp_path, capsysbinary):

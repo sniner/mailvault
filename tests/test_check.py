@@ -129,6 +129,7 @@ class TestWhatItLeavesAlone:
     def test_the_archives_own_files_beside_the_store(self, tmp_path):
         _archive(tmp_path)
         (tmp_path / "state.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "mailvault.toml").write_text("[global]\n", encoding="utf-8")
         (tmp_path / "index.db").write_bytes(b"not the store's business")
         (tmp_path / f"index.db{cas.TEMP_SUFFIX}").write_bytes(b"nor this")
 

@@ -19,9 +19,6 @@ from mailvault.cli import commands
 
 log = logging.getLogger(__name__)
 
-# Commands that read a job configuration file and therefore require --config.
-_CONFIG_COMMANDS = {"folders", "backup", "verify"}
-
 
 def get_version() -> str:
     """Return the installed package version, or 'unknown' when not packaged."""
@@ -66,9 +63,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write the log to this file instead of stderr",
     )
     parser.add_argument(
+        "--archive",
+        type=pathlib.Path,
+        metavar="DIR",
+        help="The archive to work on (default: the directory you are standing in)",
+    )
+    parser.add_argument(
         "--config",
         type=pathlib.Path,
-        help="Configuration file (TOML); required by folders/backup/verify",
+        metavar="FILE",
+        help=(
+            "Configuration file (TOML); by default the archive's own"
+            f" {commands.DEFAULT_CONFIG_NAME}"
+        ),
     )
     parser.add_argument(
         "--allow-exec",
@@ -119,12 +126,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Re-read every folder in full, ignoring where the last run left off",
     )
-    p_backup.add_argument(
-        "destination",
-        type=pathlib.Path,
-        nargs="?",
-        help="Destination base directory (default: 'destination' from the config)",
-    )
 
     p_verify = sub.add_parser(
         "verify",
@@ -140,12 +141,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--compress",
         action="store_true",
         help="Compress stored emails with zstd",
-    )
-    p_verify.add_argument(
-        "destination",
-        type=pathlib.Path,
-        nargs="?",
-        help="Archive directory to check (default: 'destination' from the config)",
     )
 
     p_archive = sub.add_parser(
@@ -169,7 +164,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Archive is a Docuware archive",
     )
-    a_stats.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
     a_import = asub.add_parser(
         "import",
@@ -197,7 +191,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only count what would be imported: nothing is written, nothing is removed",
     )
     a_import.add_argument("source", type=pathlib.Path, help="Directory to copy/move mails from")
-    a_import.add_argument("destination", type=pathlib.Path, help="Archive directory")
 
     a_export = asub.add_parser(
         "export",
@@ -214,7 +207,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=pathlib.Path,
         help="Write to this file, or into this directory when several are named",
     )
-    a_export.add_argument("source", type=pathlib.Path, help="Email archive directory")
     a_export.add_argument(
         "entry",
         nargs="+",
@@ -232,21 +224,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Directory is a Docuware archive",
     )
-    a_addr.add_argument("source", type=pathlib.Path, help="Archive directory")
 
-    a_comp = asub.add_parser(
+    asub.add_parser(
         "compress",
         help="Compress uncompressed archive files",
         description="Compress uncompressed files in the archive with zstd.",
     )
-    a_comp.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
-    a_decomp = asub.add_parser(
+    asub.add_parser(
         "decompress",
         help="Decompress compressed archive files",
         description="Decompress compressed files in the archive.",
     )
-    a_decomp.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
     a_create = asub.add_parser(
         "create-db",
@@ -268,10 +257,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Replace the database file if it already exists",
     )
-    a_create.add_argument("source", type=pathlib.Path, help="Email archive directory")
     a_create.add_argument("database", type=pathlib.Path, help="Database file to write")
 
-    a_migrate = asub.add_parser(
+    asub.add_parser(
         "migrate",
         help="Move an older archive off its metadata database",
         description=(
@@ -282,9 +270,8 @@ def build_parser() -> argparse.ArgumentParser:
             " command only lets you do it deliberately."
         ),
     )
-    a_migrate.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
-    a_compact = asub.add_parser(
+    asub.add_parser(
         "compact",
         help="Consolidate the metadata log, dropping duplicate entries",
         description=(
@@ -295,7 +282,6 @@ def build_parser() -> argparse.ArgumentParser:
             " only after the consolidated files are written and verified."
         ),
     )
-    a_compact.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
     a_check = asub.add_parser(
         "check",
@@ -320,7 +306,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Rename damaged messages, so they count as missing and can be fetched again",
     )
-    a_check.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
     return parser
 
@@ -332,8 +317,6 @@ def main() -> int:
     if args.command is None:
         parser.print_help()
         return 2
-    if args.command in _CONFIG_COMMANDS and args.config is None:
-        parser.error("the following arguments are required: --config")
 
     if args.verbose:
         loglevel = logging.DEBUG

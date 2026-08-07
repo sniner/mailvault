@@ -118,11 +118,12 @@ class CheckResult:
 def _store_files(root: pathlib.Path, log_dir: str) -> collections.abc.Iterator[pathlib.Path]:
     """Yield the files lying in the store's shard directories.
 
-    Not the ones beside them. An archive keeps `state.json` in its root, its
-    metadata log in `meta/`, and whatever else its owner puts there -- an
-    `index.db`, the `store.db.migrated` of a migration. None of that is the
-    message store's to judge, and reporting it would bury the one finding that
-    matters: a file in a *shard*, where only entries belong.
+    Not the ones beside them. An archive keeps `state.json` and its
+    `mailvault.toml` in its root, its metadata log in `meta/`, and whatever else
+    its owner puts there -- an `index.db`, the `store.db.migrated` of a
+    migration. None of that is the message store's to judge, and reporting it
+    would bury the one finding that matters: a file in a *shard*, where only
+    entries belong.
     """
     for path, dirs, files in os.walk(root):
         here = pathlib.Path(path)

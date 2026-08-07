@@ -30,6 +30,36 @@ EXPECTED_ERRORS = (conf.ConfigError, jobs.JobError, base.MailboxError)
 # only ever talks to the server.
 ARCHIVE_COMMANDS = {"backup", "verify"}
 
+# The configuration an archive carries. Named after the tool rather than after
+# its purpose -- `config.toml` would be the better name inside an archive, where
+# nothing else competes for it, but this is the same file in both roles, and the
+# other role is the directory one happens to be standing in. That is a shared
+# name space: a `config.toml` there belongs to whatever else lives in that
+# directory, and reading one by accident is not a theoretical worry.
+DEFAULT_CONFIG_NAME = "mailvault.toml"
+
+
+def archive_path(args: argparse.Namespace) -> pathlib.Path:
+    """The archive a command works on: `--archive`, or the directory one is in.
+
+    Two independent knobs, and nothing derived between them -- this is the only
+    place an archive comes from. A configuration used to be able to name one,
+    which cannot work across machines: the NAS hangs at a different path on each
+    of them while the configuration sits in a home directory, so there is no
+    path that is right on both. A configuration *inside* the archive has that
+    distance by construction, and then there is nothing left for it to say.
+    """
+    if args.archive is not None:
+        return args.archive
+    return pathlib.Path.cwd()
+
+
+def config_file(args: argparse.Namespace, archive: pathlib.Path) -> pathlib.Path:
+    """The configuration to read: `--config`, or the one the archive carries."""
+    if args.config is not None:
+        return args.config
+    return archive / DEFAULT_CONFIG_NAME
+
 
 # --- folders / backup / verify -------------------------------------------------
 
@@ -50,43 +80,6 @@ def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: boo
         print(f"{job_name}: {total_missing:,} message(s) missing, run again with --repair")
     else:
         print(f"{job_name}: {total_restored:,} of {total_missing:,} message(s) restored")
-
-
-def _same_place(first: pathlib.Path, second: pathlib.Path) -> bool:
-    """True when two paths name the same directory, symlinks and `..` aside.
-
-    Neither has to exist -- this is asked before anything is created.
-    """
-    try:
-        return first.resolve() == second.resolve()
-    except OSError:
-        return first == second
-
-
-def archive_path(args: argparse.Namespace, config: conf.Config) -> pathlib.Path:
-    """Decide which archive to work on: the command line, or the configuration.
-
-    The command line wins where both name one, so a one-off run into a different
-    directory needs no edit to the file. That case is reported, though: it is
-    indistinguishable from having reached for the wrong archive, and an override
-    that passes unmentioned is what makes such a mistake hard to notice.
-    """
-    from_cli = getattr(args, "destination", None)
-    if from_cli is None:
-        if config.destination is None:
-            raise conf.ConfigError(
-                "no archive directory -- name one on the command line, or set "
-                "'destination' under [global] in the configuration"
-            )
-        log.info("Archive from the configuration: %s", config.destination)
-        return config.destination
-    if config.destination is not None and not _same_place(from_cli, config.destination):
-        log.warning(
-            "Archive %s given on the command line, overriding %s from the configuration",
-            from_cli,
-            config.destination,
-        )
-    return from_cli
 
 
 def _run_job(
@@ -127,7 +120,34 @@ def _run_job(
 def run_mailbox(args: argparse.Namespace) -> int:
     """Run a folders/backup/verify command over the selected config jobs."""
     exit_code = 0
-    config = conf.load(args.config, allow_exec=args.allow_exec)
+    needs_archive = args.command in ARCHIVE_COMMANDS
+    if needs_archive and args.config is not None and args.archive is None:
+        # Reaching for a configuration somewhere else is what somebody does who
+        # is *not* standing in the archive, so the directory they happen to be in
+        # is the last thing that should decide where the mail goes. Nothing else
+        # is left to derive it from, so this asks instead of guessing.
+        raise conf.ConfigError(
+            f"{args.config}: a configuration was named, but no archive -- name that "
+            f"too, with --archive"
+        )
+
+    archive = archive_path(args)
+    path = config_file(args, archive)
+    try:
+        config = conf.load(path, allow_exec=args.allow_exec)
+    except conf.ConfigError:
+        # Naming the file that was looked for is not enough when nobody asked
+        # for it: a reader is left wondering why that path of all paths. What
+        # they need to be told is the rule that produced it. Only for a file
+        # that is not there -- a broken one in the archive keeps its own
+        # message, which says what is wrong with it.
+        if args.config is not None or path.exists():
+            raise
+        raise conf.ConfigError(
+            f"{archive}: no {DEFAULT_CONFIG_NAME} here -- an archive carries its own"
+            f" configuration. Stand in the archive, name it with --archive, or name a"
+            f" configuration with --config"
+        ) from None
     selected = config.jobs
     if args.job:
         selected = [j for j in selected if j.name in args.job]
@@ -136,13 +156,13 @@ def run_mailbox(args: argparse.Namespace) -> int:
             log.error("Unknown job: %s", name)
             exit_code = 1
 
-    # Both of these come before the first job, and deliberately so: they decide
-    # whether this configuration and this archive belong together, and the answer
-    # is worth nothing once a message has been written -- or, with
+    # This comes before the first job, and deliberately so: it decides whether
+    # this configuration and this archive belong together, and the answer is
+    # worth nothing once a message has been written -- or, with
     # `delete_after_export`, removed from the server.
     destination = None
-    if args.command in ARCHIVE_COMMANDS:
-        destination = archive_path(args, config)
+    if needs_archive:
+        destination = archive
         guard.check_jobs(destination, selected, allow_new=args.allow_new_mailbox)
 
     for job in selected:
@@ -165,10 +185,10 @@ def run_mailbox(args: argparse.Namespace) -> int:
 # --- archive -------------------------------------------------------------------
 
 
-def _archive(args: argparse.Namespace) -> importer.ExternalMailArchive:
-    docuware = getattr(args, "docuware", False)
+def _external(path: pathlib.Path, docuware: bool = False) -> importer.ExternalMailArchive:
+    """A directory of mails read from the outside, whichever layout it has."""
     cls = importer.DocuwareMailArchive if docuware else importer.ExternalMailArchive
-    return cls(args.source)
+    return cls(path)
 
 
 def _human_size(size: int) -> str:
@@ -466,56 +486,63 @@ def export_entries(
 
 
 def run_archive(args: argparse.Namespace) -> int:
-    """Run an `archive` subcommand (stats/import/addresses/compress/create-db/...)."""
+    """Run an `archive` subcommand (stats/import/addresses/compress/create-db/...).
+
+    Every one of these works on the archive `--archive` names, or on the
+    directory one is standing in. `import` is the only one with a directory of
+    its own left to name: what it reads from is somebody else's archive, and
+    that is a different thing from the one being written to.
+    """
     cmd = args.archive_command
+    archive = archive_path(args)
 
     if cmd == "export":
-        return export_entries(args.source, args.entry, args.output)
+        return export_entries(archive, args.entry, args.output)
     elif cmd == "stats":
-        count, size = _archive(args).stats()
-        print(f"{args.source}: {count:,} emails, {_human_size(size)} total")
+        count, size = _external(archive, args.docuware).stats()
+        print(f"{archive}: {count:,} emails, {_human_size(size)} total")
     elif cmd == "addresses":
-        for where, addr in _archive(args).addresses():
+        for where, addr in _external(archive, args.docuware).addresses():
             print(where, addr)
     elif cmd == "import":
-        source = _archive(args)
+        source = _external(args.source, args.docuware)
         destination = cas.ContentAddressedStorage(
-            args.destination,
+            archive,
             suffix=".eml",
             compress=args.compress,
         )
         return report_import(
             args.source,
-            args.destination,
+            archive,
             source.archive_to_cas(destination, move=args.move, dry_run=args.dry_run),
         )
     elif cmd == "compress":
-        store = cas.ContentAddressedStorage(args.source, suffix=".eml")
+        store = cas.ContentAddressedStorage(archive, suffix=".eml")
         return report_conversion(
-            args.source, store.compress_all(), "compressed", "already compressed"
+            archive, store.compress_all(), "compressed", "already compressed"
         )
     elif cmd == "decompress":
-        store = cas.ContentAddressedStorage(args.source, suffix=".eml")
+        store = cas.ContentAddressedStorage(archive, suffix=".eml")
         return report_conversion(
-            args.source, store.decompress_all(), "decompressed", "already plain"
+            archive, store.decompress_all(), "decompressed", "already plain"
         )
     elif cmd == "create-db":
         result = jobs.create_db(
-            args.source,
+            archive,
             args.database,
             mailbox=args.mailbox,
             force=args.force,
         )
-        report_create_db(args.source, args.database, result)
+        report_create_db(archive, args.database, result)
     elif cmd == "migrate":
-        report_migration(args.source, jobs.migrate_archive(args.source))
+        report_migration(archive, jobs.migrate_archive(archive))
     elif cmd == "compact":
-        report_compact(args.source, metalog.compact(args.source / metalog.DEFAULT_LOG_DIR))
+        report_compact(archive, metalog.compact(archive / metalog.DEFAULT_LOG_DIR))
     elif cmd == "check":
         return report_check(
-            args.source,
+            archive,
             jobs.check(
-                args.source, contents=not args.no_integrity_check, quarantine=args.quarantine
+                archive, contents=not args.no_integrity_check, quarantine=args.quarantine
             ),
         )
 

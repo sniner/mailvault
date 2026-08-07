@@ -1,4 +1,3 @@
-import pathlib
 import sys
 
 import pytest
@@ -405,46 +404,30 @@ def test_a_leftover_copy_section_is_reported(tmp_path, caplog):
 
 
 # ---------------------------------------------------------------------------
-# The archive a configuration belongs to
+# The archive a configuration does not belong to
 # ---------------------------------------------------------------------------
 
 
-class TestDestination:
-    """`[global] destination` ties a config to one archive. It stays optional."""
+class TestTheConfigNamesNoArchive:
+    """A configuration does not say which archive it belongs to. It lies in it.
+
+    A path in the file cannot carry across machines: the NAS is mounted at a
+    different place on each of them, so no single path is right on both. A
+    configuration inside the archive has that distance by construction.
+    """
 
     @staticmethod
-    def _load(tmp_path, line: str = "", name: str = "archive.toml"):
+    def _load(tmp_path, line: str = "", name: str = "mailvault.toml"):
         path = tmp_path / name
         path.write_text(f'[global]\n{line}\n[[job]]\nname = "j"\nserver = "s"\n')
         return conf.load(path)
 
-    def test_a_config_without_one_is_still_valid(self, tmp_path):
-        assert self._load(tmp_path).destination is None
+    def test_there_is_no_such_option(self):
+        assert not hasattr(conf.Config(), "destination")
 
-    def test_an_absolute_path_is_taken_as_it_is(self, tmp_path):
+    def test_one_left_over_in_a_file_is_reported_rather_than_obeyed(self, tmp_path, caplog):
+        """It never shipped, so it needs no retirement notice -- but not silence either."""
         config = self._load(tmp_path, 'destination = "/archive/private"')
 
-        assert config.destination == pathlib.Path("/archive/private")
-
-    def test_a_relative_path_is_relative_to_the_config_file(self, tmp_path):
-        """Not to the working directory: from cron there is no telling what that is."""
-        config = self._load(tmp_path, 'destination = "mail"')
-
-        assert config.destination == tmp_path / "mail"
-
-    def test_a_tilde_is_expanded(self, tmp_path):
-        config = self._load(tmp_path, 'destination = "~/mail"')
-
-        assert config.destination == pathlib.Path("~/mail").expanduser()
-
-    def test_an_environment_variable_is_expanded(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("ARCHIVE_ROOT", "/mnt/backup")
-
-        config = self._load(tmp_path, 'destination = "${ARCHIVE_ROOT}/mail"')
-
-        assert config.destination == pathlib.Path("/mnt/backup/mail")
-
-    @pytest.mark.parametrize("value", ['""', '"   "', "42"])
-    def test_something_that_is_not_a_path_is_refused(self, tmp_path, value):
-        with pytest.raises(conf.ConfigError, match="destination"):
-            self._load(tmp_path, f"destination = {value}")
+        assert "destination" in caplog.text
+        assert config.jobs[0].name == "j", "and the rest of the file is still read"
