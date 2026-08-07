@@ -15,7 +15,7 @@ from mailvault.backend import base
 from mailvault.jobs import migration
 from mailvault.jobs.reconcile import archived_message_counts, places_from_log
 from mailvault.jobs.storedb import DEFAULT_QUERY_DB_NAME, refresh_db
-from mailvault.store import cas, heads, metadb, metalog, state
+from mailvault.store import cas, heads, marker, metadb, metalog, state
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1058,6 +1058,126 @@ class TestImportStateFile:
         assert not path.exists()
 
 
+class TestLiftingAnOldArchive:
+    """The whole migration: every older shape, in one command, mark written last."""
+
+    @staticmethod
+    def _generation_zero(tmp_path, messages=("a", "b", "c")):
+        """An archive as an earlier version left it: shards in the root."""
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        ids = [store.add(f"Message-Id: <{m}>\r\n\r\n{m}\r\n".encode())[1] for m in messages]
+        (tmp_path / state.DEFAULT_STATE_NAME).write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "snapshots": {"test-job": {"INBOX": {"resume": _token(ARCHIVED_AT)}}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return ids
+
+    def test_the_messages_move_under_mail(self, tmp_path):
+        ids = self._generation_zero(tmp_path)
+
+        result = jobs.migrate_archive(tmp_path)
+
+        assert result.shards_moved == 3
+        store = cas.mail_store(tmp_path)
+        for store_id in ids:
+            assert store.locate(store_id, exists=True) is not None
+        assert not [p for p in tmp_path.iterdir() if p.is_dir() and len(p.name) == 2]
+
+    def test_a_shard_rename_moves_no_data(self, tmp_path):
+        """O(shards), not O(messages) -- at most 256 renames whatever the size."""
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        for n in range(40):
+            store.add(f"Message-Id: <{n}>\r\n\r\nbody {n}\r\n".encode())
+        shards = len([p for p in tmp_path.iterdir() if p.is_dir()])
+
+        assert jobs.migrate_archive(tmp_path).shards_moved == shards
+
+    def test_a_store_split_by_an_unmigrated_run_is_merged(self, tmp_path):
+        """What Stefan's accepted risk actually looks like on disk.
+
+        A version that already writes to `mail/` ran before the migration, so
+        the store is in two places. The names are content hashes, so a file in
+        both is the same file.
+        """
+        old = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        _s, both, _p = old.add(b"Message-Id: <shared>\r\n\r\nin both\r\n")
+        _s, only_old, _p = old.add(b"Message-Id: <old>\r\n\r\nonly in the root\r\n")
+        new = cas.mail_store(tmp_path)
+        new.add(b"Message-Id: <shared>\r\n\r\nin both\r\n")
+        _s, only_new, _p = new.add(b"Message-Id: <new>\r\n\r\nonly in mail\r\n")
+
+        jobs.migrate_archive(tmp_path)
+
+        store = cas.mail_store(tmp_path)
+        for store_id in (both, only_old, only_new):
+            assert store.locate(store_id, exists=True) is not None
+        assert not [p for p in tmp_path.iterdir() if p.is_dir() and len(p.name) == 2]
+
+    def test_the_resume_points_come_along(self, tmp_path):
+        self._generation_zero(tmp_path)
+
+        result = jobs.migrate_archive(tmp_path)
+
+        assert result.resume_points == 1
+        assert _resume_date(tmp_path) == ARCHIVED_AT
+        assert not (tmp_path / state.DEFAULT_STATE_NAME).exists()
+
+    def test_the_mark_is_written_last(self, tmp_path):
+        self._generation_zero(tmp_path)
+
+        jobs.migrate_archive(tmp_path)
+
+        assert marker.read(tmp_path) == marker.CURRENT_FORMAT
+
+    def test_a_marked_archive_is_not_migrated_again(self, tmp_path):
+        """After the one migration the cost is reading one small file."""
+        self._generation_zero(tmp_path)
+        jobs.migrate_archive(tmp_path)
+        (tmp_path / state.DEFAULT_STATE_NAME).write_text("{}", encoding="utf-8")
+
+        result = jobs.migrate_archive(tmp_path)
+
+        assert result.generation == marker.CURRENT_FORMAT
+        assert result.shards_moved == 0
+        assert (tmp_path / state.DEFAULT_STATE_NAME).exists(), "nothing was touched"
+
+    def test_an_archive_from_the_future_is_refused(self, tmp_path):
+        """Reading it with this version would misread it, and misreading is silent."""
+        marker.write(tmp_path, marker.CURRENT_FORMAT + 1)
+
+        with pytest.raises(marker.FormatError, match="Upgrade mailvault"):
+            jobs.migrate_archive(tmp_path)
+
+    def test_the_log_is_consolidated_so_every_chain_has_a_root(self, tmp_path):
+        """An archive from before the chain has no `prev` anywhere. The
+        consolidation produces the first file that has one."""
+        ids = self._generation_zero(tmp_path)
+        writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
+        for store_id in ids:
+            writer.add("test-job", ["INBOX"], store_id)
+        writer.seal(ARCHIVED_AT)
+
+        jobs.migrate_archive(tmp_path)
+
+        (logfile,) = metalog.log_files(tmp_path / "meta")
+        entry = metalog.read_log(logfile)
+        assert entry.prev is None
+        head = _head(tmp_path)
+        assert head.log == entry.hashval
+
+    def test_an_empty_directory_becomes_a_current_archive(self, tmp_path):
+        result = jobs.migrate_archive(tmp_path)
+
+        assert result.shards_moved == 0
+        assert result.resume_points == 0
+        assert marker.read(tmp_path) == marker.CURRENT_FORMAT
+
+
 class TestMigration:
     def test_moves_locations_out_of_an_existing_database(self, tmp_path):
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
@@ -1123,23 +1243,31 @@ class TestMigration:
         assert "may take a moment" not in caplog.text
 
     def test_an_interrupted_migration_is_simply_repeated(self, tmp_path):
-        """store.db still there means not done -- exporting twice is harmless."""
+        """An interrupt leaves no mark, and no mark means the work is picked up.
+
+        The mark is written last for exactly this: everything before it is
+        idempotent, so repeating costs nothing, and a mark written first would
+        claim a layout that only half exists.
+        """
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
             msg_id = db.add_message("aaa", "<a@example.com>", None, "Subject")
             db.assign_message_to_mailbox(msg_id, db.add_mailbox("job-a"))
         jobs.migrate_archive(tmp_path)
-        # Put it back, as if the rename had never happened.
+        # What an interrupt before the last step leaves behind.
+        (tmp_path / marker.FORMAT_NAME).unlink()
         (tmp_path / "store.db.migrated").rename(tmp_path / "store.db")
 
         result = jobs.migrate_archive(tmp_path)
 
         assert result.needed is True
         assert result.verified is True
-        # A second file, because its header carries a later date -- and harmless,
-        # because it says the same thing and replaying it is idempotent.
-        assert len(metalog.log_files(tmp_path / "meta")) == 2
+        # The repeated export writes a second file -- its header carries a later
+        # date -- and the consolidation at the end of the migration folds it back
+        # into one. Nothing is duplicated and nothing is lost.
+        assert len(metalog.log_files(tmp_path / "meta")) == 1
         places = {(f.mailbox, f.folder) for f in metalog.read_all(tmp_path / "meta")}
         assert places == {("job-a", None)}
+        assert marker.read(tmp_path) == marker.CURRENT_FORMAT
 
     def test_folder_is_placed_by_elimination_when_nothing_witnesses_it(self, tmp_path):
         """A folder only ever seen on messages in two mailboxes has no witness.

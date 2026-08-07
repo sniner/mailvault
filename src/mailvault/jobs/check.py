@@ -130,9 +130,9 @@ def _store_files(root: pathlib.Path) -> collections.abc.Iterator[pathlib.Path]:
     `root` is the store's own directory, not the archive: since the messages
     moved into `mail/`, nothing else lives under here, and the walk needs no
     exceptions. It used to run over the archive root and had to step around
-    `meta/` -- and everything else beside the store, an archive's `state.json`,
-    its `mailvault.toml`, an `index.db`, the `store.db.migrated` of a migration,
-    was simply out of reach of any judgement.
+    `meta/` -- and everything else beside the store, an archive's `FORMAT`, its
+    `mailvault.toml`, an `index.db`, the `store.db.migrated` of a migration, was
+    simply out of reach of any judgement.
     """
     for path, _dirs, files in os.walk(root):
         here = pathlib.Path(path)

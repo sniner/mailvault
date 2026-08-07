@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 import pathlib
+import re
 from datetime import UTC, datetime
 
-from mailvault.store import heads, metadb, metalog, state
+from mailvault.store import cas, heads, marker, metadb, metalog, state
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +35,10 @@ class MigrationResult:
     """Outcome of moving an archive off its metadata database."""
 
     needed: bool = False
+    generation: int = 0
+    shards_moved: int = 0
+    resume_points: int = 0
+    consolidated: metalog.CompactResult | None = None
     messages: int = 0
     places: int = 0
     placeless: int = 0
@@ -238,7 +244,68 @@ def import_state_file(store_path: pathlib.Path) -> int:
     return imported
 
 
-def migrate_archive(store_path: pathlib.Path) -> MigrationResult:
+# A shard of the message store: two lowercase hex characters. Lowercase because
+# that is what a hexdigest is; an uppercase pattern would match nothing on a
+# case-sensitive filesystem and report success having moved nothing.
+_SHARD = re.compile(r"[0-9a-f]{2}\Z")
+
+
+def _merge_into(shard: pathlib.Path, destination: pathlib.Path) -> None:
+    """Fold one shard into an existing one, entry by entry, and remove the husk.
+
+    Recursive, because a shard is not a flat directory -- the message store is
+    two levels deep, so a shard holds sub-shards and only those hold entries.
+
+    An entry already present on the other side is dropped rather than moved. The
+    name is the hash of the content, so "present under this name" and "the same
+    bytes" are the same statement; there is nothing to choose between them.
+    """
+    for entry in sorted(shard.rglob("*")):
+        if entry.is_dir():
+            continue
+        here = destination / entry.relative_to(shard)
+        if here.exists():
+            entry.unlink()
+            continue
+        here.parent.mkdir(parents=True, exist_ok=True)
+        entry.rename(here)
+    for path, _dirs, _files in os.walk(shard, topdown=False):
+        pathlib.Path(path).rmdir()
+
+
+def move_shards_into_mail(store_path: pathlib.Path) -> int:
+    """Move the message store out of the archive root and into `mail/`.
+
+    Cheap, and not obviously so: a shard is one directory rename, and a rename
+    within a filesystem moves no data. The cost is O(shards) -- at most 256 --
+    and not O(messages).
+
+    That holds as long as the target shard does not exist yet. It does when a
+    version that already writes to `mail/` has run against an unmigrated archive:
+    then the store is split, and the two halves have to be merged file by file.
+    Nothing is lost either way -- the names are content hashes, so a file that is
+    somehow in both places is the same file.
+    """
+    target = store_path / cas.MAIL_DIR
+    moved = 0
+    for shard in sorted(store_path.iterdir()):
+        if not shard.is_dir() or not _SHARD.match(shard.name):
+            continue
+        target.mkdir(parents=True, exist_ok=True)
+        destination = target / shard.name
+        if not destination.exists():
+            shard.rename(destination)
+            moved += 1
+            continue
+        log.debug("%s: already in %s, merging", shard.name, cas.MAIL_DIR)
+        _merge_into(shard, destination)
+        moved += 1
+    if moved:
+        log.info("%s: %s shard(s) moved into %s", store_path, f"{moved:,}", cas.MAIL_DIR)
+    return moved
+
+
+def _migrate_database(store_path: pathlib.Path) -> MigrationResult:
     """Move an archive written by an earlier version onto the log.
 
     Older archives keep everything in `store.db`: the resume timestamps and, more
@@ -302,4 +369,61 @@ def migrate_archive(store_path: pathlib.Path) -> MigrationResult:
         result.snapshots,
         target.name,
     )
+    return result
+
+
+def migrate_archive(store_path: pathlib.Path) -> MigrationResult:
+    """Bring an archive up to the current layout generation.
+
+    The one place every older shape is lifted from, in the order the pieces
+    depend on each other:
+
+    1. `state.json` gives up its resume points, into `heads/`
+    2. `store.db` gives up the locations it alone holds, into the log
+    3. the message store moves out of the root and into `mail/`
+    4. the log is consolidated, which gives every place's chain a root -- an
+       archive from before the chain has no `prev` anywhere, and consolidating
+       is what produces the first file that has one
+    5. and only then the mark is written
+
+    **The mark is last on purpose.** An interrupt anywhere above leaves the
+    older number standing, so the next run picks the work up again; a mark
+    written first would claim a layout that only half exists. Everything above
+    is idempotent, so picking it up again costs nothing.
+
+    Runs at the start of every backup, and returns immediately once the mark
+    says the archive is current -- so the cost after the one migration is
+    reading one small file.
+    """
+    generation = marker.check_readable(store_path)
+    result = MigrationResult(generation=generation)
+    if generation == marker.CURRENT_FORMAT:
+        return result
+
+    # Before the database, not after: both of them decline to overwrite heads
+    # that are already there, so whichever runs first wins -- and `state.json`
+    # is the *newer* artefact. The other way round, an archive carrying both
+    # would keep the database's bare timestamps and throw away resume points
+    # that would have saved it a full pass over every folder.
+    resume_points = import_state_file(store_path)
+
+    result = _migrate_database(store_path)
+    result.generation = generation
+    result.resume_points = resume_points
+    if result.needed and not result.verified:
+        # The database would not give up its locations. Going on would move the
+        # store out from under it and mark the archive as done, with the one
+        # thing that was not migrated still sitting there.
+        return result
+
+    result.shards_moved = move_shards_into_mail(store_path)
+    result.consolidated = metalog.compact(
+        store_path / metalog.DEFAULT_LOG_DIR, store_path / heads.DEFAULT_HEADS_DIR
+    )
+    if not result.consolidated.verified:
+        log.error("%s: the log did not consolidate, the archive is not marked", store_path)
+        return result
+
+    marker.write(store_path)
+    log.info("%s: %s", store_path, marker.describe(marker.CURRENT_FORMAT))
     return result

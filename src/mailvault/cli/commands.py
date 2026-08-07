@@ -15,7 +15,7 @@ import sys
 from mailvault import conf, importer, jobs
 from mailvault.backend import base
 from mailvault.jobs import guard
-from mailvault.store import cas, heads, metalog
+from mailvault.store import cas, heads, marker, metalog
 
 log = logging.getLogger(__name__)
 
@@ -203,9 +203,23 @@ def _human_size(size: int) -> str:
 
 
 def report_migration(source: pathlib.Path, result: jobs.MigrationResult) -> None:
-    """Say what was moved out of the database and what became of it."""
+    """Say what was lifted, and what the archive is now.
+
+    Every step is named even where it moved nothing. A migration that says only
+    what it happened to find leaves a reader unable to tell "there was nothing
+    to do" from "that part did not run".
+    """
+    if result.generation == marker.CURRENT_FORMAT:
+        print(f"{source}: already {marker.describe(marker.CURRENT_FORMAT)}, nothing to do")
+        return
+
+    print(
+        f"{source}: {result.resume_points:,} resume point(s) moved into"
+        f" {heads.DEFAULT_HEADS_DIR}/"
+    )
     if not result.needed:
-        print(f"{source}: no metadata database, nothing to migrate")
+        print(f"{source}: no metadata database, nothing to move out of one")
+        _report_rest(source, result)
         return
     if not result.verified:
         print(f"{source}: the written log files did not verify, database left alone")
@@ -215,7 +229,10 @@ def report_migration(source: pathlib.Path, result: jobs.MigrationResult) -> None
         f"{result.places:,} mailbox/folder place(s)"
     )
     if result.snapshots:
-        print(f"{source}: {result.snapshots:,} resume timestamp(s) moved into state.json")
+        print(
+            f"{source}: {result.snapshots:,} resume timestamp(s) taken from the database"
+            f" -- as a record of when, never as a point to carry on from"
+        )
     if result.placeless:
         print(
             f"{source}: {result.placeless:,} of them recorded without a folder -- the old "
@@ -229,6 +246,27 @@ def report_migration(source: pathlib.Path, result: jobs.MigrationResult) -> None
     if result.renamed_to is not None:
         print(f"{source}: the database is now {result.renamed_to.name} and is no longer used")
         print(f"{source}: delete it once you are satisfied with the archive")
+    _report_rest(source, result)
+
+
+def _report_rest(source: pathlib.Path, result: jobs.MigrationResult) -> None:
+    """The steps after the two older formats gave up what they held."""
+    print(f"{source}: {result.shards_moved:,} shard(s) moved into {cas.MAIL_DIR}/")
+    if result.consolidated is not None:
+        report_compact(source, result.consolidated)
+    _report_generation(source, result)
+
+
+def _report_generation(source: pathlib.Path, result: jobs.MigrationResult) -> None:
+    """Say what the archive says about itself now, or why it says nothing yet."""
+    now = marker.read(source)
+    if now == marker.CURRENT_FORMAT:
+        print(f"{source}: {marker.describe(now)}")
+    else:
+        print(
+            f"{source}: NOT marked -- something above did not finish, so the next"
+            f" run picks the migration up again"
+        )
 
 
 def report_create_db(
