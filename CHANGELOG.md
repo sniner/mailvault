@@ -113,11 +113,13 @@
   upgrading says which file it wanted and did not find. `archive check` knows the file as a
   legitimate inhabitant and does not report it
 
-- **The archive layout moved**, and an archive written by 0.10.0 cannot be read by an earlier
-  version. The migration is automatic on the next backup, or explicit with `archive migrate`;
-  nothing is deleted either way. Worth knowing if you back up the same archive from two machines
-  and upgrade them at different times: the older one will refuse the lifted archive rather than
-  misread it
+- **The archive layout moved.** The migration is automatic on the next backup, or explicit with
+  `archive migrate`; nothing is deleted either way. **Upgrade every machine that writes into the
+  archive before lifting it.** The `FORMAT` file protects this version from a *newer* archive; it
+  cannot protect an archive from an *older* mailvault, which knows nothing about it. A 0.9.x run
+  against a lifted archive finds no messages where it looks and no resume state, takes the archive
+  for empty, and downloads everything again into the old location -- nothing is lost, but you end
+  up with the mail in two places and a full re-download to undo
 
 ### Changed
 
