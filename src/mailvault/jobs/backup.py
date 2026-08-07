@@ -159,7 +159,7 @@ def _backup_folder(
             return
 
     observed_at = datetime.now(UTC)
-    log_writer = metalog.LogWriter(log_root)
+    log_writer = metalog.LogWriter(log_root, heads_root)
     result = mb.folder_backup(
         folder,
         store,
@@ -292,7 +292,9 @@ def _catch_up_folder(
         f"{len(archived):,}",
     )
     resume = mb.resume_point(folder)
-    result = reconcile_folder(mb, store, log_root, archived, job.name, folder, repair=True)
+    result = reconcile_folder(
+        mb, store, log_root, heads_root, archived, job.name, folder, repair=True
+    )
     if not result.complete:
         log.warning(
             "%s::%s: %s of %s message(s) failed, resume point not started",

@@ -25,7 +25,7 @@ def _with_heads(root, *mailboxes: str):
 
 
 def _with_log(root, *mailboxes: str):
-    writer = metalog.LogWriter(root / metalog.DEFAULT_LOG_DIR)
+    writer = metalog.LogWriter(root / metalog.DEFAULT_LOG_DIR, root / heads.DEFAULT_HEADS_DIR)
     for name in mailboxes:
         writer.add(name, ["INBOX"], STORE_ID)
     writer.seal(WHEN)

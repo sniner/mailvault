@@ -113,6 +113,7 @@ def _folder_owners(db: metadb.MetaDatabaseConnection) -> dict[str, set[str]]:
 def _export_metalog(
     db: metadb.MetaDatabaseConnection,
     log_root: pathlib.Path,
+    heads_root: pathlib.Path,
     date: datetime,
     result: MigrationResult,
 ) -> list[pathlib.Path]:
@@ -132,7 +133,7 @@ def _export_metalog(
     owners = _folder_owners(db)
     mailboxes = db.message_mailboxes()
     folders = db.message_labels()
-    writer = metalog.LogWriter(log_root)
+    writer = metalog.LogWriter(log_root, heads_root)
 
     for message_id, store_id in db.iter_messages():
         result.messages += 1
@@ -281,7 +282,7 @@ def migrate_archive(store_path: pathlib.Path) -> MigrationResult:
     # so setup() must not write DDL into it (nor demand write access to read it).
     with metadb.MetaDatabase(path=legacy, setup=False) as db:
         result.snapshots = _adopt_database_snapshots(heads_root, db)
-        written = _export_metalog(db, log_root, date, result)
+        written = _export_metalog(db, log_root, heads_root, date, result)
 
     # Read back what was just written before anything is renamed. The files are
     # named after their own content, so this catches a write that did not land.

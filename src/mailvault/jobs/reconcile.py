@@ -129,6 +129,7 @@ def reconcile_folder(
     mb: base.MailboxClient,
     store: cas.ContentAddressedStorage,
     log_root: pathlib.Path,
+    heads_root: pathlib.Path,
     archived: set[str],
     job_name: str,
     folder: str,
@@ -170,7 +171,7 @@ def reconcile_folder(
 
     # A fetched message is new archive content, so its location has to reach the
     # log as well -- otherwise nothing records where it belongs.
-    log_writer = metalog.LogWriter(log_root)
+    log_writer = metalog.LogWriter(log_root, heads_root)
     for ref in missing:
         label = ref.message_id or ref.msg_id
         try:

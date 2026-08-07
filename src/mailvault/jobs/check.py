@@ -44,7 +44,7 @@ import pathlib
 import re
 
 from mailvault.jobs.common import JobError
-from mailvault.store import cas, metalog
+from mailvault.store import cas, heads, metalog
 
 log = logging.getLogger(__name__)
 
@@ -86,6 +86,8 @@ class CheckResult:
     quarantined_before: int = 0
     contents_checked: bool = False
     missing: dict[str, str] = dataclasses.field(default_factory=dict)
+    broken_chains: list[str] = dataclasses.field(default_factory=list)
+    unchained: list[pathlib.Path] = dataclasses.field(default_factory=list)
     orphans: list[pathlib.Path] = dataclasses.field(default_factory=list)
     foreign: list[pathlib.Path] = dataclasses.field(default_factory=list)
     damaged_logs: list[pathlib.Path] = dataclasses.field(default_factory=list)
@@ -101,12 +103,19 @@ class CheckResult:
         says anything is wrong with the archive: somebody put a file in a
         directory, and an imported message has no log entry because an import
         writes none.
+
+        A log file no chain reaches is not among them either, for the same
+        reason: it is still read, because the glob and not the chain is what
+        enumerates the log. It says the chain is behind, not that anything is
+        gone. A chain naming a file that is *not there* does say that, and
+        counts.
         """
         return (
             len(self.missing)
             + len(self.damaged_logs)
             + len(self.corrupt)
             + len(self.unreadable)
+            + len(self.broken_chains)
         )
 
     @property
@@ -177,7 +186,11 @@ def _classify(
     return entries
 
 
-def _read_log(root: pathlib.Path, result: CheckResult) -> dict[str, str]:
+def _read_log(
+    root: pathlib.Path,
+    result: CheckResult,
+    chain: dict[str, metalog.LogFile],
+) -> dict[str, str]:
     """Read the whole log into `store id -> where it was first seen`.
 
     Each file is held against its own name as well. `read_log` warns about a
@@ -192,11 +205,56 @@ def _read_log(root: pathlib.Path, result: CheckResult) -> dict[str, str]:
         logfile = metalog.read_log(path)
         if logfile is None:
             continue
+        chain[logfile.hashval] = logfile
         where = f"{logfile.mailbox}::{logfile.folder}"
         for store_id in logfile.store_ids:
             result.observations += 1
             places.setdefault(store_id, where)
     return places
+
+
+def _walk_chains(
+    heads_root: pathlib.Path,
+    chain: dict[str, metalog.LogFile],
+    result: CheckResult,
+) -> None:
+    """Follow every place's log chain and report where it does not hold.
+
+    Two different findings come out of this, and only the first says something
+    is wrong:
+
+    - a link names a file that is **not there**. That is a log file which has
+      gone missing, and it is the one thing a heap of files cannot notice about
+      itself
+    - a file that **no chain reaches**. Written before the chain existed, or
+      left behind when a head could not be updated. It is still read and nothing
+      is lost by it, so it is reported and not counted
+
+    Reading costs nothing extra: every log file was read a moment ago for its
+    message lines, and `chain` is what that pass collected on the way.
+    """
+    if not heads.head_files(heads_root):
+        # No heads at all: the archive predates them and the chain has not been
+        # established yet. Reporting every log file as unreachable would be true
+        # and useless -- thousands of lines saying the same thing about a state
+        # the migration exists to leave. The question only applies once there is
+        # something to ask it of.
+        return
+
+    reached: set[str] = set()
+    for head in heads.read_all(heads_root):
+        where = f"{head.job}::{head.folder}"
+        hashval = head.log
+        while hashval is not None and hashval not in reached:
+            logfile = chain.get(hashval)
+            if logfile is None:
+                result.broken_chains.append(f"{hashval}  {where}")
+                break
+            reached.add(hashval)
+            hashval = logfile.prev
+    result.unchained = [
+        logfile.path for hashval, logfile in sorted(chain.items()) if hashval not in reached
+    ]
 
 
 def _check_contents(
@@ -294,7 +352,9 @@ def check(
     log.info("step 1 of %s: %s message(s) found", steps, f"{result.entries:,}")
 
     log.info("%s: step 2 of %s: reading the metadata log", store_path, steps)
-    places = _read_log(store_path / metalog.DEFAULT_LOG_DIR, result)
+    chain: dict[str, metalog.LogFile] = {}
+    places = _read_log(store_path / metalog.DEFAULT_LOG_DIR, result, chain)
+    _walk_chains(store_path / heads.DEFAULT_HEADS_DIR, chain, result)
     log.info(
         "step 2 of %s: %s log file(s) file %s message(s) in %s place(s)",
         steps,

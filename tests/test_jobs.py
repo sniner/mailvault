@@ -384,7 +384,7 @@ class TestCatchUp:
     def _archive_with(tmp_path, *store_ids: str) -> None:
         """Put messages in the store and record them in the log, as a backup would."""
         store = cas.mail_store(tmp_path)
-        writer = metalog.LogWriter(tmp_path / "meta")
+        writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         for store_id in store_ids:
             body = DUMMY_EML.replace(b"<test@example.com>", f"<{store_id}@x>".encode())
             _status, sid, _path = store.add(body)
@@ -1204,7 +1204,7 @@ class TestRebuildWithLog:
     def _archive_with_log(tmp_path, places):
         store = cas.mail_store(tmp_path)
         _status, store_id, _path = store.add(DUMMY_EML)
-        writer = metalog.LogWriter(tmp_path / "meta")
+        writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         for mailbox, folders in places:
             writer.add(mailbox, folders, store_id)
         writer.seal(datetime(2026, 8, 1, tzinfo=UTC))
@@ -1250,7 +1250,7 @@ class TestRebuildWithLog:
 
     def test_log_entries_for_absent_messages_are_counted_not_invented(self, tmp_path):
         """A blob removed from the archive must not reappear as a database row."""
-        writer = metalog.LogWriter(tmp_path / "meta")
+        writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         writer.add("job", ["INBOX"], "deadbeef")
         writer.seal(datetime(2026, 8, 1, tzinfo=UTC))
 
@@ -1328,7 +1328,9 @@ def _archive_message(store_path, job_name: str, folder: str, msg: bytes) -> None
     """Put a message into the archive the way a successful backup would."""
     store = cas.mail_store(store_path)
     _status, store_id, _path = store.add(msg)
-    writer = metalog.LogWriter(store_path / metalog.DEFAULT_LOG_DIR)
+    writer = metalog.LogWriter(
+        store_path / metalog.DEFAULT_LOG_DIR, store_path / heads.DEFAULT_HEADS_DIR
+    )
     writer.add(job_name, [folder], store_id)
     writer.seal(datetime.now(UTC))
 

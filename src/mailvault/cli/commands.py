@@ -15,7 +15,7 @@ import sys
 from mailvault import conf, importer, jobs
 from mailvault.backend import base
 from mailvault.jobs import guard
-from mailvault.store import cas, metalog
+from mailvault.store import cas, heads, metalog
 
 log = logging.getLogger(__name__)
 
@@ -360,6 +360,16 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
     )
     _report_items(
         source,
+        "log file(s) the chain names are gone -- nothing records what they held",
+        result.broken_chains,
+    )
+    _report_items(
+        source,
+        "log file(s) no chain reaches -- they are still read, the chain is behind",
+        [str(path) for path in result.unchained],
+    )
+    _report_items(
+        source,
         "message(s) are damaged -- the content does not match its checksum",
         ids(result.corrupt),
     )
@@ -533,7 +543,12 @@ def run_archive(args: argparse.Namespace) -> int:
     elif cmd == "migrate":
         report_migration(archive, jobs.migrate_archive(archive))
     elif cmd == "compact":
-        report_compact(archive, metalog.compact(archive / metalog.DEFAULT_LOG_DIR))
+        report_compact(
+            archive,
+            metalog.compact(
+                archive / metalog.DEFAULT_LOG_DIR, archive / heads.DEFAULT_HEADS_DIR
+            ),
+        )
     elif cmd == "check":
         return report_check(
             archive,

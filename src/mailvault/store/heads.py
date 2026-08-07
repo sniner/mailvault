@@ -1,8 +1,20 @@
 """Where the next incremental run picks up, one small file per place.
 
 A *place* is a mailbox and a folder within it, and `heads/` holds one file for
-each. This replaces the single `state.json` that used to hold them all, for two
-reasons that are about reading rather than writing.
+each with whatever is known about it. Two different things end up here, and they
+do not cover the same places:
+
+- a **resume point**, for a place that a job polls as a folder. It comes from
+  the configuration, and it says where the next pass carries on
+- the **chain head of the metadata log**, for a place a message was *seen* in
+
+Those coincide for most backends and come apart for Gmail, which reports the
+canonical labels of a message (`\\Sent`) where the configured folder name is a
+localised view of the same thing (`[Google Mail]/Gesendet`). So a place may have
+a resume point, or a chain head, or both.
+
+This replaces the single `state.json` that used to hold the resume points, for
+two reasons that are about reading rather than writing.
 
 A backup calls `save()` after every folder. With one structure for all of them,
 a run over forty folders wrote the whole thing forty times, thirty-nine of them
@@ -83,7 +95,7 @@ def _slug(text: str) -> str:
     return "_".join(parts) if parts else EMPTY_PART
 
 
-def _identity(job: str, folder: str) -> str:
+def _identity(job: str, folder: str | None) -> str:
     """Eight hex characters that tell two places apart, whatever they are called.
 
     The slug is lossy and its collisions are not contrived: `INBOX/Sent` and
@@ -100,7 +112,9 @@ def _identity(job: str, folder: str) -> str:
     - it goes over the **original** strings, not the slug, or it would fail to
       separate precisely the cases it is for -- colliding names share a slug
     - the separator is NUL, which cannot occur in either part, so `("a", "b/c")`
-      and `("a/b", "c")` do not collapse into one value
+      and `("a/b", "c")` do not collapse into one value. A place whose folder is
+      not known at all takes a second NUL, which no real name can produce either
+      -- otherwise it would collide with a folder whose name is empty
     - case is preserved. IMAP folder names are case-sensitive apart from INBOX,
       and folding would manufacture collisions that do not exist
 
@@ -111,17 +125,24 @@ def _identity(job: str, folder: str) -> str:
     error message can be misread as naming one. Four bytes are generous for a
     value that only has to separate places sharing a slug, realistically two.
     """
-    raw = f"{job}\0{folder}".encode()
+    tail = "\0" if folder is None else folder
+    raw = f"{job}\0{tail}".encode()
     return hashlib.blake2b(raw, digest_size=4).hexdigest()
 
 
-def head_name(job: str, folder: str) -> str:
+def head_name(job: str, folder: str | None) -> str:
     """The file name a place is recorded under: readable part, dot, identity.
 
     The readable part is a reading aid and may be cut; the eight hex characters
     are the identity and may not.
+
+    A place whose folder is not known -- the mailbox is, the folder is not, which
+    the metadata log represents rather than guesses -- gets **no folder part at
+    all**: `gmail_com.3f9a1c2b`. The shape says so by itself, and no folder name
+    can produce it, because a folder always yields a part, if only the `_`
+    placeholder.
     """
-    slug = f"{_slug(job)}-{_slug(folder)}"
+    slug = _slug(job) if folder is None else f"{_slug(job)}-{_slug(folder)}"
     if len(slug) > SLUG_LIMIT:
         # Cutting can leave a trailing separator or a run of underscores, which
         # says nothing and reads like a mistake.
@@ -129,7 +150,7 @@ def head_name(job: str, folder: str) -> str:
     return f"{slug}.{_identity(job, folder)}"
 
 
-def head_path(root: pathlib.Path, job: str, folder: str) -> pathlib.Path:
+def head_path(root: pathlib.Path, job: str, folder: str | None) -> pathlib.Path:
     """Where the head of one place lives."""
     return root / head_name(job, folder)
 
@@ -146,7 +167,7 @@ class Head:
     """
 
     job: str
-    folder: str
+    folder: str | None
     last_run: str | None = None
     resume: dict | None = None
     # The chain head of the metadata log for this place. A single hash, because
@@ -217,7 +238,7 @@ def _decode(path: pathlib.Path, payload: object) -> Head | None:
         return None
     job = payload.get("job")
     folder = payload.get("folder")
-    if not isinstance(job, str) or not isinstance(folder, str):
+    if not isinstance(job, str) or not (folder is None or isinstance(folder, str)):
         log.warning("%s: does not say which place it belongs to, ignoring it", path)
         return None
 
@@ -261,7 +282,7 @@ def read_file(path: pathlib.Path) -> Head | None:
     return _decode(path, payload)
 
 
-def read(root: pathlib.Path, job: str, folder: str) -> Head | None:
+def read(root: pathlib.Path, job: str, folder: str | None) -> Head | None:
     """The head of one place, or None to read that folder in full.
 
     A file whose `job`/`folder` do not match what was asked for is a slug

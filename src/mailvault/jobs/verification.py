@@ -19,7 +19,7 @@ from mailvault import conf
 from mailvault.backend import session
 from mailvault.jobs.common import JobError
 from mailvault.jobs.reconcile import ReconcileResult, places_from_log, reconcile_folder
-from mailvault.store import cas, metalog
+from mailvault.store import cas, heads, metalog
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +53,7 @@ def verify(
 
     results: list[VerifyResult] = []
     log_root = store_path / metalog.DEFAULT_LOG_DIR
+    heads_root = store_path / heads.DEFAULT_HEADS_DIR
     # The first thing that happens and the first thing that takes a while: the
     # whole log is read before a connection is even opened. Announcing it is what
     # keeps the start of the command from looking like nothing at all.
@@ -74,6 +75,7 @@ def verify(
                         mb,
                         store,
                         log_root,
+                        heads_root,
                         places.get((job.name, folder), set()),
                         job.name,
                         folder,

@@ -329,7 +329,7 @@ def _check_args(archive, **overrides):
 def _archive_with_a_log(root, extra_store_ids=()):
     store = cas.mail_store(root)
     _status, store_id, _path = store.add(b"a real message")
-    writer = metalog.LogWriter(root / metalog.DEFAULT_LOG_DIR)
+    writer = metalog.LogWriter(root / metalog.DEFAULT_LOG_DIR, root / heads.DEFAULT_HEADS_DIR)
     for known in (store_id, *extra_store_ids):
         writer.add("job", ["INBOX"], known)
     writer.seal(datetime(2026, 8, 1, tzinfo=UTC))

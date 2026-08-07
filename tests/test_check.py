@@ -9,9 +9,10 @@ from datetime import UTC, datetime
 
 import pytest
 
+from mailvault.cli import commands
 from mailvault.jobs.check import check, quarantine_entry
 from mailvault.jobs.common import JobError
-from mailvault.store import cas, metalog
+from mailvault.store import cas, heads, metalog
 
 WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
 
@@ -23,7 +24,7 @@ def _archive(root: pathlib.Path, messages: int = 3, logged: int | None = None):
         store.add(f"Message-Id: <{n}@example.com>\r\n\r\nbody {n}\r\n".encode())[1]
         for n in range(messages)
     ]
-    writer = metalog.LogWriter(root / metalog.DEFAULT_LOG_DIR)
+    writer = metalog.LogWriter(root / metalog.DEFAULT_LOG_DIR, root / heads.DEFAULT_HEADS_DIR)
     for store_id in ids[: messages if logged is None else logged]:
         writer.add("job", ["INBOX"], store_id)
     writer.seal(WHEN)
@@ -256,3 +257,86 @@ class TestQuarantine:
 
         assert victim.exists()
         assert "every name is taken" in caplog.text
+
+
+class TestTheLogChain:
+    """A heap of files cannot notice one of them is gone. A chain can."""
+
+    @staticmethod
+    def _place(root, store_ids, folder="INBOX"):
+        writer = metalog.LogWriter(
+            root / metalog.DEFAULT_LOG_DIR, root / heads.DEFAULT_HEADS_DIR
+        )
+        for store_id in store_ids:
+            writer.add("job", [folder], store_id)
+        return writer.seal(WHEN)
+
+    def test_an_intact_chain_is_no_finding(self, tmp_path):
+        store, ids = _archive(tmp_path)
+        self._place(tmp_path, [ids[0]], folder="Sent")
+
+        result = check(tmp_path)
+
+        assert result.broken_chains == []
+        assert result.unchained == []
+        assert result.sound
+
+    def test_a_log_file_the_chain_names_but_the_archive_lacks(self, tmp_path):
+        """The whole point: the messages stay reachable through their other place,
+        so nothing turns into an orphan and nothing else would ever say a word."""
+        store, ids = _archive(tmp_path)
+        (first,) = self._place(tmp_path, [ids[0]], folder="Sent")
+        self._place(tmp_path, [ids[1]], folder="Sent")
+        first.unlink()
+
+        result = check(tmp_path)
+
+        assert len(result.broken_chains) == 1
+        assert first.name.removesuffix(".jsonl") in result.broken_chains[0]
+        assert "job::Sent" in result.broken_chains[0]
+        assert not result.sound, "a file that is gone is the archive not being what it claims"
+        assert result.orphans == [], (
+            "and nothing else says a word: the messages are still filed under INBOX,"
+            " so losing the record of their second place leaves no other trace"
+        )
+
+    def test_a_file_no_chain_reaches_is_reported_but_not_a_fault(self, tmp_path):
+        """Left behind when a head could not be updated after the file landed.
+
+        It is still read -- the glob and not the chain enumerates the log -- so
+        nothing is lost and nothing is wrong.
+        """
+        store, ids = _archive(tmp_path)
+        self._place(tmp_path, [ids[0]], folder="Sent")
+        stale = heads.head_path(tmp_path / heads.DEFAULT_HEADS_DIR, "job", "Sent")
+        stale.unlink()
+
+        result = check(tmp_path)
+
+        assert len(result.unchained) == 1
+        assert result.broken_chains == []
+        assert result.sound, "the chain being behind is not the archive being wrong"
+
+    def test_an_archive_without_heads_is_not_asked_about_chains(self, tmp_path):
+        """Every archive is in this state until it is migrated, and saying so
+        once per log file would be true and useless."""
+        _archive(tmp_path)
+        for path in (tmp_path / heads.DEFAULT_HEADS_DIR).iterdir():
+            path.unlink()
+
+        result = check(tmp_path)
+
+        assert result.unchained == []
+        assert result.broken_chains == []
+        assert result.sound
+
+    def test_the_report_names_both_kinds(self, tmp_path, capsys):
+        store, ids = _archive(tmp_path)
+        (first,) = self._place(tmp_path, [ids[0]], folder="Sent")
+        self._place(tmp_path, [ids[1]], folder="Sent")
+        first.unlink()
+
+        commands.report_check(tmp_path, check(tmp_path))
+
+        out = capsys.readouterr().out
+        assert "the chain names are gone" in out
