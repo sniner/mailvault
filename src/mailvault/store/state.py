@@ -1,35 +1,34 @@
-"""Where the next incremental run picks up, kept as a small JSON file.
+"""Reading the `state.json` of an archive written before `heads/`.
 
-Two things are recorded per folder, and keeping them apart is the point of this
-module. `last_run` is the wall clock of the last pass over that folder -- a
-statement about the *run*, useful for answering "did the nightly job touch this
-at all", and nothing else reads it. `resume` is the point the next pass carries
-on from -- a statement about *coverage*, and the only one that decides what gets
-fetched.
+**Nothing writes this format any more, and nothing reads it during a run.** The
+resume points live in `heads/`, one file per place; see `mailvault.store.heads`
+for why. What is left here is the reader, used exactly once per archive by the
+import in `mailvault.jobs.migration`, after which the file is deleted. It is
+migration code and goes out with 1.0.
 
-The resume point is opaque here. Its shape belongs to the backend that made it
-(a UID watermark for IMAP, a delta link for Graph), and this module neither
+Two versions have to be understood, and the difference between them is the
+reason the format moved at all. Version 1 held a bare ISO timestamp per folder
+and resumed from it -- a date, which a message copied into a folder slips behind
+without ever being asked for again. Version 2 split that into `last_run`, a
+statement about the *run*, and an opaque `resume`, a statement about *coverage*.
+Only the second decides what gets fetched.
+
+Both are read, and they are carried over differently: a version 2 file yields
+`last_run` and `resume`, a version 1 file yields `last_run` alone. Adopting a
+version 1 timestamp as a resume point would inherit exactly the gap it can hide,
+so every folder of such an archive is read in full once instead.
+
+The resume point stays opaque. Its shape belongs to the backend that made it (a
+UID watermark for IMAP, a delta link for Graph), and this module neither
 interprets nor validates beyond "it is an object and it names its kind". A
 backend that does not recognise a `kind` reads the folder in full, which makes
-one rule cover an upgrade from an older format, a job whose backend was swapped,
-and a token from a version that does not exist yet: **a resume point is either
-understood and valid, or there is none.**
+one rule cover an upgrade, a job whose backend was swapped, and a token from a
+version that does not exist yet: **a resume point is either understood and
+valid, or there is none.**
 
-These used to live in a SQLite database inside the archive -- a file rewritten in
-place, where over SMB or NFS a torn write can take the whole file with it, and
-with it the record of what has already been fetched. That is why they are kept
-here instead, and why `state.json` is only ever replaced atomically: write a
-temporary file, flush it to disk, then rename it over the old one. A rename
-within a directory is atomic on every filesystem in practical use, so a reader
-sees either the previous state or the new one, never a half-written mixture. The
-worst case is losing the most recent update, which costs bandwidth on the next
-run -- the content-addressed storage discards the redundant downloads.
-
-The file is not a second source of truth: what it holds can be recovered by
-reading a folder in full. It exists so that starting a run does not have to.
-
-Single writer assumed, matching the rest of mailvault: two runs writing the same
-archive concurrently can lose one another's updates.
+Nothing here is a second source of truth: what it holds can be recovered by
+reading a folder in full. It exists so that the first run after the import does
+not have to.
 """
 
 from __future__ import annotations
@@ -39,9 +38,6 @@ import dataclasses
 import json
 import logging
 import pathlib
-from datetime import datetime
-
-from mailvault.store import atomic
 
 log = logging.getLogger(__name__)
 
@@ -73,14 +69,6 @@ class FolderState:
 
     last_run: str | None = None
     resume: dict | None = None
-
-    def to_payload(self) -> dict:
-        payload: dict = {}
-        if self.last_run is not None:
-            payload["last_run"] = self.last_run
-        if self.resume is not None:
-            payload["resume"] = self.resume
-        return payload
 
     def is_empty(self) -> bool:
         return self.last_run is None and self.resume is None
@@ -217,114 +205,14 @@ class SnapshotState:
         return None if parsed.is_empty() else parsed
 
     def is_empty(self) -> bool:
-        """True when no folder is recorded, i.e. a new or unusable state file."""
+        """True when no folder is recorded, i.e. a missing or unusable file."""
         return not self._folders
-
-    def _state(self, mailbox: str, folder: str) -> FolderState | None:
-        return self._folders.get(mailbox, {}).get(folder)
-
-    def resume(self, mailbox: str, folder: str) -> dict | None:
-        """Return the folder's resume point, or None to read it in full.
-
-        The value is handed to the backend as it was stored. Nothing here knows
-        what a `uid` or a `delta_link` means, and nothing here should.
-        """
-        entry = self._state(mailbox, folder)
-        return None if entry is None else entry.resume
-
-    def last_run(self, mailbox: str, folder: str) -> datetime | None:
-        """Return when a run last read this folder, or None if it never did.
-
-        A value without a timezone is read as local time, because that is what it
-        was: those entries were written by a version that used `datetime.now()`
-        rather than `datetime.now(UTC)`.
-        """
-        entry = self._state(mailbox, folder)
-        if entry is None or entry.last_run is None:
-            return None
-        try:
-            parsed = datetime.fromisoformat(entry.last_run)
-        except ValueError:
-            log.warning(
-                "%s: %s::%s has an unparsable timestamp %r, treating as unknown",
-                self.path,
-                mailbox,
-                folder,
-                entry.last_run,
-            )
-            return None
-        return parsed if parsed.tzinfo is not None else parsed.astimezone()
-
-    def record(
-        self,
-        mailbox: str,
-        folder: str,
-        *,
-        last_run: datetime,
-        resume: dict | None,
-    ) -> None:
-        """Note a pass over one folder. Call save() to persist.
-
-        `resume` of None leaves whatever was there untouched rather than clearing
-        it -- a pass that archived nothing has no new point to offer, and
-        forgetting the old one would throw away coverage that still holds.
-        """
-        entry = self._folders.setdefault(mailbox, {}).setdefault(folder, FolderState())
-        entry.last_run = last_run.isoformat()
-        if resume is not None:
-            entry.resume = resume
 
     def entries(self) -> collections.abc.Iterator[tuple[str, str, FolderState]]:
         """Yield (mailbox, folder, state) for every recorded folder."""
         for mailbox in sorted(self._folders):
             for folder in sorted(self._folders[mailbox]):
                 yield mailbox, folder, self._folders[mailbox][folder]
-
-    def save(self) -> None:
-        """Write the state to disk atomically, replacing any previous version."""
-        snapshots = {
-            mailbox: {folder: entry.to_payload() for folder, entry in sorted(folders.items())}
-            for mailbox, folders in sorted(self._folders.items())
-        }
-        payload = {"version": STATE_VERSION, "snapshots": snapshots}
-        body = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-        atomic.write_text(self.path, body)
-        log.debug("%s: resume state written", self.path)
-
-
-def mailboxes(path: pathlib.Path) -> set[str]:
-    """The mailboxes a state file records -- who has written into this archive.
-
-    Deliberately not `load(path)` followed by a look at the result. Loading is a
-    statement about a run: it reports what an older format or a damaged entry
-    will cost the folders it is about to resume, and rightly says so. This
-    question resumes nothing, and having those remarks appear a second time --
-    for a caller they do not apply to -- is how a log stops being read.
-
-    Nothing here is interpreted beyond the mailbox names, which is why a version
-    1 file answers just as well as a version 2 one: who wrote where does not
-    depend on the shape of what they wrote. Anything unusable yields an empty
-    set, and the caller falls back to the metadata log.
-    """
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return set()
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        log.debug("%s: no mailboxes to name: %s", path, exc)
-        return set()
-    if not isinstance(payload, dict):
-        return set()
-    if payload.get("version") not in SUPPORTED_STATE_VERSIONS:
-        return set()
-    snapshots = payload.get("snapshots")
-    if not isinstance(snapshots, dict):
-        return set()
-    return {
-        name
-        for name, entries in snapshots.items()
-        if isinstance(name, str) and name and isinstance(entries, dict) and entries
-    }
 
 
 def _is_usable_resume(value: object) -> bool:

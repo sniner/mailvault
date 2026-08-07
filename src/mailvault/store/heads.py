@@ -92,7 +92,8 @@ def _identity(job: str, folder: str) -> str:
     and so does anything that agrees for the first however-many characters. A
     collision would mean two places sharing one file, and the second one's
     resume point overwriting the first -- a UID watermark from folder A applied
-    to folder B skips mail, which is the exact fault 0.10.0 exists to remove.
+    to folder B skips mail silently, which is the one fault this whole
+    arrangement exists to rule out.
 
     Three things about how it is computed matter:
 

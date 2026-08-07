@@ -21,7 +21,7 @@ from mailvault.jobs.common import _seal_log
 from mailvault.jobs.migration import migrate_archive
 from mailvault.jobs.reconcile import places_from_log, reconcile_folder
 from mailvault.jobs.storedb import DEFAULT_QUERY_DB_NAME, refresh_db
-from mailvault.store import cas, metalog, state
+from mailvault.store import cas, heads, metalog
 
 log = logging.getLogger(__name__)
 
@@ -47,8 +47,18 @@ class _ArchivedPlaces:
         return self._places.get((self._job_name, folder), set())
 
 
+def _resume_point(heads_root: pathlib.Path, job_name: str, folder: str) -> dict | None:
+    """Where the next pass over this folder carries on, or None to read it all.
+
+    The value is handed to the backend as it was stored. Nothing here knows what
+    a `uid` or a `delta_link` means, and nothing here should.
+    """
+    head = heads.read(heads_root, job_name, folder)
+    return None if head is None else head.resume
+
+
 def _record_pass(
-    snapshot_state: state.SnapshotState,
+    heads_root: pathlib.Path,
     job_name: str,
     folder: str,
     last_run: datetime,
@@ -58,18 +68,26 @@ def _record_pass(
 
     `last_run` is written whatever the outcome -- it says the folder was read,
     not that the read went well. `resume` is None unless this pass earned a new
-    one, and None leaves the previous point standing rather than clearing it.
+    one, and None leaves the previous point standing rather than clearing it:
+    a pass that archived nothing has no new point to offer, and forgetting the
+    old one would throw away coverage that still holds. That is why the head is
+    read before it is replaced, rather than built from scratch -- the same read
+    also keeps the chain head of the metadata log, which belongs to `compact`
+    and not to this pass.
 
-    A state file that cannot be written is logged and otherwise tolerated. The
-    folder is simply fetched again next time, which the content-addressed storage
-    absorbs; aborting here would instead cost the remaining folders of the run for
-    a failure that has no effect on the archived mail.
+    A head that cannot be written is logged and otherwise tolerated. The folder
+    is simply fetched again next time, which the content-addressed storage
+    absorbs; aborting here would instead cost the remaining folders of the run
+    for a failure that has no effect on the archived mail.
     """
-    snapshot_state.record(job_name, folder, last_run=last_run, resume=resume)
+    head = heads.read(heads_root, job_name, folder) or heads.Head(job=job_name, folder=folder)
+    head.last_run = last_run.isoformat()
+    if resume is not None:
+        head.resume = resume
     try:
-        snapshot_state.save()
+        heads.write(heads_root, head)
     except OSError as exc:
-        log.error("%s: resume state not written: %s", snapshot_state.path, exc)
+        log.error("%s::%s: resume point not written: %s", job_name, folder, exc)
 
 
 def _location_writer(
@@ -96,7 +114,7 @@ def _backup_to_log(
     incremental: bool = True,
 ) -> None:
     """Back up the selected folders, recording locations and resume state."""
-    snapshot_state = state.SnapshotState.load(store_path / state.DEFAULT_STATE_NAME)
+    heads_root = store_path / heads.DEFAULT_HEADS_DIR
     log_root = store_path / metalog.DEFAULT_LOG_DIR
     places = _ArchivedPlaces(log_root, job.name)
     folders = job.folders if job.folders else mb.folders()
@@ -107,7 +125,7 @@ def _backup_to_log(
                 store,
                 job,
                 folder,
-                snapshot_state,
+                heads_root,
                 log_root,
                 places,
                 incremental,
@@ -123,7 +141,7 @@ def _backup_folder(
     store: cas.ContentAddressedStorage,
     job: conf.JobConfig,
     folder: str,
-    snapshot_state: state.SnapshotState,
+    heads_root: pathlib.Path,
     log_root: pathlib.Path,
     places: _ArchivedPlaces,
     incremental: bool = True,
@@ -135,9 +153,9 @@ def _backup_folder(
     which is what makes a full pass authoritative: a backend given no point has
     nothing to hold itself back from and records exactly what it found.
     """
-    previous = snapshot_state.resume(job.name, folder) if incremental else None
+    previous = _resume_point(heads_root, job.name, folder) if incremental else None
     if previous is None and incremental:
-        if _catch_up_if_possible(mb, store, job, folder, snapshot_state, log_root, places):
+        if _catch_up_if_possible(mb, store, job, folder, heads_root, log_root, places):
             return
 
     observed_at = datetime.now(UTC)
@@ -154,7 +172,7 @@ def _backup_folder(
         # than deciding for us. Listing beats downloading the folder again, and
         # where that is not on offer the full read is at least an explicit one.
         log.info("%s::%s: the resume point is void", job.name, folder)
-        if _catch_up_if_possible(mb, store, job, folder, snapshot_state, log_root, places):
+        if _catch_up_if_possible(mb, store, job, folder, heads_root, log_root, places):
             return
         log.info("%s::%s: reading the folder in full", job.name, folder)
         result = mb.folder_backup(
@@ -197,7 +215,7 @@ def _backup_folder(
         )
     # Written whatever the outcome: the folder *was* read, and that is all
     # `last_run` claims. Only `resume` is held back when the pass fell short.
-    _record_pass(snapshot_state, job.name, folder, observed_at, resume)
+    _record_pass(heads_root, job.name, folder, observed_at, resume)
     _purge_after_seal(mb, job, folder, result, sealed)
 
 
@@ -225,7 +243,7 @@ def _catch_up_if_possible(
     store: cas.ContentAddressedStorage,
     job: conf.JobConfig,
     folder: str,
-    snapshot_state: state.SnapshotState,
+    heads_root: pathlib.Path,
     log_root: pathlib.Path,
     places: _ArchivedPlaces,
 ) -> bool:
@@ -241,7 +259,7 @@ def _catch_up_if_possible(
     archived = places.of(folder)
     if not archived:
         return False
-    _catch_up_folder(mb, store, job, folder, snapshot_state, log_root, archived)
+    _catch_up_folder(mb, store, job, folder, heads_root, log_root, archived)
     return True
 
 
@@ -250,7 +268,7 @@ def _catch_up_folder(
     store: cas.ContentAddressedStorage,
     job: conf.JobConfig,
     folder: str,
-    snapshot_state: state.SnapshotState,
+    heads_root: pathlib.Path,
     log_root: pathlib.Path,
     archived: set[str],
 ) -> None:
@@ -284,7 +302,7 @@ def _catch_up_folder(
             result.missing,
         )
         resume = None
-    _record_pass(snapshot_state, job.name, folder, observed_at, resume)
+    _record_pass(heads_root, job.name, folder, observed_at, resume)
 
 
 def _purge_after_seal(

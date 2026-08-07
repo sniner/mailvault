@@ -29,7 +29,7 @@ import pathlib
 
 from mailvault import conf
 from mailvault.jobs.common import JobError
-from mailvault.store import metalog, state
+from mailvault.store import heads, metalog
 
 log = logging.getLogger(__name__)
 
@@ -37,17 +37,17 @@ log = logging.getLogger(__name__)
 def known_mailboxes(store_path: pathlib.Path) -> set[str]:
     """The mailbox names an archive has already seen.
 
-    `state.json` answers this on its own and is what any archive written by a
+    `heads/` answers this on its own and is what any archive written by a
     current version has. The metadata log is the fallback, and the reason there
-    is one: an archive whose state file was lost, emptied or never written still
-    knows perfectly well who wrote into it, and a guard that waved everything
-    through in exactly that case would be worth little.
+    is one: an archive whose heads were lost, or which has not been migrated
+    yet, still knows perfectly well who wrote into it, and a guard that waved
+    everything through in exactly that case would be worth little.
 
-    Neither is read as the run itself reads it: this asks who has written here,
-    which needs the names and nothing else -- no resume points, no message lines,
-    and none of the remarks either file makes about what it will cost to use.
+    The names cannot be read off the head file names -- a slug is lossy and the
+    identity is a hash -- so the files themselves are asked. That is cheap:
+    there are as many as there are folders, not as there are messages.
     """
-    names = state.mailboxes(store_path / state.DEFAULT_STATE_NAME)
+    names = heads.mailboxes(store_path / heads.DEFAULT_HEADS_DIR)
     if names:
         return names
     return metalog.mailboxes(store_path / metalog.DEFAULT_LOG_DIR)

@@ -5,6 +5,10 @@ mailbox and folder each message was seen in. That pairing was never stored
 directly -- the old schema held mailboxes and folders as two independent
 relations -- so migrating it out into the log means reconstructing it, which is
 what the helpers here do.
+
+The second, younger step lives here too: `import_state_file` moves a `state.json`
+into `heads/` and removes it. Both are one-shot code that reads a format nothing
+writes any more, and both go out with 1.0.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ import logging
 import pathlib
 from datetime import UTC, datetime
 
-from mailvault.store import metadb, metalog, state
+from mailvault.store import heads, metadb, metalog, state
 
 log = logging.getLogger(__name__)
 
@@ -154,13 +158,13 @@ def _export_metalog(
 
 
 def _adopt_database_snapshots(
-    snapshot_state: state.SnapshotState,
+    heads_root: pathlib.Path,
     db: metadb.MetaDatabaseConnection,
 ) -> int:
-    """Copy the snapshot table of a legacy archive into the state file.
+    """Copy the snapshot table of a legacy archive into `heads/`.
 
-    Only ever fills an empty state file: one that already holds something is the
-    newer truth and must not be overwritten by the database.
+    Only ever fills an archive that has no heads: one that already has them
+    holds the newer truth, and the database must not overwrite it.
 
     What is carried over is `last_run` and nothing else. Those timestamps were
     written as resume points by a version that took them from the wall clock, and
@@ -168,17 +172,12 @@ def _adopt_database_snapshots(
     a record of when the folder was last read, they cost nothing; as a resume
     point they would cost mail. So every adopted folder is read in full once.
     """
-    if not snapshot_state.is_empty():
+    if heads.head_files(heads_root):
         return 0
     adopted = 0
     for mailbox, folder, timestamp in db.all_snapshots():
         try:
-            snapshot_state.record(
-                mailbox,
-                folder,
-                last_run=datetime.fromisoformat(timestamp),
-                resume=None,
-            )
+            last_run = datetime.fromisoformat(timestamp)
         except ValueError:
             log.warning(
                 "%s::%s: unparsable snapshot %r in the database, skipped",
@@ -187,10 +186,55 @@ def _adopt_database_snapshots(
                 timestamp,
             )
             continue
+        heads.write(
+            heads_root,
+            heads.Head(job=mailbox, folder=folder, last_run=last_run.isoformat()),
+        )
         adopted += 1
-    if adopted:
-        snapshot_state.save()
     return adopted
+
+
+def import_state_file(store_path: pathlib.Path) -> int:
+    """Move an archive's `state.json` into `heads/` and delete it.
+
+    Runs once per archive and then has nothing left to do, because the file it
+    reads is gone afterwards. Both formats are carried over, and differently: a
+    version 2 file yields `last_run` and the opaque `resume`, a version 1 file
+    yields `last_run` alone. A version 1 timestamp is not a resume point -- it
+    came from the wall clock, and adopting it would inherit the gap it can hide
+    -- so those folders are read in full once.
+
+    Both are carried over rather than only the newer one, because moving an
+    opaque token costs nothing and a full pass over every folder of a large
+    archive costs hours.
+
+    An archive that already has heads keeps them: they are the newer truth. The
+    file is still removed, so the question does not come up a second time.
+    """
+    path = store_path / state.DEFAULT_STATE_NAME
+    if not path.exists():
+        return 0
+    heads_root = store_path / heads.DEFAULT_HEADS_DIR
+
+    imported = 0
+    if heads.head_files(heads_root):
+        log.info("%s: heads are already there, the state file is only removed", path)
+    else:
+        for mailbox, folder, entry in state.SnapshotState.load(path).entries():
+            heads.write(
+                heads_root,
+                heads.Head(
+                    job=mailbox,
+                    folder=folder,
+                    last_run=entry.last_run,
+                    resume=entry.resume,
+                ),
+            )
+            imported += 1
+
+    path.unlink()
+    log.info("%s: %s place(s) moved into %s", path, f"{imported:,}", heads.DEFAULT_HEADS_DIR)
+    return imported
 
 
 def migrate_archive(store_path: pathlib.Path) -> MigrationResult:
@@ -198,7 +242,7 @@ def migrate_archive(store_path: pathlib.Path) -> MigrationResult:
 
     Older archives keep everything in `store.db`: the resume timestamps and, more
     importantly, the only record of which mailbox and folder each message was
-    seen in. Both move out -- the timestamps into `state.json`, the locations into
+    seen in. Both move out -- the timestamps into `heads/`, the locations into
     the log -- and the database is then no longer part of the archive.
 
     It is not deleted. It is renamed to `store.db.migrated`, which says the same
@@ -231,12 +275,12 @@ def migrate_archive(store_path: pathlib.Path) -> MigrationResult:
     )
 
     log_root = store_path / metalog.DEFAULT_LOG_DIR
-    snapshot_state = state.SnapshotState.load(store_path / state.DEFAULT_STATE_NAME)
+    heads_root = store_path / heads.DEFAULT_HEADS_DIR
     date = datetime.now(UTC)
     # Read-only: the legacy database is only queried here and then renamed aside,
     # so setup() must not write DDL into it (nor demand write access to read it).
     with metadb.MetaDatabase(path=legacy, setup=False) as db:
-        result.snapshots = _adopt_database_snapshots(snapshot_state, db)
+        result.snapshots = _adopt_database_snapshots(heads_root, db)
         written = _export_metalog(db, log_root, date, result)
 
     # Read back what was just written before anything is renamed. The files are

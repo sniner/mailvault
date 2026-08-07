@@ -12,9 +12,10 @@ import pytest
 
 from mailvault import conf, jobs, mailutils
 from mailvault.backend import base
+from mailvault.jobs import migration
 from mailvault.jobs.reconcile import archived_message_counts, places_from_log
 from mailvault.jobs.storedb import DEFAULT_QUERY_DB_NAME, refresh_db
-from mailvault.store import cas, metadb, metalog, state
+from mailvault.store import cas, heads, metadb, metalog, state
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -48,27 +49,34 @@ def _token(date: datetime) -> dict:
 ARCHIVED_TOKEN = _token(ARCHIVED_AT)
 
 
-def _resume_date(path, mailbox: str = "test-job", folder: str = "INBOX") -> datetime | None:
-    """Read the resume date out of a state file, or None when there is none."""
-    token = state.SnapshotState.load(path).resume(mailbox, folder)
+def _head(root, mailbox: str = "test-job", folder: str = "INBOX") -> heads.Head | None:
+    """The head of one place in an archive, or None when there is none."""
+    return heads.read(root / heads.DEFAULT_HEADS_DIR, mailbox, folder)
+
+
+def _resume_date(root, mailbox: str = "test-job", folder: str = "INBOX") -> datetime | None:
+    """Read the resume date out of a head, or None when there is none."""
+    head = _head(root, mailbox, folder)
+    token = None if head is None else head.resume
     return None if token is None else datetime.fromisoformat(token["at"])
 
 
 def _seed_resume(
-    path,
+    root,
     date: datetime,
     mailbox: str = "test-job",
     folder: str = "INBOX",
 ) -> None:
-    """Put a folder's resume point into a state file, as a run would have."""
-    s = state.SnapshotState(path)
-    s.record(
-        mailbox,
-        folder,
-        last_run=date,
-        resume=_token(date),
+    """Put a folder's resume point into an archive, as a run would have."""
+    heads.write(
+        root / heads.DEFAULT_HEADS_DIR,
+        heads.Head(
+            job=mailbox,
+            folder=folder,
+            last_run=date.isoformat(),
+            resume=_token(date),
+        ),
     )
-    s.save()
 
 
 def _make_job(**overrides: Any) -> conf.JobConfig:
@@ -161,8 +169,8 @@ class TestBackup:
             jobs.backup(job, tmp_path)
 
         assert mock_client.folder_backup.call_count == 2
-        assert _resume_date(tmp_path / "state.json", folder="Broken") is None
-        assert _resume_date(tmp_path / "state.json") is not None
+        assert _resume_date(tmp_path, folder="Broken") is None
+        assert _resume_date(tmp_path) is not None
 
     def test_backup_incremental_uses_snapshot(self, tmp_path):
         job = _make_job(folders=["INBOX"])
@@ -170,7 +178,7 @@ class TestBackup:
         mock_client.folder_backup.return_value = base.BackupResult()
 
         snapshot_date = datetime(2026, 2, 1, tzinfo=UTC)
-        _seed_resume(tmp_path / "state.json", snapshot_date)
+        _seed_resume(tmp_path, snapshot_date)
 
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -235,7 +243,7 @@ class TestBackup:
 
             jobs.backup(job, tmp_path)
 
-        assert _resume_date(tmp_path / "state.json") is not None
+        assert _resume_date(tmp_path) is not None
 
     def test_snapshot_frozen_on_failed_downloads(self, tmp_path):
         """A failed download must not be hidden behind an advanced snapshot."""
@@ -243,7 +251,7 @@ class TestBackup:
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult(total=3, stored=2, failed=1)
         old_snapshot = datetime(2026, 2, 1, tzinfo=UTC)
-        _seed_resume(tmp_path / "state.json", old_snapshot, folder="INBOX")
+        _seed_resume(tmp_path, old_snapshot, folder="INBOX")
 
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
@@ -251,7 +259,7 @@ class TestBackup:
 
             jobs.backup(job, tmp_path)
 
-        assert _resume_date(tmp_path / "state.json") == old_snapshot
+        assert _resume_date(tmp_path) == old_snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -282,10 +290,10 @@ class TestResumePoint:
 
         self._run(job, mock_client, tmp_path)
 
-        s = state.SnapshotState.load(tmp_path / "state.json")
-        assert s.resume("test-job", "INBOX") is None
+        head = _head(tmp_path)
+        assert head.resume is None
         # The visit is still on record -- it just earned nothing.
-        assert s.last_run("test-job", "INBOX") is not None
+        assert head.last_run_at() is not None
 
     def test_the_next_run_then_reads_the_folder_in_full(self, tmp_path):
         """What the withheld point is for: the mail is still reachable."""
@@ -311,10 +319,7 @@ class TestResumePoint:
         )
 
         self._run(job, mock_client, tmp_path)
-        assert (
-            state.SnapshotState.load(tmp_path / "state.json").resume("test-job", "INBOX")
-            == token
-        )
+        assert _head(tmp_path).resume == token
 
         mock_client.folder_backup.reset_mock()
         self._run(job, mock_client, tmp_path)
@@ -324,7 +329,7 @@ class TestResumePoint:
         """`--full` is what makes a pass authoritative: the backend gets nothing."""
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
-        _seed_resume(tmp_path / "state.json", datetime(2026, 7, 1, tzinfo=UTC))
+        _seed_resume(tmp_path, datetime(2026, 7, 1, tzinfo=UTC))
         mock_client.folder_backup.return_value = base.BackupResult(
             total=1,
             stored=1,
@@ -334,26 +339,26 @@ class TestResumePoint:
         self._run(job, mock_client, tmp_path, incremental=False)
 
         assert mock_client.folder_backup.call_args.kwargs.get("resume") is None
-        assert _resume_date(tmp_path / "state.json") == ARCHIVED_AT
+        assert _resume_date(tmp_path) == ARCHIVED_AT
 
     def test_a_pass_that_earned_nothing_clears_nothing(self, tmp_path):
         """Nothing new is not the same as nothing there: the old point stands."""
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         current = datetime(2026, 3, 1, tzinfo=UTC)
-        _seed_resume(tmp_path / "state.json", current)
+        _seed_resume(tmp_path, current)
         mock_client.folder_backup.return_value = base.BackupResult(total=0, stored=0)
 
         self._run(job, mock_client, tmp_path)
 
-        assert _resume_date(tmp_path / "state.json") == current
+        assert _resume_date(tmp_path) == current
 
     def test_a_failed_pass_discards_the_point_the_backend_offered(self, tmp_path):
         """Taking it would push the failed messages out of every future pass."""
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         current = datetime(2026, 3, 1, tzinfo=UTC)
-        _seed_resume(tmp_path / "state.json", current)
+        _seed_resume(tmp_path, current)
         mock_client.folder_backup.return_value = base.BackupResult(
             total=3,
             stored=2,
@@ -363,7 +368,7 @@ class TestResumePoint:
 
         self._run(job, mock_client, tmp_path)
 
-        assert _resume_date(tmp_path / "state.json") == current
+        assert _resume_date(tmp_path) == current
 
 
 class TestCatchUp:
@@ -492,14 +497,13 @@ class TestCatchUp:
         # Only the one the archive lacks, not the two it already has.
         assert client.fetch_message.call_count == 1
 
-        s = state.SnapshotState.load(tmp_path / "state.json")
-        assert s.resume("test-job", "INBOX") == {"kind": "test-backend", "at": "now"}
+        assert _head(tmp_path).resume == {"kind": "test-backend", "at": "now"}
 
     def test_a_void_point_is_caught_up_instead_of_downloaded(self, tmp_path, caplog):
         """The backend reports; the runner picks listing over downloading again."""
         self._archive_with(tmp_path, "a")
         client = self._client(["a", "b"])
-        _seed_resume(tmp_path / "state.json", datetime(2026, 2, 1, tzinfo=UTC))
+        _seed_resume(tmp_path, datetime(2026, 2, 1, tzinfo=UTC))
         client.folder_backup.return_value = base.BackupResult(resume_lost=True)
 
         with caplog.at_level(logging.INFO):
@@ -514,7 +518,7 @@ class TestCatchUp:
         """A job that deletes after export cannot be caught up, so it says so."""
         self._archive_with(tmp_path, "a")
         client = self._client(["a"])
-        _seed_resume(tmp_path / "state.json", datetime(2026, 2, 1, tzinfo=UTC))
+        _seed_resume(tmp_path, datetime(2026, 2, 1, tzinfo=UTC))
         client.folder_backup.side_effect = [
             base.BackupResult(resume_lost=True),
             base.BackupResult(total=1, stored=1, resume=ARCHIVED_TOKEN),
@@ -535,9 +539,9 @@ class TestCatchUp:
 
         self._run(_make_job(folders=["INBOX"]), client, tmp_path)
 
-        s = state.SnapshotState.load(tmp_path / "state.json")
-        assert s.resume("test-job", "INBOX") is None
-        assert s.last_run("test-job", "INBOX") is not None
+        head = _head(tmp_path)
+        assert head.resume is None
+        assert head.last_run_at() is not None
 
 
 # ---------------------------------------------------------------------------
@@ -570,7 +574,7 @@ class TestSnapshotStateFile:
 
         self._run(job, mock_client, tmp_path)
 
-        assert _resume_date(tmp_path / "state.json") is not None
+        assert _resume_date(tmp_path) is not None
 
     def test_state_file_frozen_on_failed_downloads(self, tmp_path):
         job = _make_job(folders=["INBOX"])
@@ -579,7 +583,7 @@ class TestSnapshotStateFile:
 
         self._run(job, mock_client, tmp_path)
 
-        assert _resume_date(tmp_path / "state.json") is None
+        assert _resume_date(tmp_path) is None
 
     def test_state_file_takes_precedence_over_database(self, tmp_path):
         """The state file is the durable copy, so it decides where a run resumes."""
@@ -591,7 +595,7 @@ class TestSnapshotStateFile:
         current = datetime(2026, 6, 1, tzinfo=UTC)
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
             db.set_snapshot(db.add_mailbox("test-job"), db.add_label("INBOX"), date=stale)
-        _seed_resume(tmp_path / "state.json", current, folder="INBOX")
+        _seed_resume(tmp_path, current, folder="INBOX")
 
         self._run(job, mock_client, tmp_path)
 
@@ -614,12 +618,12 @@ class TestSnapshotStateFile:
         self._run(job, mock_client, tmp_path)
 
         assert self._resume(mock_client) is None
-        adopted = state.SnapshotState.load(tmp_path / "state.json")
-        assert adopted.resume("test-job", "INBOX") is None
+        adopted = _head(tmp_path)
+        assert adopted.resume is None
         # The run has read the folder by now, so its own timestamp is the one
         # standing there -- that the adopted value survives is the business of
         # the folders a run does not visit.
-        last_run = adopted.last_run("test-job", "INBOX")
+        last_run = adopted.last_run_at()
         assert last_run is not None and last_run > existing
 
     def test_all_database_snapshots_are_adopted_at_once(self, tmp_path):
@@ -640,16 +644,17 @@ class TestSnapshotStateFile:
 
         self._run(job, mock_client, tmp_path)
 
-        s = state.SnapshotState.load(tmp_path / "state.json")
-        assert s.last_run("test-job", "Sent") == untouched
-        assert s.last_run("test-job", "Archiv/2016") == untouched
+        sent = _head(tmp_path, folder="Sent")
+        archiv = _head(tmp_path, folder="Archiv/2016")
+        assert sent.last_run_at() == untouched
+        assert archiv.last_run_at() == untouched
         # None of them is a resume point, so none shortens the next pass.
-        assert s.resume("test-job", "Sent") is None
-        assert s.resume("test-job", "Archiv/2016") is None
+        assert sent.resume is None
+        assert archiv.resume is None
         # The visited folder was read and earned one.
-        assert _resume_date(tmp_path / "state.json") == ARCHIVED_AT
+        assert _resume_date(tmp_path) == ARCHIVED_AT
 
-    def test_adoption_never_overwrites_an_existing_state_file(self, tmp_path):
+    def test_adoption_never_overwrites_existing_heads(self, tmp_path):
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult()
@@ -658,14 +663,14 @@ class TestSnapshotStateFile:
         stale = datetime(2026, 1, 1, tzinfo=UTC)
         with metadb.MetaDatabase(tmp_path / "store.db") as db:
             db.set_snapshot(db.add_mailbox("test-job"), db.add_label("Sent"), date=stale)
-        _seed_resume(tmp_path / "state.json", current, folder="Sent")
+        _seed_resume(tmp_path, current, folder="Sent")
 
         self._run(job, mock_client, tmp_path)
 
-        assert _resume_date(tmp_path / "state.json", folder="Sent") == current
+        assert _resume_date(tmp_path, folder="Sent") == current
 
-    def test_unwritable_state_file_does_not_abort_the_run(self, tmp_path, caplog):
-        """Losing the state file costs bandwidth later, never the run in progress."""
+    def test_an_unwritable_head_does_not_abort_the_run(self, tmp_path, caplog):
+        """Losing a resume point costs bandwidth later, never the run in progress."""
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
         mock_client.folder_backup.return_value = base.BackupResult(
@@ -674,10 +679,10 @@ class TestSnapshotStateFile:
             resume=ARCHIVED_TOKEN,
         )
 
-        with patch.object(state.SnapshotState, "save", side_effect=OSError("read-only")):
+        with patch.object(heads, "write", side_effect=OSError("read-only")):
             self._run(job, mock_client, tmp_path)
 
-        assert "resume state not written" in caplog.text
+        assert "resume point not written" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -910,9 +915,9 @@ class TestMetadataLog:
         assert len(logs) == 1
         assert logs[0].store_ids == ["aaa"]
         # The folder was read, so that is recorded -- but nothing was earned.
-        s = state.SnapshotState.load(tmp_path / "state.json")
-        assert s.last_run("test-job", "INBOX") is not None
-        assert s.resume("test-job", "INBOX") is None
+        head = _head(tmp_path)
+        assert head.last_run_at() is not None
+        assert head.resume is None
 
     def test_existing_archive_is_bootstrapped_on_first_run(self, tmp_path):
         """An archive filled by an earlier version is protected straight away."""
@@ -947,6 +952,110 @@ class TestMetadataLog:
         self._run(job, mock_client, tmp_path)
 
         assert metalog.log_files(tmp_path / "meta") == before
+
+
+class TestImportStateFile:
+    """The one-shot move of `state.json` into `heads/`, which every older archive walks."""
+
+    @staticmethod
+    def _write_state(tmp_path, payload):
+        path = tmp_path / state.DEFAULT_STATE_NAME
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def test_a_version_2_file_brings_its_resume_points_along(self, tmp_path):
+        """Opaque tokens, so moving them costs nothing and saves a full pass."""
+        token = {"kind": "imap-uid", "uidvalidity": 1239278212, "uid": 48127}
+        path = self._write_state(
+            tmp_path,
+            {
+                "version": 2,
+                "snapshots": {
+                    "test-job": {
+                        "INBOX": {"last_run": "2026-02-01T12:00:00+00:00", "resume": token}
+                    }
+                },
+            },
+        )
+
+        assert migration.import_state_file(tmp_path) == 1
+
+        head = _head(tmp_path)
+        assert head.resume == token
+        assert head.last_run_at() == datetime(2026, 2, 1, 12, tzinfo=UTC)
+        assert not path.exists(), "the question must not come up a second time"
+
+    def test_a_version_1_file_brings_only_the_record_of_the_run(self, tmp_path):
+        """Its timestamps came from the wall clock; as resume points they would cost mail."""
+        self._write_state(
+            tmp_path,
+            {"version": 1, "snapshots": {"test-job": {"INBOX": "2026-02-01T12:00:00+00:00"}}},
+        )
+
+        assert migration.import_state_file(tmp_path) == 1
+
+        head = _head(tmp_path)
+        assert head.resume is None, "so the folder is read in full once"
+        assert head.last_run_at() == datetime(2026, 2, 1, 12, tzinfo=UTC)
+
+    def test_every_place_comes_over_not_just_one(self, tmp_path):
+        self._write_state(
+            tmp_path,
+            {
+                "version": 2,
+                "snapshots": {
+                    "a": {"INBOX": {"last_run": "2026-02-01T12:00:00+00:00"}},
+                    "b": {"INBOX": {"last_run": "2026-02-01T12:00:00+00:00"}},
+                    "c": {"Sent": {"last_run": "2026-02-01T12:00:00+00:00"}},
+                },
+            },
+        )
+
+        assert migration.import_state_file(tmp_path) == 3
+        assert heads.mailboxes(tmp_path / heads.DEFAULT_HEADS_DIR) == {"a", "b", "c"}
+
+    def test_an_archive_without_one_is_left_alone(self, tmp_path):
+        assert migration.import_state_file(tmp_path) == 0
+        assert not (tmp_path / heads.DEFAULT_HEADS_DIR).exists()
+
+    def test_running_it_twice_is_harmless(self, tmp_path):
+        self._write_state(
+            tmp_path,
+            {
+                "version": 2,
+                "snapshots": {"test-job": {"INBOX": {"resume": _token(ARCHIVED_AT)}}},
+            },
+        )
+        migration.import_state_file(tmp_path)
+
+        assert migration.import_state_file(tmp_path) == 0
+        assert _resume_date(tmp_path) == ARCHIVED_AT
+
+    def test_existing_heads_are_the_newer_truth_and_survive(self, tmp_path, caplog):
+        """And the file still goes, so nothing is left to ask about again."""
+        current = datetime(2026, 6, 1, tzinfo=UTC)
+        _seed_resume(tmp_path, current)
+        path = self._write_state(
+            tmp_path,
+            {
+                "version": 2,
+                "snapshots": {"test-job": {"INBOX": {"resume": _token(ARCHIVED_AT)}}},
+            },
+        )
+
+        with caplog.at_level(logging.INFO):
+            assert migration.import_state_file(tmp_path) == 0
+
+        assert _resume_date(tmp_path) == current
+        assert not path.exists()
+        assert "heads are already there" in caplog.text
+
+    def test_a_file_nobody_can_read_costs_the_resume_points_and_nothing_else(self, tmp_path):
+        """Everything in it is recoverable by reading the folders in full."""
+        path = self._write_state(tmp_path, {"version": 99, "snapshots": {"j": {"f": {}}}})
+
+        assert migration.import_state_file(tmp_path) == 0
+        assert not path.exists()
 
 
 class TestMigration:

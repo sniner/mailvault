@@ -13,7 +13,7 @@ import pytest
 from mailvault import conf, jobs
 from mailvault.backend import base
 from mailvault.cli import commands
-from mailvault.store import cas, metalog, state
+from mailvault.store import cas, heads, metalog
 
 WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
 
@@ -192,10 +192,11 @@ class TestMailboxGuard:
 
     @staticmethod
     def _archive(tmp_path, *mailboxes: str) -> pathlib.Path:
-        s = state.SnapshotState(tmp_path / state.DEFAULT_STATE_NAME)
         for name in mailboxes:
-            s.record(name, "INBOX", last_run=WHEN, resume=None)
-        s.save()
+            heads.write(
+                tmp_path / heads.DEFAULT_HEADS_DIR,
+                heads.Head(job=name, folder="INBOX", last_run=WHEN.isoformat()),
+            )
         return tmp_path
 
     @staticmethod
