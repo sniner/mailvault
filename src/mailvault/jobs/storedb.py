@@ -179,7 +179,7 @@ def create_db(
     """
     if db_path.exists() and not force:
         raise JobError(f"{db_path}: already exists, use --force to replace it")
-    store = cas.ContentAddressedStorage(store_path, suffix=".eml")
+    store = cas.mail_store(store_path)
     result = RebuildResult()
     tmp_path = db_path.with_name(db_path.name + "._tmp_")
     tmp_path.unlink(missing_ok=True)
@@ -240,7 +240,7 @@ def refresh_db(store_path: pathlib.Path, db_path: pathlib.Path) -> RefreshResult
         result.messages = create_db(store_path, db_path, force=True).messages
         return result
 
-    store = cas.ContentAddressedStorage(store_path, suffix=".eml")
+    store = cas.mail_store(store_path)
     log_root = store_path / metalog.DEFAULT_LOG_DIR
     try:
         with metadb.MetaDatabase(path=db_path) as db:

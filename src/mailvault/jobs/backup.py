@@ -349,7 +349,7 @@ def backup(
     """
     migrate_archive(store_path)
     with session.open_mailbox(job) as mb:
-        store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
+        store = cas.mail_store(store_path, compress=compress)
         _backup_to_log(mb, store, job, store_path, incremental=incremental)
     if index_db:
         _refresh_query_db(store_path)

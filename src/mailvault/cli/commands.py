@@ -338,7 +338,7 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
     filed in two folders is one entry the log names twice. Said in words for
     that reason -- two bare numbers that do not match invite the wrong worry.
     """
-    store = cas.ContentAddressedStorage(source, suffix=".eml")
+    store = cas.mail_store(source)
 
     def ids(paths: list[pathlib.Path]) -> list[str]:
         """The message ids of entries -- what `archive export` and the log take."""
@@ -459,7 +459,7 @@ def export_entries(
     from, so it is also the way to hand a message to another tool without the
     archive having an opinion about it.
     """
-    store = cas.ContentAddressedStorage(source, suffix=".eml")
+    store = cas.mail_store(source)
     paths = [_entry_path(store, one) for one in wanted]
 
     if output is None:
@@ -506,23 +506,19 @@ def run_archive(args: argparse.Namespace) -> int:
             print(where, addr)
     elif cmd == "import":
         source = _external(args.source, args.docuware)
-        destination = cas.ContentAddressedStorage(
-            archive,
-            suffix=".eml",
-            compress=args.compress,
-        )
+        destination = cas.mail_store(archive, compress=args.compress)
         return report_import(
             args.source,
             archive,
             source.archive_to_cas(destination, move=args.move, dry_run=args.dry_run),
         )
     elif cmd == "compress":
-        store = cas.ContentAddressedStorage(archive, suffix=".eml")
+        store = cas.mail_store(archive)
         return report_conversion(
             archive, store.compress_all(), "compressed", "already compressed"
         )
     elif cmd == "decompress":
-        store = cas.ContentAddressedStorage(archive, suffix=".eml")
+        store = cas.mail_store(archive)
         return report_conversion(
             archive, store.decompress_all(), "decompressed", "already plain"
         )

@@ -18,7 +18,7 @@ WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
 
 def _archive(root: pathlib.Path, messages: int = 3, logged: int | None = None):
     """Build an archive with `messages` entries, `logged` of them in the log."""
-    store = cas.ContentAddressedStorage(root, suffix=".eml")
+    store = cas.mail_store(root)
     ids = [
         store.add(f"Message-Id: <{n}@example.com>\r\n\r\nbody {n}\r\n".encode())[1]
         for n in range(messages)
@@ -126,7 +126,13 @@ class TestWhatItFinds:
 
 
 class TestWhatItLeavesAlone:
-    def test_the_archives_own_files_beside_the_store(self, tmp_path):
+    def test_the_messages_live_under_mail_and_the_walk_stays_there(self, tmp_path):
+        """The store has its own directory, so the walk needs no exceptions.
+
+        Everything beside it -- the metadata log, the archive's own files,
+        whatever its owner put there -- is simply not under the walk any more,
+        where it used to have to be stepped around.
+        """
         _archive(tmp_path)
         (tmp_path / "state.json").write_text("{}", encoding="utf-8")
         (tmp_path / "mailvault.toml").write_text("[global]\n", encoding="utf-8")
@@ -135,13 +141,10 @@ class TestWhatItLeavesAlone:
 
         result = check(tmp_path)
 
+        assert (tmp_path / cas.MAIL_DIR).is_dir()
+        assert (tmp_path / metalog.DEFAULT_LOG_DIR).is_dir()
         assert result.foreign == []
         assert result.sound
-
-    def test_the_metadata_log_is_not_walked_as_a_shard(self, tmp_path):
-        _archive(tmp_path)
-
-        assert check(tmp_path).foreign == []
 
     def test_a_transient_file_a_writer_may_still_hold(self, tmp_path):
         store, ids = _archive(tmp_path)

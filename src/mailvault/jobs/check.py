@@ -115,21 +115,18 @@ class CheckResult:
         return not self.findings
 
 
-def _store_files(root: pathlib.Path, log_dir: str) -> collections.abc.Iterator[pathlib.Path]:
-    """Yield the files lying in the store's shard directories.
+def _store_files(root: pathlib.Path) -> collections.abc.Iterator[pathlib.Path]:
+    """Yield every file below the message store.
 
-    Not the ones beside them. An archive keeps `state.json` and its
-    `mailvault.toml` in its root, its metadata log in `meta/`, and whatever else
-    its owner puts there -- an `index.db`, the `store.db.migrated` of a
-    migration. None of that is the message store's to judge, and reporting it
-    would bury the one finding that matters: a file in a *shard*, where only
-    entries belong.
+    `root` is the store's own directory, not the archive: since the messages
+    moved into `mail/`, nothing else lives under here, and the walk needs no
+    exceptions. It used to run over the archive root and had to step around
+    `meta/` -- and everything else beside the store, an archive's `state.json`,
+    its `mailvault.toml`, an `index.db`, the `store.db.migrated` of a migration,
+    was simply out of reach of any judgement.
     """
-    for path, dirs, files in os.walk(root):
+    for path, _dirs, files in os.walk(root):
         here = pathlib.Path(path)
-        if here == root:
-            dirs[:] = [d for d in dirs if d != log_dir]
-            continue
         for fname in files:
             yield here / fname
 
@@ -148,8 +145,6 @@ def _quarantined_origin(store: cas.ContentAddressedStorage, path: pathlib.Path) 
 
 def _classify(
     store: cas.ContentAddressedStorage,
-    root: pathlib.Path,
-    log_dir: str,
     result: CheckResult,
     step: str,
 ) -> dict[str, pathlib.Path]:
@@ -161,7 +156,7 @@ def _classify(
     """
     entries: dict[str, pathlib.Path] = {}
     seen = 0
-    for path in _store_files(root, log_dir):
+    for path in _store_files(store.root_dir):
         seen += 1
         if seen % WALK_PROGRESS_EVERY == 0:
             log.info("%s: %s file(s) seen", step, f"{seen:,}")
@@ -288,16 +283,14 @@ def check(
         )
 
     result = CheckResult()
-    store = cas.ContentAddressedStorage(store_path, suffix=".eml")
+    store = cas.mail_store(store_path)
     # Numbered because the second one is instant and the third takes half an
     # hour: someone watching a command they have not run before should be able
     # to tell how much of it is still ahead.
     steps = 3 if contents else 2
 
     log.info("%s: step 1 of %s: looking through the archive", store_path, steps)
-    entries = _classify(
-        store, store_path, metalog.DEFAULT_LOG_DIR, result, step=f"step 1 of {steps}"
-    )
+    entries = _classify(store, result, step=f"step 1 of {steps}")
     log.info("step 1 of %s: %s message(s) found", steps, f"{result.entries:,}")
 
     log.info("%s: step 2 of %s: reading the metadata log", store_path, steps)

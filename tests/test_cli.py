@@ -286,7 +286,7 @@ def test_archive_decompress_reports_what_it_could_not_convert(tmp_path, capsys):
     exactly the case worth noticing.
     """
     root = tmp_path / "cas"
-    store = cas.ContentAddressedStorage(root_dir=root, suffix=".eml", compress=True)
+    store = cas.mail_store(root, compress=True)
     _, _, good = store.add(b"a real message")
     _, _, broken = store.add(b"about to be corrupted")
     broken.write_bytes(b"this is not a zstd frame")
@@ -306,7 +306,7 @@ def test_archive_decompress_reports_what_it_could_not_convert(tmp_path, capsys):
 
 def test_archive_decompress_that_works_exits_zero(tmp_path, capsys):
     root = tmp_path / "cas"
-    store = cas.ContentAddressedStorage(root_dir=root, suffix=".eml", compress=True)
+    store = cas.mail_store(root, compress=True)
     store.add(b"a real message")
 
     exit_code = commands.run_archive(
@@ -326,7 +326,7 @@ def _check_args(archive, **overrides):
 
 
 def _archive_with_a_log(root, extra_store_ids=()):
-    store = cas.ContentAddressedStorage(root_dir=root, suffix=".eml")
+    store = cas.mail_store(root)
     _status, store_id, _path = store.add(b"a real message")
     writer = metalog.LogWriter(root / metalog.DEFAULT_LOG_DIR)
     for known in (store_id, *extra_store_ids):
@@ -391,7 +391,7 @@ class TestExport:
 
     @staticmethod
     def _archive(tmp_path, compress=False):
-        store = cas.ContentAddressedStorage(root_dir=tmp_path, suffix=".eml", compress=compress)
+        store = cas.mail_store(tmp_path, compress=compress)
         _status, store_id, path = store.add(b"From: a@b\r\nSubject: hello\r\n\r\nbody")
         return store_id, path
 

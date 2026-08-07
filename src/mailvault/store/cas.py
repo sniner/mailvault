@@ -64,6 +64,14 @@ _TEMP_ATTEMPTS = 100
 # is a few kilobytes, the cost of being wrong is another writer's entry.
 TRANSIENT_MIN_AGE = 24 * 60 * 60
 
+# Where an archive keeps its messages. Its own directory rather than the
+# archive root, because the root is what somebody standing in the archive sees:
+# 256 shard directories there bury the handful of files that are worth looking
+# at. It also gives the root back to the archive -- while the store claimed it,
+# a stray file lying there was nobody's to judge, and `archive check` had to
+# pass over it in silence.
+MAIL_DIR = "mail"
+
 
 def is_hashval(value: str) -> bool:
     """True when `value` has the shape of a name entries are filed under.
@@ -575,3 +583,13 @@ class ContentAddressedStorage:
                 entry = pathlib.Path(path, fname)
                 if self.hashval_of(entry) is not None:
                     yield entry
+
+
+def mail_store(archive: pathlib.Path, compress: bool = False) -> ContentAddressedStorage:
+    """Open the message store of `archive`.
+
+    Every command that reads or writes messages comes through here, so where
+    the store lies is decided once. It used to be composed at a dozen call
+    sites, which is a layout written down a dozen times.
+    """
+    return ContentAddressedStorage(archive / MAIL_DIR, suffix=".eml", compress=compress)

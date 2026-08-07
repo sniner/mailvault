@@ -654,3 +654,36 @@ def test_cas_conversion_failure_is_reported_not_swallowed(tmp_path):
     assert result.failed == [broken]
     assert broken.exists(), "a file that could not be converted is left as it is"
     assert store.read(good.with_suffix("")) == b"a real entry"
+
+
+class TestMailStore:
+    """Where an archive keeps its messages, decided in one place.
+
+    The root of an archive is what somebody standing in it sees, and 256 shard
+    directories there bury the handful of files worth looking at. `mail_store`
+    is the only thing that knows where they went, so the layout is written down
+    once instead of at every call site that opens the store.
+    """
+
+    def test_the_entries_land_under_mail(self, tmp_path):
+        store = cas.mail_store(tmp_path)
+
+        _status, _store_id, path = store.add(b"a message")
+
+        assert path.is_relative_to(tmp_path / cas.MAIL_DIR)
+        assert store.root_dir == tmp_path / cas.MAIL_DIR
+
+    def test_the_archive_root_keeps_only_that_one_directory(self, tmp_path):
+        cas.mail_store(tmp_path).add(b"a message")
+
+        assert [p.name for p in tmp_path.iterdir()] == [cas.MAIL_DIR]
+
+    def test_it_is_the_message_store_and_says_so_in_the_names(self, tmp_path):
+        _status, _store_id, path = cas.mail_store(tmp_path).add(b"a message")
+
+        assert path.suffix == ".eml"
+
+    def test_compression_is_passed_through(self, tmp_path):
+        _status, _store_id, path = cas.mail_store(tmp_path, compress=True).add(b"a message")
+
+        assert path.suffix == ".zst"

@@ -378,7 +378,7 @@ class TestCatchUp:
     @staticmethod
     def _archive_with(tmp_path, *store_ids: str) -> None:
         """Put messages in the store and record them in the log, as a backup would."""
-        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        store = cas.mail_store(tmp_path)
         writer = metalog.LogWriter(tmp_path / "meta")
         for store_id in store_ids:
             body = DUMMY_EML.replace(b"<test@example.com>", f"<{store_id}@x>".encode())
@@ -714,7 +714,7 @@ class TestStoreMessage:
 
     @staticmethod
     def _store(tmp_path):
-        return cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        return cas.mail_store(tmp_path)
 
     def test_metadata_failure_holds_and_is_not_deletable(self, tmp_path):
         result = base.BackupResult()
@@ -1093,7 +1093,7 @@ class TestRebuildWithLog:
 
     @staticmethod
     def _archive_with_log(tmp_path, places):
-        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        store = cas.mail_store(tmp_path)
         _status, store_id, _path = store.add(DUMMY_EML)
         writer = metalog.LogWriter(tmp_path / "meta")
         for mailbox, folders in places:
@@ -1154,7 +1154,7 @@ class TestRebuildWithLog:
 
     def test_an_existing_database_is_refused(self, tmp_path):
         """ "create" creates; filling an existing file would make it an accumulation."""
-        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        store = cas.mail_store(tmp_path)
         store.add(DUMMY_EML)
         target = tmp_path / "out.db"
         jobs.create_db(tmp_path, target)
@@ -1163,7 +1163,7 @@ class TestRebuildWithLog:
             jobs.create_db(tmp_path, target)
 
     def test_force_replaces_rather_than_adds(self, tmp_path):
-        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        store = cas.mail_store(tmp_path)
         store.add(DUMMY_EML)
         target = tmp_path / "out.db"
         jobs.create_db(tmp_path, target)
@@ -1176,7 +1176,7 @@ class TestRebuildWithLog:
             assert "stale" not in db.store_id_map()
 
     def test_an_interrupted_build_leaves_the_previous_database_alone(self, tmp_path):
-        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        store = cas.mail_store(tmp_path)
         store.add(DUMMY_EML)
         target = tmp_path / "out.db"
         jobs.create_db(tmp_path, target)
@@ -1190,7 +1190,7 @@ class TestRebuildWithLog:
         assert not (tmp_path / "out.db._tmp_").exists()
 
     def test_rebuild_without_a_log_reports_no_files(self, tmp_path):
-        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        store = cas.mail_store(tmp_path)
         store.add(DUMMY_EML)
 
         result = jobs.create_db(tmp_path, tmp_path / "out.db")
@@ -1217,7 +1217,7 @@ def _eml(message_id: str, subject: str = "Subject") -> bytes:
 
 def _archive_message(store_path, job_name: str, folder: str, msg: bytes) -> None:
     """Put a message into the archive the way a successful backup would."""
-    store = cas.ContentAddressedStorage(store_path, suffix=".eml")
+    store = cas.mail_store(store_path)
     _status, store_id, _path = store.add(msg)
     writer = metalog.LogWriter(store_path / metalog.DEFAULT_LOG_DIR)
     writer.add(job_name, [folder], store_id)
@@ -1282,7 +1282,7 @@ class TestVerify:
         # Only the missing message is downloaded.
         client.fetch_message.assert_called_once_with("id-b", "INBOX")
 
-        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        store = cas.mail_store(tmp_path)
         assert len(list(store.walk())) == 2
         # The restored message reached the log too, not just the archive.
         places = places_from_log(tmp_path / metalog.DEFAULT_LOG_DIR)
@@ -1420,7 +1420,7 @@ class TestFolderList:
 class TestUpdateDbFromArchive:
     def test_rebuilds_db(self, tmp_path):
         # Create a CAS with a message
-        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        store = cas.mail_store(tmp_path)
         store.add(DUMMY_EML)
 
         jobs.create_db(tmp_path, tmp_path / "out.db", mailbox="test")
@@ -1430,7 +1430,7 @@ class TestUpdateDbFromArchive:
             assert len(rows) == 1
 
     def test_rebuilds_db_without_mailbox(self, tmp_path):
-        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        store = cas.mail_store(tmp_path)
         store.add(DUMMY_EML)
 
         jobs.create_db(tmp_path, tmp_path / "out.db")

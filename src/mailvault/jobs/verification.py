@@ -65,7 +65,7 @@ def verify(
         len(places),
     )
     with session.open_mailbox(job) as mb:
-        store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
+        store = cas.mail_store(store_path, compress=compress)
         folders = job.folders if job.folders else list(mb.folders())
         for folder in folders:
             try:
