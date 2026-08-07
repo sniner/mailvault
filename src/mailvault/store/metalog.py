@@ -265,8 +265,17 @@ class LogWriter:
         An empty `folders` records the message as seen in the mailbox without a
         known folder, rather than dropping it: knowing less is not the same as
         knowing nothing.
+
+        A name given twice counts once. Callers assemble the list from more than
+        one source -- the IMAP backend adds the folder it is reading to the
+        labels the server reported -- and the same place named twice would file
+        the message twice in one file.
         """
-        names: list[str | None] = [as_text(f) for f in folders]
+        names: list[str | None] = []
+        for folder in folders:
+            name = as_text(folder)
+            if name not in names:
+                names.append(name)
         for name in names or [None]:
             self._places.setdefault((mailbox, name), []).append(store_id)
 

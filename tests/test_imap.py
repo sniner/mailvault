@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import imaplib
 import logging
+import pathlib
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, call, patch
@@ -12,7 +13,7 @@ import pytest
 
 from mailvault import conf
 from mailvault.backend import imap
-from mailvault.store import cas
+from mailvault.store import cas, metalog
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -839,17 +840,16 @@ class TestCollectMetadata:
         assert md.store_id == "hash123"
         assert md.folders == ["INBOX"]
 
-    def test_gmail_reports_its_own_folders_only(self):
-        """The IMAP folder name is a localised view of what X-GM-LABELS already
-        says, so taking both would record one place twice."""
+    def test_gmail_labels_and_the_folder_being_read(self):
+        """Both, because X-GM-LABELS answers with everything *except* the folder
+        one is standing in -- so the labels alone are never the whole location."""
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
         conn.get_gmail_labels.return_value = {1: [b"\\Important", b"Work"]}
         client = _make_client(conn=conn)
 
         md = client._collect_metadata("INBOX", 1, "hash123")
 
-        assert md.folders == [b"\\Important", b"Work"]
-        assert "INBOX" not in md.folders
+        assert md.folders == [b"\\Important", b"Work", "INBOX"]
 
     def test_gmail_localised_pseudo_folder_is_not_recorded(self):
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
@@ -858,17 +858,35 @@ class TestCollectMetadata:
 
         md = client._collect_metadata("[Google Mail]/Sent", 1, "hash123")
 
-        assert md.folders == [b"\\Sent"]
+        assert md.folders == [b"\\Sent", "[Google Mail]/Sent"]
 
-    def test_gmail_message_without_labels_lands_in_all_mail(self):
-        """A message filed nowhere else is in All Mail, which is a place too."""
+    def test_the_folder_being_read_is_always_among_the_places(self):
+        """Gmail leaves out the label of the folder one is standing in.
+
+        Measured against a live account: every message in INBOX reports no label
+        at all, while the same messages fetched from All Mail report `\\Inbox`.
+        Without adding it back, backing up one Gmail folder would record every
+        message as being somewhere else -- or, with no labels at all, nowhere.
+        """
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
         conn.get_gmail_labels.return_value = {}
         client = _make_client(conn=conn)
 
         md = client._collect_metadata("[Google Mail]/Alle Nachrichten", 1, "hash123")
 
-        assert md.folders == [imap.GMAIL_ALL_MAIL]
+        assert md.folders == ["[Google Mail]/Alle Nachrichten"]
+
+    def test_a_label_reported_twice_is_one_place(self):
+        """Should Gmail ever report the folder's own label, the union holds."""
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
+        conn.get_gmail_labels.return_value = {1: [b"Sales"]}
+        client = _make_client(conn=conn)
+        md = client._collect_metadata("Sales", 1, "hash123")
+
+        writer = metalog.LogWriter(pathlib.Path("/nonexistent"), pathlib.Path("/nonexistent"))
+        writer.add("job", md.folders, "hash123")
+
+        assert writer.places == 1
 
 
 # ---------------------------------------------------------------------------
