@@ -299,7 +299,8 @@ def test_archive_decompress_reports_what_it_could_not_convert(tmp_path, capsys):
     assert exit_code == 1
     out = capsys.readouterr().out
     assert "1 files decompressed" in out
-    assert str(broken) in out
+    assert str(broken.relative_to(root)) in out, "named as it reads inside the archive"
+    assert str(root) not in out, "the archive is named once, not on every line"
     assert "1 file(s) failed" in out
     assert store.read(good.with_suffix("")) == b"a real message"
     assert broken.exists(), "what could not be converted is left as it is"

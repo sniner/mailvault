@@ -96,6 +96,13 @@
   elsewhere too -- a Gmail message filed under three labels lives in three files -- and then the
   loss of one of its places is completely silent
 
+- **The archive is named once, at the start of a run, and nowhere else.** Every line after it is
+  about that archive, and repeating the path on each of them buried the statement behind it -- over
+  a network share the prefix was routinely longer than what it prefixed. A file inside the archive
+  is now named as it reads *inside* it, `meta/a1/a1b2….jsonl` rather than the whole path; one that
+  lies elsewhere, as `archive import` reads from, keeps its full path, because shortening it
+  against an archive it has nothing to do with would say the wrong thing about where it is
+
 ### Breaking changes
 
 - **No command takes an archive as a positional argument any more.** The archive is the directory

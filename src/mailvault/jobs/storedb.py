@@ -215,7 +215,7 @@ def _build_db(
                     if mb_id:
                         db.assign_message_to_mailbox(msg_id, mb_id)
                     result.messages += 1
-            log.info("%s: %s message(s) read", store_path, result.messages)
+            log.info("%s message(s) read", result.messages)
 
         result.replay = _replay_metalog(db, log_root)
         # Prime the bookkeeping so a later refresh reads only files added since.

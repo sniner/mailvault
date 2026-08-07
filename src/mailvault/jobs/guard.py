@@ -68,7 +68,7 @@ def check_jobs(
         return
     known = known_mailboxes(store_path)
     if not known:
-        log.debug("%s: no mailboxes recorded yet, every job may write here", store_path)
+        log.debug("no mailboxes recorded yet, every job may write here")
         return
 
     unknown = sorted({job.name for job in jobs} - known)

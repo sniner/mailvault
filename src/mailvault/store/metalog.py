@@ -573,7 +573,7 @@ def compact(root: pathlib.Path, heads_root: pathlib.Path) -> CompactResult:
 
     # Verify the consolidated files landed before removing anything.
     if not all(verify_file(path) for path in written):
-        log.error("%s: consolidated files did not verify, originals left in place", root)
+        log.error("consolidated files did not verify, originals left in place")
         result.verified = False
         result.files_after = len(log_files(root))
         return result

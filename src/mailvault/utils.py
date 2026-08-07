@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections.abc
+import pathlib
 import sys
 from typing import Any
 
@@ -45,3 +46,21 @@ def batched(
     """
     for batch in _batched(items, n):
         yield list(batch)
+
+
+def under(root: pathlib.Path, path: pathlib.Path) -> str:
+    """A path as it reads *inside* `root`: what lies below it, nothing more.
+
+    Reports and log lines are about one archive, named once at the start of a
+    run, and repeating its path on every line buries the statement behind it --
+    over a network share the prefix is routinely longer than what it prefixes.
+
+    A path that does not lie below `root` is returned whole. That is not a
+    failure: `archive import` reads from somewhere else entirely, and shortening
+    such a path against an archive it has nothing to do with would be a lie
+    about where the file is.
+    """
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)

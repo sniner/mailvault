@@ -240,7 +240,12 @@ def import_state_file(store_path: pathlib.Path) -> int:
             imported += 1
 
     path.unlink()
-    log.info("%s: %s place(s) moved into %s", path, f"{imported:,}", heads.DEFAULT_HEADS_DIR)
+    log.info(
+        "%s: %s place(s) moved into %s",
+        path.name,
+        f"{imported:,}",
+        heads.DEFAULT_HEADS_DIR,
+    )
     return imported
 
 
@@ -301,7 +306,7 @@ def move_shards_into_mail(store_path: pathlib.Path) -> int:
         _merge_into(shard, destination)
         moved += 1
     if moved:
-        log.info("%s: %s shard(s) moved into %s", store_path, f"{moved:,}", cas.MAIL_DIR)
+        log.info("%s shard(s) moved into %s", f"{moved:,}", cas.MAIL_DIR)
     return moved
 
 
@@ -337,9 +342,8 @@ def _migrate_database(store_path: pathlib.Path) -> MigrationResult:
     # writing the log can take a minute on a large archive, and without this the
     # run looks stuck between the job starting and the "migrated" line below.
     log.info(
-        "%s: migrating an archive from an earlier version onto the log -- "
-        "this happens once and may take a moment",
-        store_path,
+        "migrating an archive from an earlier version onto the log -- "
+        "this happens once and may take a moment"
     )
 
     log_root = store_path / metalog.DEFAULT_LOG_DIR
@@ -355,15 +359,14 @@ def _migrate_database(store_path: pathlib.Path) -> MigrationResult:
     # named after their own content, so this catches a write that did not land.
     result.verified = all(metalog.verify_file(path) for path in written)
     if not result.verified:
-        log.error("%s: written log files did not verify, database left alone", log_root)
+        log.error("written log files did not verify, database left alone")
         return result
 
     target = legacy.with_name(legacy.name + MIGRATED_SUFFIX)
     legacy.replace(target)
     result.renamed_to = target
     log.info(
-        "%s: migrated -- %s message(s) into %s place(s), %s snapshot(s); %s is no longer used",
-        store_path,
+        "migrated -- %s message(s) into %s place(s), %s snapshot(s); %s is no longer used",
         result.messages,
         result.places,
         result.snapshots,
@@ -421,9 +424,9 @@ def migrate_archive(store_path: pathlib.Path) -> MigrationResult:
         store_path / metalog.DEFAULT_LOG_DIR, store_path / heads.DEFAULT_HEADS_DIR
     )
     if not result.consolidated.verified:
-        log.error("%s: the log did not consolidate, the archive is not marked", store_path)
+        log.error("the log did not consolidate, the archive is not marked")
         return result
 
     marker.write(store_path)
-    log.info("%s: %s", store_path, marker.describe(marker.CURRENT_FORMAT))
+    log.info("%s", marker.describe(marker.CURRENT_FORMAT))
     return result

@@ -12,7 +12,7 @@ import logging
 import pathlib
 import sys
 
-from mailvault import conf, importer, jobs
+from mailvault import conf, importer, jobs, utils
 from mailvault.backend import base
 from mailvault.jobs import guard
 from mailvault.store import cas, heads, marker, metalog
@@ -144,7 +144,7 @@ def run_mailbox(args: argparse.Namespace) -> int:
         if args.config is not None or path.exists():
             raise
         raise conf.ConfigError(
-            f"{archive}: no {DEFAULT_CONFIG_NAME} here -- an archive carries its own"
+            f"no {DEFAULT_CONFIG_NAME} here -- an archive carries its own"
             f" configuration. Stand in the archive, name it with --archive, or name a"
             f" configuration with --config"
         ) from None
@@ -210,48 +210,44 @@ def report_migration(source: pathlib.Path, result: jobs.MigrationResult) -> None
     to do" from "that part did not run".
     """
     if result.generation == marker.CURRENT_FORMAT:
-        print(f"{source}: already {marker.describe(marker.CURRENT_FORMAT)}, nothing to do")
+        print(f"already {marker.describe(marker.CURRENT_FORMAT)}, nothing to do")
         return
 
-    print(
-        f"{source}: {result.resume_points:,} resume point(s) moved into"
-        f" {heads.DEFAULT_HEADS_DIR}/"
-    )
+    print(f"{result.resume_points:,} resume point(s) moved into {heads.DEFAULT_HEADS_DIR}/")
     if not result.needed:
-        print(f"{source}: no metadata database, nothing to move out of one")
+        print("no metadata database, nothing to move out of one")
         _report_rest(source, result)
         return
     if not result.verified:
-        print(f"{source}: the written log files did not verify, database left alone")
+        print("the written log files did not verify, database left alone")
         return
     print(
-        f"{source}: {result.messages:,} message(s) moved into "
-        f"{result.places:,} mailbox/folder place(s)"
+        f"{result.messages:,} message(s) moved into {result.places:,} mailbox/folder place(s)"
     )
     if result.snapshots:
         print(
-            f"{source}: {result.snapshots:,} resume timestamp(s) taken from the database"
+            f"{result.snapshots:,} resume timestamp(s) taken from the database"
             f" -- as a record of when, never as a point to carry on from"
         )
     if result.placeless:
         print(
-            f"{source}: {result.placeless:,} of them recorded without a folder -- the old "
+            f"{result.placeless:,} of them recorded without a folder -- the old "
             f"database did not store which folder of which mailbox"
         )
     if result.undecidable:
         print(
-            f"{source}: {result.undecidable:,} folder name(s) fit more than one mailbox "
+            f"{result.undecidable:,} folder name(s) fit more than one mailbox "
             f"and were left out rather than guessed"
         )
     if result.renamed_to is not None:
-        print(f"{source}: the database is now {result.renamed_to.name} and is no longer used")
-        print(f"{source}: delete it once you are satisfied with the archive")
+        print(f"the database is now {result.renamed_to.name} and is no longer used")
+        print("delete it once you are satisfied with the archive")
     _report_rest(source, result)
 
 
 def _report_rest(source: pathlib.Path, result: jobs.MigrationResult) -> None:
     """The steps after the two older formats gave up what they held."""
-    print(f"{source}: {result.shards_moved:,} shard(s) moved into {cas.MAIL_DIR}/")
+    print(f"{result.shards_moved:,} shard(s) moved into {cas.MAIL_DIR}/")
     if result.consolidated is not None:
         report_compact(source, result.consolidated)
     _report_generation(source, result)
@@ -261,11 +257,11 @@ def _report_generation(source: pathlib.Path, result: jobs.MigrationResult) -> No
     """Say what the archive says about itself now, or why it says nothing yet."""
     now = marker.read(source)
     if now == marker.CURRENT_FORMAT:
-        print(f"{source}: {marker.describe(now)}")
+        print(f"{marker.describe(now)}")
     else:
         print(
-            f"{source}: NOT marked -- something above did not finish, so the next"
-            f" run picks the migration up again"
+            "NOT marked -- something above did not finish, so the next"
+            " run picks the migration up again"
         )
 
 
@@ -276,44 +272,41 @@ def report_create_db(
 ) -> None:
     """Say what went into the database, and name what could not."""
     replay = result.replay
-    print(f"{source}: {result.messages:,} message(s) read from the archive")
+    print(f"{result.messages:,} message(s) read from the archive")
     if replay.files:
         print(
-            f"{source}: metadata log: {replay.files:,} file(s), "
+            f"metadata log: {replay.files:,} file(s), "
             f"{replay.applied:,} of {replay.entries:,} location(s) applied"
         )
         if replay.unknown:
             print(
-                f"{source}: {replay.unknown:,} log entry/entries name messages that are "
+                f"{replay.unknown:,} log entry/entries name messages that are "
                 f"not in the archive, ignored"
             )
     else:
-        print(f"{source}: no metadata log found, mailbox and folder are NOT in the database")
+        print("no metadata log found, mailbox and folder are NOT in the database")
     print(f"{target}: written -- a snapshot, stale from the next backup onwards")
 
 
 def report_compact(source: pathlib.Path, result: metalog.CompactResult) -> None:
     """Say how much the log shrank and how many duplicate entries went."""
     if result.files_before == 0:
-        print(f"{source}: no metadata log to compact")
+        print("no metadata log to compact")
         return
     if not result.verified:
-        print(f"{source}: consolidated files did not verify, nothing was removed")
+        print("consolidated files did not verify, nothing was removed")
         return
     print(
-        f"{source}: {result.files_before:,} log file(s) -> {result.files_after:,} "
+        f"{result.files_before:,} log file(s) -> {result.files_after:,} "
         f"across {result.places:,} place(s)"
     )
     dropped = result.entries_before - result.entries_after
     if dropped:
-        print(f"{source}: {dropped:,} duplicate observation(s) dropped")
+        print(f"{dropped:,} duplicate observation(s) dropped")
     if result.transient_removed:
         # Said out loud rather than swept up quietly: each one is a write that
         # was interrupted, and that is worth knowing about.
-        print(
-            f"{source}: {result.transient_removed:,} leftover(s) of an interrupted"
-            " write removed"
-        )
+        print(f"{result.transient_removed:,} leftover(s) of an interrupted write removed")
 
 
 # How many of a kind a report names before it stops listing them. A check on a
@@ -322,7 +315,7 @@ def report_compact(source: pathlib.Path, result: metalog.CompactResult) -> None:
 REPORT_LIMIT = 20
 
 
-def _report_items(source: pathlib.Path, finding: str, items: list[str]) -> None:
+def _report_items(finding: str, items: list[str]) -> None:
     """Print a finding's count and the first few of whatever it found.
 
     What each line names depends on what the finding is about. A message is
@@ -333,7 +326,7 @@ def _report_items(source: pathlib.Path, finding: str, items: list[str]) -> None:
     """
     if not items:
         return
-    print(f"{source}: {len(items):,} {finding}")
+    print(f"{len(items):,} {finding}")
     for item in items[:REPORT_LIMIT]:
         print(f"  {item}")
     if len(items) > REPORT_LIMIT:
@@ -355,10 +348,12 @@ def report_import(
     total = result.stored + result.present
     verb = "would be imported" if result.dry_run else "imported"
     print(
-        f"{source}: {total:,} message(s) read -- {result.stored:,} {verb},"
+        f"{total:,} message(s) read -- {result.stored:,} {verb},"
         f" {result.present:,} already in {destination}"
     )
-    _report_items(source, "message(s) could not be read", [str(p) for p in result.failed])
+    _report_items(
+        "message(s) could not be read", [utils.under(source, p) for p in result.failed]
+    )
     return 1 if result.failed else 0
 
 
@@ -383,65 +378,55 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
         return [store.hashval_of(path) or str(path) for path in paths]
 
     print(
-        f"{source}: {result.entries:,} message(s) stored,"
+        f"{result.entries:,} message(s) stored,"
         f" filed in {result.observations:,} place(s) by {result.log_files:,} log file(s)"
     )
     _report_items(
-        source,
         "message(s) referenced in the log are missing",
         [f"{store_id}  {where}" for store_id, where in result.missing.items()],
     )
     _report_items(
-        source,
         "log file(s) are damaged -- the content does not match its checksum",
-        [str(path) for path in result.damaged_logs],
+        [utils.under(source, path) for path in result.damaged_logs],
     )
     _report_items(
-        source,
         "log file(s) the chain names are gone -- nothing records what they held",
         result.broken_chains,
     )
     _report_items(
-        source,
         "log file(s) no chain reaches -- they are still read, the chain is behind",
-        [str(path) for path in result.unchained],
+        [utils.under(source, path) for path in result.unchained],
     )
     _report_items(
-        source,
         "message(s) are damaged -- the content does not match its checksum",
         ids(result.corrupt),
     )
-    _report_items(source, "message(s) could not be read", ids(result.unreadable))
+    _report_items("message(s) could not be read", ids(result.unreadable))
     _report_items(
-        source,
         "file(s) in the archive are not messages",
-        [str(path) for path in result.foreign],
+        [utils.under(source, path) for path in result.foreign],
     )
     _report_items(
-        source,
         "message(s) are not referenced in any log file -- nothing records which folder"
         " they came from",
         ids(result.orphans),
     )
     if result.quarantined_before:
-        print(f"{source}: {result.quarantined_before:,} message(s) set aside by an earlier run")
+        print(f"{result.quarantined_before:,} message(s) set aside by an earlier run")
     if result.transient_removed:
-        print(
-            f"{source}: {result.transient_removed:,} leftover(s) of an interrupted"
-            " write removed"
-        )
+        print(f"{result.transient_removed:,} leftover(s) of an interrupted write removed")
     if result.quarantined:
         print(
-            f"{source}: {len(result.quarantined):,} damaged message(s) set aside -- they"
+            f"{len(result.quarantined):,} damaged message(s) set aside -- they"
             " count as missing now, fetch them with `verify --repair` or `backup --full`"
         )
     if not result.sound:
-        print(f"{source}: NOT sound -- {result.findings:,} finding(s) above")
+        print(f"NOT sound -- {result.findings:,} finding(s) above")
     elif result.contents_checked:
-        print(f"{source}: sound -- every message was read and matches its checksum")
+        print("sound -- every message was read and matches its checksum")
     else:
         print(
-            f"{source}: sound as far as this went -- the integrity check was skipped,"
+            "sound as far as this went -- the integrity check was skipped,"
             " so no damaged message could have been found"
         )
     return 0 if result.sound else 1
@@ -460,12 +445,12 @@ def report_conversion(
     not: the archive would look converted when it is not, and a script driving
     the command would never find out.
     """
-    print(f"{source}: {result.converted:,} files {done}, {result.skipped:,} {already}")
+    print(f"{result.converted:,} files {done}, {result.skipped:,} {already}")
     for path in result.failed:
-        print(f"{path}: could not be converted, left as it is")
+        print(f"{utils.under(source, path)}: could not be converted, left as it is")
     if not result.failed:
         return 0
-    print(f"{source}: {len(result.failed):,} file(s) failed, see the log for the reason")
+    print(f"{len(result.failed):,} file(s) failed, see the log for the reason")
     return 1
 
 
@@ -548,7 +533,7 @@ def run_archive(args: argparse.Namespace) -> int:
         return export_entries(archive, args.entry, args.output)
     elif cmd == "stats":
         count, size = _external(archive, args.docuware).stats()
-        print(f"{archive}: {count:,} emails, {_human_size(size)} total")
+        print(f"{count:,} emails, {_human_size(size)} total")
     elif cmd == "addresses":
         for where, addr in _external(archive, args.docuware).addresses():
             print(where, addr)

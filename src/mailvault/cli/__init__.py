@@ -326,7 +326,14 @@ def main() -> int:
         loglevel = logging.INFO
     setup_logger(loglevel=loglevel, logfile=args.log_file)
 
-    log.info("START")
+    # The archive is named once, here, and nowhere else. Every line after this
+    # is about it, and repeating the path on each of them buries the statement
+    # behind it -- over a network share the prefix is routinely longer than what
+    # it prefixes. `folders` is the one command that works on no archive at all.
+    if args.command == "folders":
+        log.info("START")
+    else:
+        log.info("START -- archive: %s", commands.archive_path(args))
     exit_code = 0
     try:
         if args.command in {"folders", "backup", "verify"}:

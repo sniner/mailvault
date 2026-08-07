@@ -347,11 +347,11 @@ def check(
     # to tell how much of it is still ahead.
     steps = 3 if contents else 2
 
-    log.info("%s: step 1 of %s: looking through the archive", store_path, steps)
+    log.info("step 1 of %s: looking through the archive", steps)
     entries = _classify(store, result, step=f"step 1 of {steps}")
     log.info("step 1 of %s: %s message(s) found", steps, f"{result.entries:,}")
 
-    log.info("%s: step 2 of %s: reading the metadata log", store_path, steps)
+    log.info("step 2 of %s: reading the metadata log", steps)
     chain: dict[str, metalog.LogFile] = {}
     places = _read_log(store_path / metalog.DEFAULT_LOG_DIR, result, chain)
     _walk_chains(store_path / heads.DEFAULT_HEADS_DIR, chain, result)
@@ -372,8 +372,7 @@ def check(
         # The count belongs in the announcement, not after it: this is the step
         # that takes half an hour, and how long is the first thing anyone asks.
         log.info(
-            "%s: step 3 of %s: integrity check on %s message(s) -- each one is read in full",
-            store_path,
+            "step 3 of %s: integrity check on %s message(s) -- each one is read in full",
             steps,
             f"{result.entries:,}",
         )
