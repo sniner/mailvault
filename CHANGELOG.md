@@ -51,12 +51,34 @@
   see it beforehand. `import` now also reports what it did on a real run, and exits non-zero when
   a source file could not be read
 
-- **`[global] destination`** names the archive a configuration belongs to, so
-  `mailvault --config private.toml backup` needs no path at all. Optional, and the command line
-  still wins where both name one -- that override is logged, being indistinguishable from having
-  reached for the wrong archive. A relative path is relative to the configuration file, not the
-  working directory, so it means the same archive from cron as from a shell; `~` and `${VAR}`
-  are expanded
+- **The configuration lives in the archive.** An archive's own `mailvault.toml` is what every
+  command reads, so a backup from inside it needs nothing at all: `cd /srv/archive/private &&
+  mailvault backup`. A configuration and an archive can no longer drift apart, because they are
+  the same directory -- and a backup of the archive now carries the recipe along with the mail
+  instead of saving the mail and losing the recipe. `--config FILE` still names one from
+  elsewhere; it then has to name the archive too, since reaching for a file somewhere else is
+  what somebody does who is *not* standing in the archive
+
+- **`--archive DIR`** is the other way to say which archive, and the only other way -- what
+  `git -C` is. It applies to every command, so `mailvault --archive /srv/archive/private archive
+  check` works from anywhere
+
+### Breaking changes
+
+- **No command takes an archive as a positional argument any more.** The archive is the directory
+  you are standing in, or `--archive DIR`. `mailvault backup ./backup` becomes
+  `mailvault --archive ./backup backup`, and `mailvault archive check ./backup` becomes
+  `mailvault --archive ./backup archive check`. `archive import` keeps its one positional, which
+  was never the archive: it is the foreign directory being read from
+
+- **`--config` is no longer required** by `folders`, `backup` and `verify`, and passing it to
+  `backup` or `verify` without `--archive` is now an error rather than a run into whichever
+  directory the shell happened to be in
+
+- **Move your configuration into the archive it describes**, as `mailvault.toml`. Nothing does
+  this for you and nothing looks for the old location, so a run without `--config` after
+  upgrading says which file it wanted and did not find. `archive check` knows the file as a
+  legitimate inhabitant and does not report it
 
 ### Changed
 

@@ -83,8 +83,64 @@ Wheels and pre-compiled Windows executables are also available on the
 * `mailvault archive ...` -- manage the local email archive (import, compress,
   statistics, build a database for querying, etc.)
 
-Global options (`--config`, `-v/--verbose`, `-q/--quiet`, `--log-file`,
-`--allow-exec`, `--job`, `--allow-new-mailbox`) are given **before** the command.
+Global options (`--archive`, `--config`, `-v/--verbose`, `-q/--quiet`,
+`--log-file`, `--allow-exec`, `--job`, `--allow-new-mailbox`) are given
+**before** the command.
+
+
+## Where the archive is, and which file describes it
+
+Every command works on one archive, and there are exactly two ways to say which:
+
+* the directory you are standing in, or
+* `--archive DIR` — what `git -C` is, and it does the same job
+
+The configuration is not a second thing to keep track of. **It lives in the
+archive**, as `mailvault.toml`, and that is where every command looks unless
+`--config FILE` names another one. So a backup from inside the archive needs
+nothing at all:
+
+```console
+$ cd /srv/archive/private && mailvault backup
+```
+
+and from anywhere else it needs one thing:
+
+```console
+$ mailvault --archive /srv/archive/private backup
+```
+
+This is the reason for it. A configuration that names its archive by path cannot
+be right on more than one machine: the same NAS is mounted somewhere else on the
+laptop than on the desktop, so no path in the file fits both. A configuration
+*inside* the archive has no distance to bridge — and a backup of the NAS now
+carries the recipe along with the mail, instead of saving the mail and losing the
+recipe.
+
+The file is called `mailvault.toml` and not `config.toml` because of the first
+case: the directory you happen to be standing in is a shared name space, and a
+`config.toml` lying in it belongs to whatever else lives there. Only the current
+directory is looked at, never the ones above it — otherwise you would eventually
+read a file you had not noticed, and such a file can name a command to run.
+
+`--config` from somewhere else does **not** fall back to the current directory:
+
+```console
+$ mailvault --config ~/private.toml backup
+ERROR -- /home/jd/private.toml: a configuration was named, but no archive -- name
+that too, with --archive
+```
+
+Reaching elsewhere for the configuration is what somebody does who is not
+standing in the archive, so the directory they happen to be in is the last thing
+that should decide where the mail goes.
+
+> [!NOTE]
+> The configuration is the one file in an archive that is edited by hand.
+> Everything else is either written once and never touched again or replaced
+> atomically. A `mailvault.toml` mangled by an editor over SMB costs you a run,
+> never a message — but it is worth knowing that it is the one file that can be
+> in a half-written state at all.
 
 
 ## Backing up mailboxes
@@ -100,7 +156,7 @@ A configuration file defines the accounts and options for the backup job
 First, you may want to get an overview of all available folders:
 
 ```console
-$ mailvault --config example.toml folders
+$ cd ./backup && mailvault folders
 example.org::Trash
 example.org::Archive
 example.org::Archive/2022
@@ -112,7 +168,7 @@ example.org::INBOX
 Then run the backup:
 
 ```console
-$ mailvault --config example.toml backup ./backup
+$ mailvault backup
 2024-08-15 10:05:52,275 INFO -- START
 2024-08-15 10:05:52,276 INFO -- Processing mailbox: example.org
 2024-08-15 10:05:52,527 INFO -- example.org::INBOX: found 3 messages
@@ -124,7 +180,7 @@ $ mailvault --config example.toml backup ./backup
 On subsequent runs, already archived messages are recognized and skipped:
 
 ```console
-$ mailvault --config example.toml backup ./backup
+$ mailvault backup
 2024-08-15 10:09:28,248 INFO -- START
 2024-08-15 10:09:28,250 INFO -- Processing mailbox: example.org
 2024-08-15 10:09:28,531 INFO -- example.org::INBOX: found 3 messages
@@ -136,31 +192,17 @@ $ mailvault --config example.toml backup ./backup
 Use `--compress` to store emails compressed with zstd. Use `--job NAME` to run
 only specific jobs from the configuration file.
 
-### Which archive a configuration belongs to
+### Whether a configuration and an archive belong together
 
-The configuration and the destination are two independent arguments, and nothing
-about `mailvault --config work.toml backup ~/mail/private` looks wrong until the
-first message has been written. Two things stand in the way of that pairing.
+Keeping the configuration in the archive removes most of this question: a file
+that lies in the archive can hardly belong to another one. It does not remove all
+of it, because `--config` can still name a file from anywhere.
 
-A configuration can name the archive it belongs to:
-
-```toml
-[global]
-destination = "/srv/archive/private"
-```
-
-`mailvault --config private.toml backup` is then enough. A relative path is
-taken relative to the configuration file rather than the working directory, so
-it means the same archive from cron as from a shell; `~` and `${VAR}` are
-expanded. The option is optional, and naming a destination on the command line
-still works and still wins -- for the one-off run into a scratch directory --
-but the override is logged rather than passed over in silence.
-
-Independently of that, `backup` and `verify` stop **before the first login** when
-a job has never written into the archive they were pointed at:
+So `backup` and `verify` stop **before the first login** when a job has never
+written into the archive they were pointed at:
 
 ```console
-$ mailvault --config work.toml backup ~/mail/private
+$ mailvault --archive ~/mail/private --config work.toml backup
 ERROR -- /Users/jd/mail/private: the archive holds gmail.com, posteo.de, and none of
 its jobs (work.example.com) has ever written here -- this looks like the wrong
 configuration for this archive. Check that the configuration and the archive belong
@@ -206,7 +248,7 @@ trash_folder = "[Gmail]/Trash"
 
 You have to supply the name because Gmail localises it: `[Gmail]/Papierkorb` on
 a German account, `[Google Mail]/…` on some older ones. Use
-`mailvault --config … folders` to see what yours is called.
+`mailvault folders` to see what yours is called.
 
 > [!WARNING]
 > `trash_folder` empties the folder **completely** — including messages you put
@@ -304,7 +346,7 @@ For those, `verify` compares the mailbox against the archive and reports what is
 missing:
 
 ```console
-$ mailvault --config example.toml verify ./backup
+$ mailvault verify
 example.org::INBOX: 77,592 on server, 43 not archived
 example.org: 43 message(s) missing, run again with --repair
 ```
@@ -315,7 +357,7 @@ takes minutes, not hours. With `--repair` the missing messages are downloaded
 and added to the archive:
 
 ```console
-$ mailvault --config example.toml verify --repair ./backup
+$ mailvault verify --repair
 example.org::INBOX: 77,592 on server, 43 not archived, 43 restored
 example.org: 43 of 43 message(s) restored
 ```
@@ -348,7 +390,7 @@ Either way the run says what it did, and `--dry-run` says what it would do
 without writing anything or removing a single source file:
 
 ```console
-$ mailvault archive import --dry-run ./my_mails ./backup
+$ mailvault --archive ./backup archive import --dry-run ./my_mails
 ./my_mails: 20,431 message(s) read -- 38 would be imported, 20,393 already in ./backup
 ```
 
@@ -366,8 +408,8 @@ Every report names a message by its id, and that id is what the commands take.
 `archive export` writes the message back out:
 
 ```console
-$ mailvault archive export ./backup 6f3ac1… | head -20
-$ mailvault archive export ./backup 6f3ac1… -o message.eml
+$ mailvault --archive ./backup archive export 6f3ac1… | head -20
+$ mailvault --archive ./backup archive export 6f3ac1… -o message.eml
 ```
 
 Exactly as it was stored. Whether it lies compressed, and where in the archive it
@@ -379,7 +421,7 @@ give `--output` a directory to get one file each.
 Show the number of emails and total size of an archive:
 
 ```console
-$ mailvault archive stats ./backup
+$ mailvault --archive ./backup archive stats
 ./backup: 1,234 emails, 567.8 MiB total
 ```
 
@@ -389,10 +431,10 @@ Retroactively compress all uncompressed files in an archive with zstd, or
 revert compressed files back to plain `.eml`:
 
 ```console
-$ mailvault archive compress ./backup
+$ mailvault --archive ./backup archive compress
 ./backup: 1,234 files compressed, 0 already compressed
 
-$ mailvault archive decompress ./backup
+$ mailvault --archive ./backup archive decompress
 ./backup: 1,234 files decompressed, 0 already plain
 ```
 
@@ -406,7 +448,7 @@ finds out about a conversion that only partly happened.
 List all sender and recipient addresses found in the archive:
 
 ```console
-$ mailvault archive addresses ./backup
+$ mailvault --archive ./backup archive addresses
 ```
 
 ### Querying an archive with SQL
@@ -414,7 +456,7 @@ $ mailvault archive addresses ./backup
 The archive itself holds no database. To run SQL against it, build one:
 
 ```console
-$ mailvault archive create-db ./backup ./backup.db
+$ mailvault --archive ./backup archive create-db ./backup.db
 ./backup: 130,997 message(s) read from the archive
 ./backup: metadata log: 60 file(s), 219,690 of 219,690 location(s) applied
 ./backup.db: written -- a snapshot, stale from the next backup onwards
@@ -440,7 +482,7 @@ than adding to it -- merging two runs into one file would give you neither
 snapshot:
 
 ```console
-$ mailvault archive create-db ./backup ./backup.db
+$ mailvault --archive ./backup archive create-db ./backup.db
 ./backup.db: already exists, use --force to replace it
 ```
 
@@ -461,7 +503,7 @@ archive. The next backup moves it out by itself, but you can also do it
 deliberately:
 
 ```console
-$ mailvault archive migrate ./backup
+$ mailvault --archive ./backup archive migrate
 ./backup: 130,887 message(s) moved into 59 mailbox/folder place(s)
 ./backup: 46 resume timestamp(s) moved into state.json
 ./backup: the database is now store.db.migrated and is no longer used
@@ -482,7 +524,7 @@ each run's file. Over months these add up, and everything that reads the log --
 back down:
 
 ```console
-$ mailvault archive compact ./backup
+$ mailvault --archive ./backup archive compact
 ./backup: 1,204 log file(s) -> 59 across 59 mailbox/folder place(s)
 ./backup: 41,388 duplicate observation(s) dropped
 ```
@@ -514,7 +556,7 @@ whether a *name* is there -- never whether the bytes behind it are still the one
 it was named for.
 
 ```console
-$ mailvault archive check ./backup
+$ mailvault --archive ./backup archive check
 ./backup: 130,997 message(s) stored, filed in 219,690 place(s) by 60 log file(s)
 ./backup: 3 message(s) referenced in the log are missing
   6f3ac1…  mail.example.org::INBOX
@@ -527,7 +569,7 @@ in two folders is one entry the log references twice.
 The last line is the verdict, and it says which kind of run it was:
 
 ```console
-$ mailvault archive check ./backup
+$ mailvault --archive ./backup archive check
 ./backup: 130,997 message(s) stored, filed in 219,690 place(s) by 60 log file(s)
 ./backup: sound -- every message was read and matches its checksum
 ```
@@ -578,11 +620,11 @@ The former `ib-mailbox` and `ib-archive` commands are now subcommands of a singl
 
 | Previously | Now |
 |------------|-----|
-| `ib-mailbox --config c.toml folders` | `mailvault --config c.toml folders` |
-| `ib-mailbox --config c.toml backup <dest>` | `mailvault --config c.toml backup <dest>` |
-| `ib-mailbox --config c.toml verify [--repair] <dest>` | `mailvault --config c.toml verify [--repair] <dest>` |
-| `ib-archive stats\|import\|addresses\|compress\|decompress <dir>` | `mailvault archive stats\|import\|addresses\|compress\|decompress <dir>` |
-| `ib-archive db-from-archive --mailbox NAME <dir>` | `mailvault archive create-db <dir> <database>` |
+| `ib-mailbox --config c.toml folders` | `mailvault folders`, from inside the archive |
+| `ib-mailbox --config c.toml backup <dest>` | `mailvault --archive <dest> backup` |
+| `ib-mailbox --config c.toml verify [--repair] <dest>` | `mailvault --archive <dest> verify [--repair]` |
+| `ib-archive stats\|import\|addresses\|compress\|decompress <dir>` | `mailvault --archive <dir> archive stats\|import\|addresses\|compress\|decompress` |
+| `ib-archive db-from-archive --mailbox NAME <dir>` | `mailvault --archive <dir> archive create-db <database>` |
 | `ib-copy --config c.toml copy [--idle]` | — removed, see below |
 
 The third tool, `ib-copy`, has no successor. It transferred mail between two IMAP
@@ -679,8 +721,11 @@ replaced MIME multipart delimiters.
 
 ## Configuration file
 
-`mailvault` reads its configuration from a TOML file. The file name is
-irrelevant -- the content is always parsed as TOML.
+`mailvault` reads its configuration from the archive's own `mailvault.toml`,
+or from the file `--config` names -- see [Where the archive is, and which file
+describes it](#where-the-archive-is-and-which-file-describes-it). For a file
+given with `--config` the name is irrelevant; the content is always parsed as
+TOML either way.
 
 ### Basic example
 
@@ -759,14 +804,13 @@ etc.) work the same as with IMAP. Three do not:
 ### Global options
 
 Some options apply to the whole run rather than to a single mailbox and are set
-in a `[global]` section: `compress`, `index_db`, `incremental`, and
-`destination`. They are marked *(global option)* in the tables below.
+in a `[global]` section: `compress`, `index_db` and `incremental`. They are
+marked *(global option)* in the tables below.
 
 ```toml
 [global]
 compress = true
 incremental = true   # the default; set to false to re-fetch every folder in full
-destination = "/srv/archive/private"   # optional, see above
 
 [[job]]
 name = "gmail.com"
@@ -775,7 +819,7 @@ server = "imap.gmail.com"
 ```
 
 For a one-off full run there is no need to touch the configuration:
-`mailvault backup --full <destination>` re-reads every folder of every selected
+`mailvault backup --full` re-reads every folder of every selected
 job, whatever `incremental` says. It is the one full read that trusts nothing:
 every message is downloaded and the content-addressed storage decides by hash
 what is new. Everywhere else -- after an upgrade, or when a server voids its own
@@ -843,7 +887,6 @@ with a warning.
 | `incremental` | `true` | Only download messages added since the last backup run (global option) |
 | `compress` | `false` | Compress stored emails with zstd (global option) |
 | `index_db` | `false` | Maintain a queryable `index.db` alongside the archive, refreshed after each backup (global option) |
-| `destination` | — | The archive this configuration belongs to, used when the command line names none; relative to the configuration file (global option, see [Which archive a configuration belongs to](#which-archive-a-configuration-belongs-to)) |
 
 
 ## Metadata
