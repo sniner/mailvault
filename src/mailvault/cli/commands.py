@@ -367,9 +367,17 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
     which of the two they got. The exit code says the same thing, but nobody
     reads an exit code they did not go looking for.
 
-    More places than messages is the normal case, not a discrepancy: a message
-    filed in two folders is one entry the log names twice. Said in words for
-    that reason -- two bare numbers that do not match invite the wrong worry.
+    The two message counts are here to be subtracted from each other: what lies
+    in the archive, and what the log accounts for. The difference is the orphans
+    listed further down, and seeing it as arithmetic is what makes that list
+    something other than a number to be alarmed by.
+
+    A third count used to stand between them -- log entries, one per message per
+    place, so a Gmail message under three labels counted three times. It is
+    gone. It was neither files nor messages nor folders, it was six figures wide
+    next to two-figure neighbours, and nothing a reader could decide followed
+    from it either way. A number that answers no question is not neutral: it
+    gets read as an answer to whichever question the reader had.
     """
     store = cas.mail_store(source)
 
@@ -378,8 +386,8 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
         return [store.hashval_of(path) or str(path) for path in paths]
 
     print(
-        f"{result.entries:,} message(s) stored,"
-        f" filed in {result.observations:,} place(s) by {result.log_files:,} log file(s)"
+        f"{result.entries:,} message(s) stored, {result.referenced:,} of them"
+        f" accounted for by {result.log_files:,} log file(s) in {result.places:,} place(s)"
     )
     _report_items(
         "message(s) referenced in the log are missing",
