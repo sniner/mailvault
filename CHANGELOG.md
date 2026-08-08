@@ -174,6 +174,12 @@
   place on, and given a header with no year it answers this year. A wrong date is worse than a
   missing one, because a missing one is visible
 
+- **The backup says why it is reading the whole archive.** With `--index-db` on and no `index.db`
+  yet, a backup that had nothing left to fetch went on to read every message there is -- twenty
+  minutes on a 131,000-message archive, announced by nothing but a number climbing in steps of
+  two thousand. It now says that there is no query database yet and that it is building one from
+  the archive, before it starts, and every line of the count says what it is counting for
+
 - **What the commands say about themselves is about the mail, not about the machinery.** `backup`
   offered to "back up mails to the local content-addressed archive", which names an
   implementation nobody using it has to know and leaves out what it actually does: add to the
