@@ -650,8 +650,8 @@ class TestArchiveInit:
     """What `git init` is: the directory becomes an archive, and says so."""
 
     @staticmethod
-    def _init_args(archive: pathlib.Path):
-        return argparse.Namespace(archive_command="init", archive=archive)
+    def _init_args(archive: pathlib.Path, directory: pathlib.Path | None = None):
+        return argparse.Namespace(archive_command="init", archive=archive, directory=directory)
 
     def test_it_makes_the_three_directories_the_mark_and_a_configuration(self, tmp_path):
         assert commands.run_archive(self._init_args(tmp_path)) == 0
@@ -681,6 +681,25 @@ class TestArchiveInit:
             commands.run_archive(self._init_args(tmp_path))
 
         assert not marker.is_archive(tmp_path)
+
+    def test_the_directory_is_an_argument_and_is_made(self, tmp_path):
+        """`git init some/where` does not ask for the directory to exist first."""
+        target = tmp_path / "new" / "archive"
+
+        assert commands.run_archive(self._init_args(tmp_path, directory=target)) == 0
+        assert marker.is_archive(target)
+        assert not marker.is_archive(tmp_path), "the argument wins over where you stand"
+
+    def test_without_an_argument_it_is_where_you_stand(self, tmp_path):
+        assert commands.run_archive(self._init_args(tmp_path)) == 0
+        assert marker.is_archive(tmp_path)
+
+    def test_a_file_in_the_way_is_reported_as_one(self, tmp_path):
+        target = tmp_path / "not-a-directory"
+        target.write_text("hello")
+
+        with pytest.raises(jobs.JobError, match="not a directory"):
+            commands.run_archive(self._init_args(tmp_path, directory=target))
 
 
 class TestExitCodes:

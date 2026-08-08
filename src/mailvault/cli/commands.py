@@ -83,9 +83,9 @@ def require_archive(archive: pathlib.Path) -> None:
     if marker.is_archive(archive):
         return
     raise jobs.JobError(
-        f"{archive}: not a mailvault archive -- no {marker.FORMAT_NAME} file."
-        f" `mailvault archive init` makes one here; an archive from before"
-        f" mailvault 0.10 is lifted by `mailvault archive migrate`"
+        f"{archive}: not a mailvault archive. Make one here with"
+        f" `mailvault archive init`. If it is an old mailvault archive,"
+        f" migrate it with `mailvault archive migrate`"
     )
 
 
@@ -646,7 +646,9 @@ def run_archive(args: argparse.Namespace) -> int:
         require_archive(archive)
 
     if cmd == "init":
-        return report_init(archive, jobs.init_archive(archive, DEFAULT_CONFIG_NAME))
+        # `git init [<directory>]`, and the same default: where you are standing.
+        target = args.directory if args.directory is not None else archive
+        return report_init(target, jobs.init_archive(target, DEFAULT_CONFIG_NAME))
     elif cmd == "export":
         return export_entries(archive, args.entry, args.output)
     elif cmd == "stats":

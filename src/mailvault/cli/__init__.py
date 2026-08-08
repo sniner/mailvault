@@ -177,16 +177,23 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
-    asub.add_parser(
+    a_init = asub.add_parser(
         "init",
-        help="Make this directory an archive",
+        help="Make a directory an archive",
         description=(
             "Make a directory into an archive: the three directories it is made"
             " of, the mark that says which layout they are written in, and a"
-            f" {commands.DEFAULT_CONFIG_NAME} to fill in. What `git init` is."
-            " Every other command works on an archive and refuses a directory"
-            " that is not one. An existing configuration is left alone."
+            f" {commands.DEFAULT_CONFIG_NAME} to fill in. What `git init` is,"
+            " down to taking the directory as an argument and making it if it is"
+            " not there. Every other command works on an archive and refuses a"
+            " directory that is not one. An existing configuration is left alone."
         ),
+    )
+    a_init.add_argument(
+        "directory",
+        nargs="?",
+        type=pathlib.Path,
+        help="Where to make the archive (default: --archive, or the one you are standing in)",
     )
 
     a_stats = asub.add_parser(

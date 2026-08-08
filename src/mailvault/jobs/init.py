@@ -71,19 +71,25 @@ def init_archive(path: pathlib.Path, config_name: str) -> InitResult:
     wrong directory. `archive migrate` is the answer to the first, `cd` to the
     second, and this cannot tell them apart, so it names both.
 
+    A directory that is not there yet is made, parents included -- `git init
+    some/where` does not ask for the directory to exist first either.
+
     Running it again on an archive is not an error: it reports what was already
     there. An existing configuration is never touched -- it holds credentials,
     and nothing here has any business replacing it.
     """
     result = InitResult()
+    if path.exists() and not path.is_dir():
+        raise JobError(f"{path}: not a directory")
     if marker.is_archive(path):
         log.info("%s: already an archive", path)
     elif path.exists() and any(path.iterdir()):
         raise JobError(
-            f"{path}: this directory holds something already and is not an archive."
-            f" If it is one from before mailvault 0.10, `mailvault archive migrate`"
-            f" lifts it; otherwise you are in the wrong directory"
+            f"{path}: there is already something here, and it is not a mailvault"
+            f" archive. If it is an old mailvault archive, migrate it with"
+            f" `mailvault archive migrate`. Otherwise you are in the wrong directory"
         )
+    path.mkdir(parents=True, exist_ok=True)
 
     for name in (cas.MAIL_DIR, metalog.DEFAULT_LOG_DIR, heads.DEFAULT_HEADS_DIR):
         directory = path / name
