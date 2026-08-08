@@ -113,6 +113,17 @@
 
 ### Breaking changes
 
+- **An archive is a directory with a `FORMAT` file in it, and `mailvault archive init` is what
+  makes one** -- what `git init` is, and answered the same way: a repository is a directory with
+  a `.git`, and nothing else counts. `init` lays out the archive and writes a `mailvault.toml`
+  to fill in; an existing configuration is never touched. Every other command asks first and
+  refuses a directory that is not an archive, naming both ways on: `init` for a new one,
+  `archive migrate` for one from before 0.10. Only those two accept an unmarked directory.
+  Before this, each command simply opened `<directory>/mail` and worked on what it found there,
+  which on an unmigrated archive is nothing at all -- `archive check` reported a healthy
+  131,000-message archive as a total loss, and `verify --repair` set about downloading the
+  mailbox a second time
+
 - **No command takes an archive as a positional argument any more.** The archive is the directory
   you are standing in, or `--archive DIR`. `mailvault backup ./backup` becomes
   `mailvault --archive ./backup backup`, and `mailvault archive check ./backup` becomes
@@ -137,8 +148,9 @@
   upgrading says which file it wanted and did not find. `archive check` knows the file as a
   legitimate inhabitant and does not report it
 
-- **The archive layout moved.** The migration is automatic on the next backup, or explicit with
-  `archive migrate`; nothing is deleted either way. **Upgrade every machine that writes into the
+- **The archive layout moved. Run `mailvault archive migrate` once per archive**, before anything
+  else -- every command refuses an archive that has not been lifted, and says so. Nothing is
+  deleted by the migration. **Upgrade every machine that writes into the
   archive before lifting it.** The `FORMAT` file protects this version from a *newer* archive; it
   cannot protect an archive from an *older* mailvault, which knows nothing about it. A 0.9.x run
   against a lifted archive finds no messages where it looks and no resume state, takes the archive

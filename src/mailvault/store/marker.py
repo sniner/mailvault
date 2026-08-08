@@ -120,6 +120,21 @@ def write(archive: pathlib.Path, generation: int = CURRENT_FORMAT) -> None:
     log.debug("%s: marked as %s", archive, describe(generation))
 
 
+def is_archive(archive: pathlib.Path) -> bool:
+    """Whether this directory is an archive, in the only way that counts.
+
+    The mark is the answer, not the structure around it -- what a directory
+    happens to contain describes a layout that existed when this code was
+    written, and the point of the mark is to stop guessing. `git` settles the
+    same question the same way: a repository is a directory with a `.git` in it,
+    and nothing else counts.
+
+    A directory that says nothing is not an archive yet -- `archive init` makes
+    one -- or is an older one, which `archive migrate` lifts and marks.
+    """
+    return (archive / FORMAT_NAME).is_file()
+
+
 def check_readable(archive: pathlib.Path) -> int:
     """Return the generation, refusing one this version cannot read.
 

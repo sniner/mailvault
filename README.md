@@ -6,10 +6,14 @@
 > into one small file per place under `heads/`, and the archive gains a `FORMAT`
 > file that says which layout it is written in.
 >
-> **Your existing archive keeps working and needs nothing from you.** The next
-> backup lifts it automatically, or run `mailvault archive migrate` when you
-> would rather choose the moment. Nothing is deleted — see
+> **Run `mailvault archive migrate` once per archive.** Every command refuses an
+> archive that has not been lifted and says so, rather than looking for the mail
+> where it is not. Nothing is deleted — see
 > [Migrating an older archive](#migrating-an-older-archive).
+>
+> **A new archive starts with `mailvault archive init`**, the way a repository
+> starts with `git init`. An archive is a directory with a `FORMAT` file in it;
+> without one, no command will touch it.
 >
 > **The command line changed too.** No command takes the archive as a positional
 > argument any more: it is the directory you are standing in, or `--archive DIR`.
@@ -91,6 +95,8 @@ Wheels and pre-compiled Windows executables are also available on the
 
 * `mailvault folders | backup | verify` -- back up IMAP or Microsoft 365
   mailboxes to a local archive and verify the result
+* `mailvault archive init` -- make a directory into an archive, once, before
+  anything else
 * `mailvault archive ...` -- manage the local email archive (import, compress,
   statistics, build a database for querying, etc.)
 
@@ -108,6 +114,10 @@ Every command works on one archive, and there are exactly two ways to say which:
 
 * the directory you are standing in, or
 * `--archive DIR` — what `git -C` is, and it does the same job
+
+And it has to *be* an archive: a directory with a `FORMAT` file, which
+`mailvault archive init` writes — `git` answers "is this a repository" the same
+way, and nothing else counts. `init` also leaves a `mailvault.toml` to fill in.
 
 The configuration is not a second thing to keep track of. **It lives in the
 archive**, as `mailvault.toml`, and that is where every command looks unless
@@ -516,7 +526,8 @@ name.
 ### Migrating an older archive
 
 An archive written by an earlier version is lifted to the current layout by one
-command. The next backup does it by itself, but you can also do it deliberately:
+command. It is the first thing to do after upgrading: until it has run, every
+other command refuses the archive and points here.
 
 ```console
 $ mailvault --archive ./backup archive migrate

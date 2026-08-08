@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import pathlib
+import tempfile
 from datetime import UTC, datetime
 from typing import Any
 
@@ -13,14 +14,16 @@ import pytest
 from mailvault import cli, conf, jobs
 from mailvault.backend import base
 from mailvault.cli import commands
-from mailvault.store import cas, heads, metalog
+from mailvault.store import cas, heads, marker, metalog
 
 WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
 
-# A directory that does not exist, which is what an archive nobody has written
-# into looks like -- the mailbox guard has nothing to compare against and lets
-# every job through.
-NEW_ARCHIVE = pathlib.Path("/nonexistent-archive")
+# An archive nobody has written into yet: made by `archive init`, marked, and
+# empty. The mailbox guard has nothing to compare against and lets every job
+# through. Marked, because that is what makes a directory an archive -- every
+# command asks before it does anything.
+NEW_ARCHIVE = pathlib.Path(tempfile.mkdtemp(prefix="mailvault-empty-archive-"))
+marker.write(NEW_ARCHIVE)
 
 
 def _args(**overrides: Any) -> argparse.Namespace:
@@ -173,6 +176,7 @@ class TestArchiveAndConfig:
         self, monkeypatch, tmp_path
     ):
         """Naming the path alone leaves a reader wondering why that path."""
+        marker.write(tmp_path)
         monkeypatch.chdir(tmp_path)
 
         with pytest.raises(conf.ConfigError, match="an archive carries its own"):
@@ -192,6 +196,7 @@ class TestMailboxGuard:
 
     @staticmethod
     def _archive(tmp_path, *mailboxes: str) -> pathlib.Path:
+        marker.write(tmp_path)
         for name in mailboxes:
             heads.write(
                 tmp_path / heads.DEFAULT_HEADS_DIR,
@@ -259,8 +264,11 @@ class TestMailboxGuard:
 
     def test_an_empty_archive_takes_anything(self, monkeypatch, tmp_path):
         ran = self._jobs_run(monkeypatch, ["gmail.com"])
+        fresh = tmp_path / "new"
+        fresh.mkdir()
+        marker.write(fresh)
 
-        assert commands.run_mailbox(_args(archive=tmp_path / "new")) == 0
+        assert commands.run_mailbox(_args(archive=fresh)) == 0
         assert ran == ["gmail.com"]
 
     def test_folders_needs_no_archive_at_all(self, monkeypatch):
@@ -287,6 +295,8 @@ def test_archive_decompress_reports_what_it_could_not_convert(tmp_path, capsys):
     exactly the case worth noticing.
     """
     root = tmp_path / "cas"
+    root.mkdir()
+    marker.write(root)
     store = cas.mail_store(root, compress=True)
     _, _, good = store.add(b"a real message")
     _, _, broken = store.add(b"about to be corrupted")
@@ -308,6 +318,8 @@ def test_archive_decompress_reports_what_it_could_not_convert(tmp_path, capsys):
 
 def test_archive_decompress_that_works_exits_zero(tmp_path, capsys):
     root = tmp_path / "cas"
+    root.mkdir()
+    marker.write(root)
     store = cas.mail_store(root, compress=True)
     store.add(b"a real message")
 
@@ -328,6 +340,7 @@ def _check_args(archive, **overrides):
 
 
 def _archive_with_a_log(root, extra_store_ids=()):
+    marker.write(root)
     store = cas.mail_store(root)
     _status, store_id, _path = store.add(b"a real message")
     writer = metalog.LogWriter(root / metalog.DEFAULT_LOG_DIR, root / heads.DEFAULT_HEADS_DIR)
@@ -393,6 +406,7 @@ class TestExport:
 
     @staticmethod
     def _archive(tmp_path, compress=False):
+        marker.write(tmp_path)
         store = cas.mail_store(tmp_path, compress=compress)
         _status, store_id, path = store.add(b"From: a@b\r\nSubject: hello\r\n\r\nbody")
         return store_id, path
@@ -508,3 +522,102 @@ class TestWhereTheOptionsLive:
         args = self._parse(["--archive", "/srv/mail", "archive", "check"])
 
         assert args.archive == pathlib.Path("/srv/mail")
+
+
+class TestAnArchiveIsAMarkedDirectory:
+    """`FORMAT` answers "is this an archive", the way `.git` does for a repository.
+
+    Before this, every command opened `<directory>/mail` and worked on whatever
+    was there. On an archive from before 0.10 that is nothing -- the messages are
+    still in the root -- so `archive check` called a healthy archive a total loss
+    and `verify --repair` set about downloading the mailbox again.
+    """
+
+    @staticmethod
+    def _old_archive(root: pathlib.Path) -> pathlib.Path:
+        """An archive in the pre-0.10 layout: shards in the root, no mark."""
+        old = cas.ContentAddressedStorage(root, suffix=".eml", depth=2)
+        _status, store_id, _path = old.add(b"Message-Id: <a@example.com>\r\n\r\nbody\r\n")
+        writer = metalog.LogWriter(
+            root / metalog.DEFAULT_LOG_DIR, root / heads.DEFAULT_HEADS_DIR
+        )
+        writer.add("job", ["INBOX"], store_id)
+        writer.seal(WHEN)
+        return root
+
+    def test_check_refuses_an_unmigrated_archive_instead_of_calling_it_broken(self, tmp_path):
+        self._old_archive(tmp_path)
+
+        with pytest.raises(jobs.JobError, match="archive migrate"):
+            commands.run_archive(_check_args(tmp_path))
+
+    def test_backup_refuses_it_too(self, monkeypatch, tmp_path):
+        self._old_archive(tmp_path)
+        monkeypatch.setattr(conf, "load", lambda *a, **kw: conf.Config(jobs=[]))
+
+        with pytest.raises(jobs.JobError, match="not a mailvault archive"):
+            commands.run_mailbox(_args(archive=tmp_path))
+
+    def test_the_message_names_both_ways_out(self, tmp_path):
+        """An older archive is lifted; a wrong directory is left alone."""
+        (tmp_path / "not-an-archive.txt").write_text("hello")
+
+        with pytest.raises(jobs.JobError) as caught:
+            commands.run_archive(_check_args(tmp_path))
+
+        assert "archive init" in str(caught.value)
+        assert "archive migrate" in str(caught.value)
+
+    def test_migrate_is_the_one_command_that_takes_an_unmarked_directory(self, tmp_path):
+        self._old_archive(tmp_path)
+
+        assert (
+            commands.run_archive(
+                argparse.Namespace(archive_command="migrate", archive=tmp_path)
+            )
+            == 0
+        )
+        assert marker.is_archive(tmp_path)
+
+    def test_and_afterwards_check_is_happy(self, tmp_path):
+        self._old_archive(tmp_path)
+        commands.run_archive(argparse.Namespace(archive_command="migrate", archive=tmp_path))
+
+        assert commands.run_archive(_check_args(tmp_path)) == 0
+
+
+class TestArchiveInit:
+    """What `git init` is: the directory becomes an archive, and says so."""
+
+    @staticmethod
+    def _init_args(archive: pathlib.Path):
+        return argparse.Namespace(archive_command="init", archive=archive)
+
+    def test_it_makes_the_three_directories_the_mark_and_a_configuration(self, tmp_path):
+        assert commands.run_archive(self._init_args(tmp_path)) == 0
+
+        assert marker.is_archive(tmp_path)
+        for name in (cas.MAIL_DIR, metalog.DEFAULT_LOG_DIR, heads.DEFAULT_HEADS_DIR):
+            assert (tmp_path / name).is_dir()
+        assert (tmp_path / commands.DEFAULT_CONFIG_NAME).is_file()
+
+    def test_the_archive_works_from_then_on(self, tmp_path):
+        commands.run_archive(self._init_args(tmp_path))
+
+        assert commands.run_archive(_check_args(tmp_path)) == 0
+
+    def test_running_it_again_changes_nothing(self, tmp_path):
+        commands.run_archive(self._init_args(tmp_path))
+        (tmp_path / commands.DEFAULT_CONFIG_NAME).write_text("# mine\n")
+
+        assert commands.run_archive(self._init_args(tmp_path)) == 0
+        assert (tmp_path / commands.DEFAULT_CONFIG_NAME).read_text() == "# mine\n"
+
+    def test_a_directory_with_something_in_it_is_refused(self, tmp_path):
+        """Marking an unmigrated archive would claim a layout it is not in."""
+        (tmp_path / "something").write_text("not mine to overwrite")
+
+        with pytest.raises(jobs.JobError, match="archive migrate"):
+            commands.run_archive(self._init_args(tmp_path))
+
+        assert not marker.is_archive(tmp_path)
