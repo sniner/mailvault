@@ -357,6 +357,34 @@ def report_import(
     return 1 if result.failed else 0
 
 
+def _report_orphans(result: jobs.CheckResult, store_ids: list[str]) -> None:
+    """Say what a message with no place recorded is, and what follows from it.
+
+    Nothing, is what follows, and that is the whole message. These are archived,
+    intact and readable; the one thing missing is the note which folder they came
+    from, and no command can put it back, because it never was in the archive.
+    Saying so is the finding -- a reader who is told only "110 not referenced"
+    goes looking for the repair that does not exist.
+
+    So this one prints no list. A store id is the right handle for `archive
+    export` and useless to a person deciding whether their archive is all right,
+    and twenty of a hundred and ten is neither a list to work from nor short
+    enough to skim. They go to the debug log, whole.
+    """
+    if not store_ids:
+        return
+    print(
+        f"{len(store_ids):,} message(s) belong to no known place -- stored and"
+        " intact, but nothing records which folder they came from"
+    )
+    print(
+        "  they are found like any other message: `archive create-db` builds a"
+        " query database with sender, subject and date"
+    )
+    print("  mail brought in with `archive import` is always like this")
+    log.debug("no place recorded: %s", ", ".join(store_ids))
+
+
 def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
     """Say what the archive turned out to be, and whether that is all right.
 
@@ -414,11 +442,7 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
         "file(s) in the archive are not messages",
         [utils.under(source, path) for path in result.foreign],
     )
-    _report_items(
-        "message(s) are not referenced in any log file -- nothing records which folder"
-        " they came from",
-        ids(result.orphans),
-    )
+    _report_orphans(result, ids(result.orphans))
     if result.quarantined_before:
         print(f"{result.quarantined_before:,} message(s) set aside by an earlier run")
     if result.transient_removed:
