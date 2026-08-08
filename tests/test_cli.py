@@ -681,3 +681,61 @@ class TestArchiveInit:
             commands.run_archive(self._init_args(tmp_path))
 
         assert not marker.is_archive(tmp_path)
+
+
+class TestExitCodes:
+    """A pass that did not do what it was asked must not report success."""
+
+    def test_a_format_error_is_a_message_and_not_a_traceback(self):
+        """Two machines, one shared archive, one still on the old version."""
+        assert isinstance(marker.FormatError("x"), commands.EXPECTED_ERRORS)
+
+    def test_a_migration_that_did_not_finish_exits_non_zero(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The mark is written last, so carrying it means every step got through."""
+        monkeypatch.setattr(
+            metalog,
+            "compact",
+            lambda *a, **kw: metalog.CompactResult(files_before=2, verified=False),
+        )
+
+        exit_code = commands.run_archive(
+            argparse.Namespace(archive_command="migrate", archive=tmp_path)
+        )
+
+        assert exit_code == 1
+        assert "NOT marked" in capsys.readouterr().out
+
+    def test_a_finished_migration_exits_zero(self, tmp_path):
+        assert (
+            commands.run_archive(
+                argparse.Namespace(archive_command="migrate", archive=tmp_path)
+            )
+            == 0
+        )
+
+    def test_a_compaction_that_verified_nothing_exits_non_zero(self, tmp_path, monkeypatch):
+        marker.write(tmp_path)
+        monkeypatch.setattr(
+            metalog,
+            "compact",
+            lambda *a, **kw: metalog.CompactResult(files_before=2, verified=False),
+        )
+
+        exit_code = commands.run_archive(
+            argparse.Namespace(archive_command="compact", archive=tmp_path)
+        )
+
+        assert exit_code == 1
+
+    def test_a_compaction_that_worked_exits_zero(self, tmp_path):
+        marker.write(tmp_path)
+        _archive_with_a_log(tmp_path)
+
+        assert (
+            commands.run_archive(
+                argparse.Namespace(archive_command="compact", archive=tmp_path)
+            )
+            == 0
+        )

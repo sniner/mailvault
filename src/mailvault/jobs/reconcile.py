@@ -63,10 +63,17 @@ class ReconcileResult:
     missing: int = 0
     restored: int = 0
     failed: int = 0
+    sealed: bool = True
 
     @property
     def complete(self) -> bool:
-        """True when nothing was left unaccounted for."""
+        """True when nothing was left unaccounted for.
+
+        Says nothing about the log: a pass can download every missing message and
+        still fail to write down where they belong. `sealed` answers that, and a
+        caller that advances a resume point has to ask both -- see
+        `backup._catch_up_folder`.
+        """
         return self.failed == 0
 
 
@@ -190,5 +197,9 @@ def reconcile_folder(
         log.info("%s: restored %s: %s id=%s", ctx, label, status, store_id)
         result.restored += 1
 
-    _seal_log(log_writer, datetime.now(UTC))
+    # Whether the locations reached disk is the caller's business: a pass that
+    # fetched every message and could not write down where any of them belongs
+    # must not move a resume point past them. `_seal_log` reports that through
+    # its return value and nowhere else.
+    result.sealed = _seal_log(log_writer, datetime.now(UTC))
     return result

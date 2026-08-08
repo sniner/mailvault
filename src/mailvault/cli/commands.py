@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 # debug in them, so they are reported as one line and the traceback is left to
 # the errors nobody anticipated -- where the call stack is the only clue. The
 # traceback is still there under `--verbose` for the rare case it is wanted.
-EXPECTED_ERRORS = (conf.ConfigError, jobs.JobError, base.MailboxError)
+EXPECTED_ERRORS = (conf.ConfigError, jobs.JobError, base.MailboxError, marker.FormatError)
 
 # The commands that work on an archive directory, as opposed to `folders`, which
 # only ever talks to the server.
@@ -249,7 +249,7 @@ def report_init(archive: pathlib.Path, result: jobs.InitResult) -> int:
     return 0
 
 
-def report_migration(source: pathlib.Path, result: jobs.MigrationResult) -> None:
+def report_migration(source: pathlib.Path, result: jobs.MigrationResult) -> int:
     """Say what was lifted, and what the archive is now.
 
     Every step is named even where it moved nothing. A migration that says only
@@ -258,16 +258,15 @@ def report_migration(source: pathlib.Path, result: jobs.MigrationResult) -> None
     """
     if result.generation == marker.CURRENT_FORMAT:
         print(f"already {marker.describe(marker.CURRENT_FORMAT)}, nothing to do")
-        return
+        return 0
 
     print(f"{result.resume_points:,} resume point(s) moved into {heads.DEFAULT_HEADS_DIR}/")
     if not result.needed:
         print("no metadata database, nothing to move out of one")
-        _report_rest(source, result)
-        return
+        return _report_rest(source, result)
     if not result.verified:
         print("the written log files did not verify, database left alone")
-        return
+        return 1
     print(
         f"{result.messages:,} message(s) moved into {result.places:,} mailbox/folder place(s)"
     )
@@ -289,27 +288,33 @@ def report_migration(source: pathlib.Path, result: jobs.MigrationResult) -> None
     if result.renamed_to is not None:
         print(f"the database is now {result.renamed_to.name} and is no longer used")
         print("delete it once you are satisfied with the archive")
-    _report_rest(source, result)
+    return _report_rest(source, result)
 
 
-def _report_rest(source: pathlib.Path, result: jobs.MigrationResult) -> None:
+def _report_rest(source: pathlib.Path, result: jobs.MigrationResult) -> int:
     """The steps after the two older formats gave up what they held."""
     print(f"{result.shards_moved:,} shard(s) moved into {cas.MAIL_DIR}/")
     if result.consolidated is not None:
         report_compact(source, result.consolidated)
-    _report_generation(source, result)
+    return _report_generation(source, result)
 
 
-def _report_generation(source: pathlib.Path, result: jobs.MigrationResult) -> None:
-    """Say what the archive says about itself now, or why it says nothing yet."""
+def _report_generation(source: pathlib.Path, result: jobs.MigrationResult) -> int:
+    """Say what the archive says about itself now, or why it says nothing yet.
+
+    The mark is the verdict, and that is why it is also the exit code: it is
+    written last, so an archive that carries it got through every step. A cron
+    job whose migration stopped half way must not be told the run went well.
+    """
     now = marker.read(source)
     if now == marker.CURRENT_FORMAT:
         print(f"{marker.describe(now)}")
-    else:
-        print(
-            "NOT marked -- something above did not finish, so the next"
-            " run picks the migration up again"
-        )
+        return 0
+    print(
+        "NOT marked -- something above did not finish, so the next"
+        " run picks the migration up again"
+    )
+    return 1
 
 
 def report_create_db(
@@ -335,14 +340,19 @@ def report_create_db(
     print(f"{target}: written -- a snapshot, stale from the next backup onwards")
 
 
-def report_compact(source: pathlib.Path, result: metalog.CompactResult) -> None:
-    """Say how much the log shrank and how many duplicate entries went."""
+def report_compact(source: pathlib.Path, result: metalog.CompactResult) -> int:
+    """Say how much the log shrank and how many duplicate entries went.
+
+    Non-zero when the consolidated files did not verify: the log is unchanged
+    and nothing was lost, but the pass did not do what it was asked, and a
+    scheduler reading only the exit code would file it as a success.
+    """
     if result.files_before == 0:
         print("no metadata log to compact")
-        return
+        return 0
     if not result.verified:
         print("consolidated files did not verify, nothing was removed")
-        return
+        return 1
     print(
         f"{result.files_before:,} log file(s) -> {result.files_after:,} "
         f"across {result.places:,} place(s)"
@@ -354,6 +364,7 @@ def report_compact(source: pathlib.Path, result: metalog.CompactResult) -> None:
         # Said out loud rather than swept up quietly: each one is a write that
         # was interrupted, and that is worth knowing about.
         print(f"{result.transient_removed:,} leftover(s) of an interrupted write removed")
+    return 0
 
 
 # How many of a kind a report names before it stops listing them. A check on a
@@ -672,9 +683,9 @@ def run_archive(args: argparse.Namespace) -> int:
         )
         report_create_db(archive, args.database, result)
     elif cmd == "migrate":
-        report_migration(archive, jobs.migrate_archive(archive))
+        return report_migration(archive, jobs.migrate_archive(archive))
     elif cmd == "compact":
-        report_compact(
+        return report_compact(
             archive,
             metalog.compact(
                 archive / metalog.DEFAULT_LOG_DIR, archive / heads.DEFAULT_HEADS_DIR

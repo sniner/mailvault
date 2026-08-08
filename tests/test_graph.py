@@ -72,6 +72,23 @@ class TestParseDatetime:
         assert graph._parse_graph_datetime(None) is None
         assert graph._parse_graph_datetime("") is None
 
+    def test_anything_unusable_is_unknown_rather_than_an_exception(self, caplog):
+        """A resume point is a file on disk; anything may have happened to it.
+
+        `heads` promises that an unusable one degrades to "read the folder in
+        full". A raise here escaped `folder_backup` instead and cost the folder
+        its backup -- every night, because nothing rewrites the head.
+        """
+        assert graph._parse_graph_datetime("yesterday") is None
+        assert graph._parse_graph_datetime(1754600000) is None
+        assert graph._parse_graph_datetime({"at": "2026-08-01"}) is None
+        assert "not a usable timestamp" in caplog.text
+
+    def test_a_timestamp_without_a_zone_is_unknown_too(self, caplog):
+        """It cannot be subtracted from an aware now(), and an age is all it is for."""
+        assert graph._parse_graph_datetime("2026-08-01T12:00:00") is None
+        assert "no timezone" in caplog.text
+
     def test_retry_after_is_capped(self):
         resp = httpx.Response(429, headers={"Retry-After": "9999"})
         assert graph._retry_delay(resp, 0) == graph.RETRY_MAX_DELAY
@@ -198,6 +215,18 @@ class TestDeltaPoint:
     def test_a_point_without_a_link_is_refused(self, caplog):
         assert graph._delta_point({"kind": graph.DELTA_RESUME_KIND}) is None
         assert "no usable delta link" in caplog.text
+
+    def test_a_broken_issue_time_costs_the_age_and_nothing_else(self, caplog):
+        """The link is the point; `issued` only dates the log line about it."""
+        point = graph._delta_point(
+            {
+                "kind": graph.DELTA_RESUME_KIND,
+                "delta_link": "https://graph.test/d",
+                "issued": "yesterday",
+            }
+        )
+
+        assert point == ("https://graph.test/d", None)
 
     def test_a_point_without_an_issue_time_still_works(self):
         """Only the log line about a rejected token needs it."""

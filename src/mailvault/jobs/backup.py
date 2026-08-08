@@ -304,6 +304,18 @@ def _catch_up_folder(
             result.missing,
         )
         resume = None
+    elif not result.sealed:
+        # Downloads were clean but the locations did not reach disk. The same
+        # rule as the ordinary pass in `_backup_folder`: holding the point back
+        # reads the folder again next run and writes the log again, where
+        # advancing would push messages whose place was never recorded out of
+        # everything a later run asks for.
+        log.warning(
+            "%s::%s: metadata log not sealed, resume point not started",
+            job.name,
+            folder,
+        )
+        resume = None
     _record_pass(heads_root, job.name, folder, observed_at, resume)
 
 

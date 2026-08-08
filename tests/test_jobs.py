@@ -439,6 +439,37 @@ class TestCatchUp:
 
         assert order == ["point", "list"]
 
+    def test_a_log_that_did_not_reach_disk_holds_the_point_back(self, tmp_path, caplog):
+        """Downloads clean, locations not written: advancing would lose them.
+
+        The point claims everything below it is archived. Past messages whose
+        place was never recorded, no later run asks for them again -- they lie in
+        `mail/` for good with nothing saying which folder they came from. The
+        ordinary pass has guarded this since 0.8.0; the catch-up threw the answer
+        away.
+        """
+        self._archive_with(tmp_path, "a")
+        client = self._client(["a", "b"])
+
+        with patch("mailvault.jobs.reconcile._seal_log", return_value=False):
+            with caplog.at_level(logging.WARNING):
+                self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        assert "metadata log not sealed" in caplog.text
+        assert heads.read(tmp_path / "heads", "test-job", "INBOX").resume is None
+
+    def test_a_sealed_log_starts_the_point(self, tmp_path):
+        """The other side of it: a clean catch-up does earn a resume point."""
+        self._archive_with(tmp_path, "a")
+        client = self._client(["a"])
+
+        self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        assert heads.read(tmp_path / "heads", "test-job", "INBOX").resume == {
+            "kind": "test-backend",
+            "at": "now",
+        }
+
     def test_an_empty_archive_is_downloaded_as_before(self, tmp_path):
         """Nothing to compare against, so listing first would only add a round trip."""
         client = self._client([])
