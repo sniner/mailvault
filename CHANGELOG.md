@@ -34,9 +34,13 @@
 - **`archive check` says whether the archive is all right**, in words, instead of leaving the
   verdict to an exit code nobody reads unless they went looking for it -- and it says which kind
   of run it was, because one with `--no-integrity-check` never read a message and cannot have
-  found one whose bytes changed. Its counts are in plain terms too: `5 message(s) stored, filed in
-  7 place(s) by 2 log file(s)`, since more places than messages is the normal case for a message
-  filed in two folders, not a discrepancy to worry about. Findings say what is wrong rather than
+  found one whose bytes changed. Its counts are in plain terms too, and there are only counts a
+  reader can act on: `5 message(s) stored, 4 of them accounted for by 2 log file(s) in 3
+  place(s)`. Those two message counts are there to be subtracted -- the difference is the list of
+  messages with no provenance further down. What used to stand between them was the number of log
+  entries, which counts a message once per folder it was filed in and so ran to six figures on a
+  real archive: neither files nor messages nor folders, nothing following from it either way, and
+  duly read as a file count. Findings say what is wrong rather than
   how the store found out -- a message is *damaged* when its content does not match its checksum,
   where it used to "not match the name it is filed under". The long passes number themselves
   (`step 1 of 3: looking through the archive`), so a run that takes half an hour says how much of

@@ -81,7 +81,9 @@ class CheckResult:
     """
 
     entries: int = 0
+    referenced: int = 0
     observations: int = 0
+    places: int = 0
     log_files: int = 0
     transient_removed: int = 0
     quarantined_before: int = 0
@@ -197,8 +199,19 @@ def _read_log(
     Each file is held against its own name as well. `read_log` warns about a
     mismatch in passing, which is right in the middle of a backup and useless
     here -- a check has to come back with the list.
+
+    Three counts come out of it, and only two of them are anybody's business
+    outside this module. `referenced` and `places` are what a reader of the check
+    can do something with: how many messages the log accounts for, and how many
+    mailbox/folder places it knows. `observations` -- one per message per place,
+    so a Gmail message under three labels counts three times -- is kept because
+    counting it is free and it says something about the log's shape, but it is
+    not reported: it is neither files nor messages nor folders, nothing follows
+    from it being large, and six figures beside two-figure neighbours gets read
+    as an answer to whichever question the reader brought.
     """
-    places: dict[str, str] = {}
+    seen_at: dict[str, str] = {}
+    places: set[str] = set()
     for path in metalog.log_files(root):
         result.log_files += 1
         if not metalog.verify_file(path):
@@ -208,10 +221,13 @@ def _read_log(
             continue
         chain[logfile.hashval] = logfile
         where = f"{logfile.mailbox}::{logfile.folder}"
+        places.add(where)
         for store_id in logfile.store_ids:
             result.observations += 1
-            places.setdefault(store_id, where)
-    return places
+            seen_at.setdefault(store_id, where)
+    result.places = len(places)
+    result.referenced = len(seen_at)
+    return seen_at
 
 
 def _walk_chains(
@@ -367,20 +383,20 @@ def check(
 
     log.info("step 2 of %s: reading the metadata log", steps)
     chain: dict[str, metalog.LogFile] = {}
-    places = _read_log(store_path / metalog.DEFAULT_LOG_DIR, result, chain)
+    seen_at = _read_log(store_path / metalog.DEFAULT_LOG_DIR, result, chain)
     _walk_chains(store_path / heads.DEFAULT_HEADS_DIR, chain, result)
     log.info(
-        "step 2 of %s: %s log file(s) file %s message(s) in %s place(s)",
+        "step 2 of %s: %s log file(s) account for %s message(s) in %s place(s)",
         steps,
         f"{result.log_files:,}",
-        f"{len(places):,}",
-        f"{result.observations:,}",
+        f"{result.referenced:,}",
+        f"{result.places:,}",
     )
 
-    for store_id, where in places.items():
+    for store_id, where in seen_at.items():
         if store_id not in entries:
             result.missing[store_id] = where
-    result.orphans = [path for store_id, path in entries.items() if store_id not in places]
+    result.orphans = [path for store_id, path in entries.items() if store_id not in seen_at]
 
     if contents:
         # The count belongs in the announcement, not after it: this is the step

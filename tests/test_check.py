@@ -43,11 +43,35 @@ class TestASoundArchive:
 
         assert result.sound
         assert result.entries == 3
-        assert result.observations == 3
+        assert result.referenced == 3
+        assert result.places == 1
         assert result.log_files == 1
         assert not result.missing
         assert not result.foreign
         assert not result.orphans
+
+    def test_a_message_in_several_folders_is_counted_once(self, tmp_path):
+        """The Gmail case in small: one message, three places, still one message.
+
+        The log holds three entries for it, and the result still counts them --
+        what changed is that no report prints that number, because it is neither
+        files nor messages nor folders.
+        """
+        store = cas.mail_store(tmp_path)
+        _status, store_id, _path = store.add(b"Message-Id: <a@example.com>\r\n\r\nbody\r\n")
+        writer = metalog.LogWriter(
+            tmp_path / metalog.DEFAULT_LOG_DIR, tmp_path / heads.DEFAULT_HEADS_DIR
+        )
+        writer.add("job", ["INBOX", "Archive", "Sent"], store_id)
+        writer.seal(WHEN)
+
+        result = check(tmp_path)
+
+        assert result.sound
+        assert result.entries == 1
+        assert result.referenced == 1
+        assert result.places == 3
+        assert result.observations == 3  # counted, never reported
 
     def test_the_integrity_check_finds_nothing_either(self, tmp_path):
         _archive(tmp_path)
