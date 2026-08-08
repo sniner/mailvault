@@ -1737,6 +1737,19 @@ class TestRefreshDb:
         with metadb.MetaDatabase(db_path) as db:
             assert len(db.store_id_map()) == 1
 
+    def test_a_full_build_says_why_before_it_starts(self, tmp_path, caplog):
+        """Reading every message is worth minutes; nobody should have to guess why."""
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+
+        with caplog.at_level(logging.INFO):
+            refresh_db(tmp_path, db_path)
+
+        assert "no query database yet" in caplog.text
+        assert "building the query database" in caplog.text
+        # Named as it reads inside the archive, not by the whole path.
+        assert str(tmp_path) not in caplog.text
+
 
 def _storing_backup(eml: bytes):
     """A folder_backup stand-in that stores an eml and logs it, like a real run."""

@@ -215,7 +215,11 @@ def _build_db(
                     if mb_id:
                         db.assign_message_to_mailbox(msg_id, mb_id)
                     result.messages += 1
-            log.info("%s message(s) read", result.messages)
+            # Named for what it is doing, not merely counted. This reads every
+            # message in the archive and takes half an hour on a large one, and
+            # a bare "N message(s) read" in the middle of a backup leaves a
+            # reader watching a number climb with no idea what it is for.
+            log.info("building the query database: %s message(s) read", f"{result.messages:,}")
 
         result.replay = _replay_metalog(db, log_root)
         # Prime the bookkeeping so a later refresh reads only files added since.
@@ -236,6 +240,14 @@ def refresh_db(store_path: pathlib.Path, db_path: pathlib.Path) -> RefreshResult
     """
     result = RefreshResult()
     if not db_path.exists():
+        # Said before the work starts, not after: building one means reading
+        # every message in the archive, which is minutes to half an hour of a
+        # backup that had nothing else left to do. Why it is happening at all is
+        # the part a reader cannot guess.
+        log.info(
+            "%s: no query database yet, building one from the whole archive",
+            utils.under(store_path, db_path),
+        )
         result.rebuilt = True
         result.messages = create_db(store_path, db_path, force=True).messages
         return result
@@ -246,7 +258,11 @@ def refresh_db(store_path: pathlib.Path, db_path: pathlib.Path) -> RefreshResult
         with metadb.MetaDatabase(path=db_path) as db:
             _apply_new_logs(db, store, log_root, result)
     except sqlite3.DatabaseError as exc:
-        log.warning("%s: not a usable database (%s), rebuilding from scratch", db_path, exc)
+        log.warning(
+            "%s: not a usable database (%s), building one from the whole archive",
+            utils.under(store_path, db_path),
+            exc,
+        )
         db_path.unlink(missing_ok=True)
         result.rebuilt = True
         result.messages = create_db(store_path, db_path, force=True).messages

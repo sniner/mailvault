@@ -488,7 +488,9 @@ onwards. Build it again when that matters -- or have one maintained for you.
 `index.db` beside the archive, refreshed after every backup. The refresh is
 incremental -- only the log files added since the last one are folded in -- and it
 stays a projection, never a source of truth: a database that is missing or
-unreadable is rebuilt from scratch, so you can delete it at any time. Mail added
+unreadable is rebuilt from scratch, so you can delete it at any time. That first
+build reads every message in the archive and says so before it starts -- on a
+large archive it is the longest part of an otherwise quick backup. Mail added
 by `archive import` writes no log and is not picked up this way; rebuild with
 `create-db` when that matters.
 

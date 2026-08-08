@@ -15,7 +15,7 @@ import logging
 import pathlib
 from datetime import UTC, datetime
 
-from mailvault import conf, mailutils
+from mailvault import conf, mailutils, utils
 from mailvault.backend import base, session
 from mailvault.jobs.common import _seal_log
 from mailvault.jobs.migration import migrate_archive
@@ -384,17 +384,18 @@ def _refresh_query_db(store_path: pathlib.Path) -> None:
     unreadable.
     """
     db_path = store_path / DEFAULT_QUERY_DB_NAME
+    name = utils.under(store_path, db_path)
     try:
         result = refresh_db(store_path, db_path)
     except Exception as exc:
-        log.error("%s: query database not updated: %s", db_path, exc)
+        log.error("%s: query database not updated: %s", name, exc)
         return
     if result.rebuilt:
-        log.info("%s: query database rebuilt, %s message(s)", db_path, result.messages)
+        log.info("%s: query database built, %s message(s)", name, f"{result.messages:,}")
     else:
         log.info(
             "%s: query database updated, %s new message(s) from %s log file(s)",
-            db_path,
-            result.messages,
-            result.files,
+            name,
+            f"{result.messages:,}",
+            f"{result.files:,}",
         )
