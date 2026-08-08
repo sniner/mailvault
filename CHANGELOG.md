@@ -115,6 +115,15 @@
   `backup` or `verify` without `--archive` is now an error rather than a run into whichever
   directory the shell happened to be in
 
+- **`--job`, `--allow-exec` and `--allow-new-mailbox` are written after the command**, not
+  before it: `mailvault backup --job proton.me`, where it used to have to be
+  `mailvault --job proton.me backup`. That is the order everybody reaches for anyway, and the
+  old one was never anything but an accident of where the options were declared -- they say
+  which jobs to run and what the configuration may do, which are statements about the command
+  doing the work and mean nothing to `archive check`. The help text admitted as much by having
+  to list the commands each of them applied to. What stays before the command is what is true
+  of the whole run: `--archive`, `--config`, `-v/-q` and `--log-file`
+
 - **Move your configuration into the archive it describes**, as `mailvault.toml`. Nothing does
   this for you and nothing looks for the old location, so a run without `--config` after
   upgrading says which file it wanted and did not find. `archive check` knows the file as a
@@ -152,6 +161,15 @@
   the read that trusts nothing
 
 ### Fixed
+
+- **What the commands say about themselves is about the mail, not about the machinery.** `backup`
+  offered to "back up mails to the local content-addressed archive", which names an
+  implementation nobody using it has to know and leaves out what it actually does: add to the
+  archive what the mailboxes hold and it does not, carrying each folder on from where the last
+  run left it. `archive migrate` still described moving things out of `store.db` and into
+  `state.json`, which is not what it has done for two versions. `archive check` explained itself
+  in shards and entries. All of them now say what happens and why it is worth having, and
+  `archive migrate` says what it does today
 
 - **Gmail recorded mail as being somewhere else.** `X-GM-LABELS` leaves out the label of the
   folder currently selected -- measured: of 80 messages in `INBOX` not one reported a label, while

@@ -42,6 +42,42 @@ def setup_logger(loglevel: int = logging.INFO, logfile: pathlib.Path | None = No
             logging.getLogger(name).setLevel(logging.WARNING)
 
 
+def add_mailbox_options(parser: argparse.ArgumentParser, writes: bool = False) -> None:
+    """The options a command takes that reads the configuration and logs in.
+
+    They belong to the command, not to `mailvault` itself. Which jobs to run and
+    what the configuration may do are statements about the work being done, and
+    `archive check` has no use for either -- an option whose help text has to
+    name the commands it applies to is standing one level too high. It also puts
+    them where the hand expects them: `backup --job proton.me` is how everybody
+    writes it, and only the parser used to insist on `--job proton.me backup`.
+
+    `writes` adds the one that only means anything to a command that puts
+    messages *into* an archive.
+    """
+    parser.add_argument(
+        "--job",
+        action="append",
+        metavar="NAME",
+        help="Run only the named job(s); may be repeated",
+    )
+    parser.add_argument(
+        "--allow-exec",
+        action="store_true",
+        help="Let the configuration's _cmd fields run, e.g. to fetch a password",
+    )
+    if writes:
+        parser.add_argument(
+            "--allow-new-mailbox",
+            action="store_true",
+            help=(
+                "Let a job write into an archive it has never written into before;"
+                " without it such a run is refused, on the assumption that the"
+                " configuration and the archive do not belong together"
+            ),
+        )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mailvault",
@@ -77,54 +113,40 @@ def build_parser() -> argparse.ArgumentParser:
             f" {commands.DEFAULT_CONFIG_NAME}"
         ),
     )
-    parser.add_argument(
-        "--allow-exec",
-        action="store_true",
-        help="Allow execution of _cmd fields in the configuration file",
-    )
-    parser.add_argument(
-        "--job",
-        action="append",
-        metavar="NAME",
-        help="Run only the named job(s); may be repeated (folders/backup/verify)",
-    )
-    parser.add_argument(
-        "--allow-new-mailbox",
-        action="store_true",
-        help=(
-            "Let a job write into an archive it has never written into before"
-            " (backup/verify); without it such a run is refused, on the assumption"
-            " that the configuration and the archive do not belong together"
-        ),
-    )
 
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
-    sub.add_parser(
+    p_folders = sub.add_parser(
         "folders",
         help="List the folders of each configured mailbox",
         description="List available folders on the configured IMAP/Graph mailboxes.",
     )
+    add_mailbox_options(p_folders)
 
     p_backup = sub.add_parser(
         "backup",
         help="Back up mailboxes to a local archive",
-        description="Back up mails to the local content-addressed archive.",
+        description=(
+            "Add to the archive whatever the configured mailboxes hold and it does"
+            " not. Each folder carries on where the last run left it, so a repeated"
+            " run costs only the mail that has arrived since."
+        ),
     )
-    p_backup.add_argument(
-        "--compress",
-        action="store_true",
-        help="Compress stored emails with zstd",
-    )
-    p_backup.add_argument(
-        "--index-db",
-        action="store_true",
-        help="Maintain an index.db alongside the archive, refreshed after the backup",
-    )
+    add_mailbox_options(p_backup, writes=True)
     p_backup.add_argument(
         "--full",
         action="store_true",
         help="Re-read every folder in full, ignoring where the last run left off",
+    )
+    p_backup.add_argument(
+        "--compress",
+        action="store_true",
+        help="Store the messages compressed with zstd",
+    )
+    p_backup.add_argument(
+        "--index-db",
+        action="store_true",
+        help="Keep index.db in step with the archive, so the mail can be queried with SQL",
     )
 
     p_verify = sub.add_parser(
@@ -132,6 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Compare mailboxes against the archive and report gaps",
         description="Compare mailboxes against their archives and report missing messages.",
     )
+    add_mailbox_options(p_verify, writes=True)
     p_verify.add_argument(
         "--repair",
         action="store_true",
@@ -140,7 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument(
         "--compress",
         action="store_true",
-        help="Compress stored emails with zstd",
+        help="Store the messages compressed with zstd",
     )
 
     p_archive = sub.add_parser(
@@ -241,16 +264,17 @@ def build_parser() -> argparse.ArgumentParser:
         "create-db",
         help="Build a queryable database from the archive",
         description=(
-            "Build an SQLite database from the archived messages and the metadata"
-            " log, for querying with SQL. The archive itself holds no database:"
-            " what this writes is a snapshot, accurate for the moment it was built"
-            " and stale from the next backup onwards."
+            "Build an SQLite database of everything the archive knows about its"
+            " mail -- sender, recipients, subject, date, and which mailbox and"
+            " folder each message was seen in -- for querying with SQL. The archive"
+            " itself holds no database: what this writes is a snapshot, accurate for"
+            " the moment it was built and stale from the next backup onwards."
         ),
     )
     a_create.add_argument(
         "--mailbox",
         type=str,
-        help="Mailbox identifier for messages the log does not place",
+        help="Mailbox to file messages under whose mailbox the archive does not record",
     )
     a_create.add_argument(
         "--force",
@@ -261,13 +285,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     asub.add_parser(
         "migrate",
-        help="Move an older archive off its metadata database",
+        help="Bring an archive written by an earlier version up to date",
         description=(
-            "Move the resume timestamps and the mailbox/folder locations out of an"
-            " archive's store.db and into state.json and the metadata log. The"
-            " database is not deleted, it is renamed to store.db.migrated and no"
-            " longer used. Runs automatically at the start of a backup; this"
-            " command only lets you do it deliberately."
+            "Bring an archive of any earlier shape up to the layout this version"
+            " writes, and say what was lifted. A backup does this by itself; the"
+            " command is for doing it deliberately, once, and seeing the result."
+            " Nothing is deleted, and a run that is interrupted is simply picked"
+            " up by the next one."
         ),
     )
 
@@ -287,24 +311,24 @@ def build_parser() -> argparse.ArgumentParser:
         "check",
         help="Check that the archive is what it says it is",
         description=(
-            "Hold an archive against what it claims: every file in a shard is an"
-            " entry, every message the metadata log references is there, every log"
-            " file still matches its own name, and every message still matches its"
-            " checksum -- the last one being the only way to find one whose bytes"
-            " have changed under it. --no-integrity-check leaves that last check out."
-            " Reports what it finds and repairs nothing; the only thing it removes"
-            " is the transient file of a write that was interrupted."
+            "Hold an archive against what it claims: every message it records is"
+            " there, nothing lies in it that is not a message it knows, what it"
+            " wrote down about them is undamaged, and every message still matches"
+            " its checksum -- the last one being the only way to find one whose"
+            " bytes have changed under it. --no-integrity-check leaves that last"
+            " check out. Reports what it finds and repairs nothing; the only thing"
+            " it removes is the leftover of a write that was interrupted."
         ),
     )
     a_check.add_argument(
         "--no-integrity-check",
         action="store_true",
-        help="Skip the integrity check: read no message, answer everything from names",
+        help="Skip the integrity check: no message is read, so none can be found damaged",
     )
     a_check.add_argument(
         "--quarantine",
         action="store_true",
-        help="Rename damaged messages, so they count as missing and can be fetched again",
+        help="Set damaged messages aside, so they count as missing and can be fetched again",
     )
 
     return parser

@@ -94,9 +94,12 @@ Wheels and pre-compiled Windows executables are also available on the
 * `mailvault archive ...` -- manage the local email archive (import, compress,
   statistics, build a database for querying, etc.)
 
-Global options (`--archive`, `--config`, `-v/--verbose`, `-q/--quiet`,
-`--log-file`, `--allow-exec`, `--job`, `--allow-new-mailbox`) are given
-**before** the command.
+Two things are said **before** the command, because they are true of the whole
+run whatever it is: which archive and configuration to work with (`--archive`,
+`--config`) and how much it should say about itself (`-v/--verbose`,
+`-q/--quiet`, `--log-file`). Everything else belongs to the command that does the
+work and is written after it -- `mailvault backup --job proton.me`, not the other
+way round.
 
 
 ## Where the archive is, and which file describes it
@@ -200,8 +203,9 @@ $ mailvault backup
 2024-08-15 10:09:28,820 INFO -- example.org::INBOX[3]: EXISTS: id=800be881dc38...7fa8
 ```
 
-Use `--compress` to store emails compressed with zstd. Use `--job NAME` to run
-only specific jobs from the configuration file.
+Use `--compress` to store emails compressed with zstd. Use `mailvault backup
+--job NAME` to run only specific jobs from the configuration file; the option may
+be repeated, and `folders` and `verify` take it too.
 
 ### Whether a configuration and an archive belong together
 
@@ -641,7 +645,8 @@ missing again, and `verify --repair` or a `backup --full` brings it back.
 ## Migrating from ib-*
 
 The former `ib-mailbox` and `ib-archive` commands are now subcommands of a single
-`mailvault` command. Global options are given **before** the command.
+`mailvault` command. The archive and the configuration are named **before** the
+command, everything else after it.
 
 | Previously | Now |
 |------------|-----|
@@ -906,9 +911,10 @@ password_cmd = "pass show email/example.org"
 client_secret_cmd = "az keyvault secret show --name my-secret --query value -o tsv"
 ```
 
-For security, `_cmd` fields are only evaluated when the `--allow-exec` flag
-is passed on the command line. Without it, `_cmd` fields are silently ignored
-with a warning.
+For security, `_cmd` fields are only evaluated when `--allow-exec` is passed to
+the command that reads the configuration (`mailvault backup --allow-exec`, and
+the same for `folders` and `verify`). Without it, `_cmd` fields are ignored with
+a warning.
 
 ### Parameters
 
