@@ -174,8 +174,15 @@ in a local content-addressed archive. The backup can be repeated at regular
 intervals without creating duplicates, as long as you always export from the
 same mailbox.
 
-A configuration file defines the accounts and options for the backup job
-(see [Configuration file](#configuration-file) below).
+It works on an archive, so there has to be one:
+
+```console
+$ mailvault archive init ./backup
+```
+
+That also writes the `mailvault.toml` which defines the accounts and options for
+the backup job (see [Configuration file](#configuration-file) below). Fill it in,
+then everything else happens from inside the archive.
 
 First, you may want to get an overview of all available folders:
 
@@ -193,8 +200,8 @@ Then run the backup:
 
 ```console
 $ mailvault backup
-2024-08-15 10:05:52,275 INFO -- START
-2024-08-15 10:05:52,276 INFO -- Processing mailbox: example.org
+2024-08-15 10:05:52,275 INFO -- START -- archive: ./backup
+2024-08-15 10:05:52,276 INFO -- Job item: example.org
 2024-08-15 10:05:52,527 INFO -- example.org::INBOX: found 3 messages
 2024-08-15 10:05:52,799 INFO -- example.org::INBOX[1]: NEW: id=25652e390168...a234
 2024-08-15 10:05:52,799 INFO -- example.org::INBOX[2]: NEW: id=fa1f63a13f91...c9ee
@@ -205,8 +212,8 @@ On subsequent runs, already archived messages are recognized and skipped:
 
 ```console
 $ mailvault backup
-2024-08-15 10:09:28,248 INFO -- START
-2024-08-15 10:09:28,250 INFO -- Processing mailbox: example.org
+2024-08-15 10:09:28,248 INFO -- START -- archive: ./backup
+2024-08-15 10:09:28,250 INFO -- Job item: example.org
 2024-08-15 10:09:28,531 INFO -- example.org::INBOX: found 3 messages
 2024-08-15 10:09:28,820 INFO -- example.org::INBOX[1]: EXISTS: id=25652e390168...a234
 2024-08-15 10:09:28,820 INFO -- example.org::INBOX[2]: EXISTS: id=fa1f63a13f91...c9ee
@@ -399,17 +406,43 @@ message and the server's journal envelope carry different `Message-ID`s.
 `mailvault archive` provides several subcommands for working with the local
 archive.
 
+### Making an archive
+
+```console
+$ mailvault archive init /srv/archive/private
+/srv/archive/private: archive created
+mailvault.toml written -- fill in your mailboxes, then back up
+```
+
+What `git init` is. The directory is made if it is not there, and without an
+argument the one you are standing in is used. It leaves a commented
+`mailvault.toml` behind to fill in; an existing configuration is never touched.
+
+Every other command asks first whether it is looking at an archive and stops if
+it is not:
+
+```console
+$ mailvault archive check
+ERROR -- /home/jd/notes: not a mailvault archive. Make one here with
+`mailvault archive init`. If it is an old mailvault archive, migrate it with
+`mailvault archive migrate`
+```
+
 ### Import emails
 
 Import existing `.eml` files into the archive. For example, to consolidate
 emails from `./my_mails` into `./backup`:
 
 ```console
-$ mailvault --verbose archive import ./my_mails ./backup
+$ mailvault --archive ./backup archive import ./my_mails
 ```
 
 Use `--move` to remove source files after import, `--compress` to store them
 compressed, and `--docuware` if the source is a Docuware email archive.
+
+The source has to lie outside the archive, and naming the archive itself is
+refused. With `--move` it would find every message already stored, answer each
+with EXISTS, and then delete it from the source -- which is the archive.
 
 Either way the run says what it did, and `--dry-run` says what it would do
 without writing anything or removing a single source file:
@@ -447,7 +480,7 @@ Show the number of emails and total size of an archive:
 
 ```console
 $ mailvault --archive ./backup archive stats
-./backup: 1,234 emails, 567.8 MiB total
+1,234 emails, 567.8 MiB total
 ```
 
 ### Compress / Decompress
@@ -457,10 +490,10 @@ revert compressed files back to plain `.eml`:
 
 ```console
 $ mailvault --archive ./backup archive compress
-./backup: 1,234 files compressed, 0 already compressed
+1,234 files compressed, 0 already compressed
 
 $ mailvault --archive ./backup archive decompress
-./backup: 1,234 files decompressed, 0 already plain
+1,234 files decompressed, 0 already plain
 ```
 
 One entry that cannot be converted does not stop the pass -- a single damaged
@@ -482,8 +515,8 @@ The archive itself holds no database. To run SQL against it, build one:
 
 ```console
 $ mailvault --archive ./backup archive create-db ./backup.db
-./backup: 130,997 message(s) read from the archive
-./backup: metadata log: 60 file(s), 219,690 of 219,690 location(s) applied
+130,997 message(s) read from the archive
+metadata log: 60 file(s), 219,690 of 219,690 location(s) applied
 ./backup.db: written -- a snapshot, stale from the next backup onwards
 ```
 
@@ -531,13 +564,13 @@ other command refuses the archive and points here.
 
 ```console
 $ mailvault --archive ./backup archive migrate
-./backup: 46 resume point(s) moved into heads/
-./backup: 130,887 message(s) moved into 59 mailbox/folder place(s)
-./backup: the database is now store.db.migrated and is no longer used
-./backup: delete it once you are satisfied with the archive
-./backup: 256 shard(s) moved into mail/
-./backup: 1,204 log file(s) -> 59 across 59 place(s)
-./backup: mailvault archive format 1
+46 resume point(s) moved into heads/
+130,887 message(s) moved into 59 mailbox/folder place(s)
+the database is now store.db.migrated and is no longer used
+delete it once you are satisfied with the archive
+256 shard(s) moved into mail/
+1,204 log file(s) -> 59 across 59 place(s)
+mailvault archive format 1
 ```
 
 What it lifts, in the order the pieces depend on each other: `state.json` into
@@ -567,8 +600,8 @@ back down:
 
 ```console
 $ mailvault --archive ./backup archive compact
-./backup: 1,204 log file(s) -> 59 across 59 mailbox/folder place(s)
-./backup: 41,388 duplicate observation(s) dropped
+1,204 log file(s) -> 59 across 59 mailbox/folder place(s)
+41,388 duplicate observation(s) dropped
 ```
 
 It rewrites one file per mailbox/folder holding each observation once, verifies
@@ -580,7 +613,7 @@ Since it is the one pass that has the log open, it also clears away what an
 interrupted write left behind there, and says so when it finds anything:
 
 ```console
-./backup: 2 leftover(s) of an interrupted write removed
+2 leftover(s) of an interrupted write removed
 ```
 
 Only files old enough that no running backup can still be writing them, and only
@@ -599,21 +632,23 @@ it was named for.
 
 ```console
 $ mailvault --archive ./backup archive check
-./backup: 130,997 message(s) stored, filed in 219,690 place(s) by 60 log file(s)
-./backup: 3 message(s) referenced in the log are missing
+130,997 message(s) stored, 130,887 of them accounted for by 60 log file(s) in 59 place(s)
+3 message(s) referenced in the log are missing
   6f3ac1…  mail.example.org::INBOX
-./backup: NOT sound -- 3 finding(s) above
+NOT sound -- 3 finding(s) above
 ```
 
-More places than messages is the normal case, not a discrepancy: a message filed
-in two folders is one entry the log references twice.
+The two message counts are there to be subtracted: what lies in the archive, and
+what the log accounts for. The difference is mail whose place nothing records --
+listed further down, and no cause for alarm on its own, since `archive import`
+writes no log.
 
 The last line is the verdict, and it says which kind of run it was:
 
 ```console
 $ mailvault --archive ./backup archive check
-./backup: 130,997 message(s) stored, filed in 219,690 place(s) by 60 log file(s)
-./backup: sound -- every message was read and matches its checksum
+130,997 message(s) stored, 130,887 of them accounted for by 60 log file(s) in 59 place(s)
+sound -- every message was read and matches its checksum
 ```
 
 It walks the archive first: every file lying in a shard is an entry, every
@@ -689,7 +724,7 @@ Emails are stored as RFC 822 `.eml` files in a content-addressed directory
 structure:
 
 ```
-./archive
+./archive/mail
 ├── 00
 │   ├── 00
 │   │   └── 00003c6ec5464cca9...7af8.eml
