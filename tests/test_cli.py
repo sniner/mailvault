@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from mailvault import conf, jobs
+from mailvault import cli, conf, jobs
 from mailvault.backend import base
 from mailvault.cli import commands
 from mailvault.store import cas, heads, metalog
@@ -459,3 +459,52 @@ class TestExport:
         commands.run_archive(self._export_args(tmp_path, [path.name], output=tmp_path / "o"))
 
         assert (tmp_path / "o").read_bytes() == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
+
+
+class TestWhereTheOptionsLive:
+    """An option sits on the level it applies to, and nowhere else.
+
+    `--job` and the two permissions say what one command should do; only the
+    archive, the configuration and how loud the run is are true of every command.
+    The reading order follows from that -- `backup --job proton.me`, which is how
+    everybody writes it anyway.
+    """
+
+    @staticmethod
+    def _parse(argv: list[str]) -> argparse.Namespace:
+        return cli.build_parser().parse_args(argv)
+
+    def test_a_command_takes_its_own_options_after_it(self):
+        args = self._parse(["backup", "--job", "proton.me", "--allow-exec"])
+
+        assert args.job == ["proton.me"]
+        assert args.allow_exec is True
+
+    def test_the_option_may_be_repeated(self):
+        assert self._parse(["backup", "--job", "a", "--job", "b"]).job == ["a", "b"]
+
+    def test_it_is_not_a_global_option_any_more(self):
+        with pytest.raises(SystemExit):
+            self._parse(["--job", "proton.me", "backup"])
+
+    def test_folders_selects_jobs_but_writes_nothing(self):
+        args = self._parse(["folders", "--job", "proton.me"])
+
+        assert args.job == ["proton.me"]
+        assert not hasattr(args, "allow_new_mailbox")
+
+    def test_a_command_that_writes_can_be_told_a_job_is_new(self):
+        assert self._parse(["backup", "--allow-new-mailbox"]).allow_new_mailbox is True
+        assert self._parse(["verify", "--allow-new-mailbox"]).allow_new_mailbox is True
+
+    def test_an_archive_command_has_no_use_for_any_of_them(self):
+        args = self._parse(["archive", "check"])
+
+        assert not hasattr(args, "job")
+        assert not hasattr(args, "allow_exec")
+
+    def test_the_archive_stays_where_it_is(self):
+        """Which archive is true of the whole run, so it keeps its place in front."""
+        args = self._parse(["--archive", "/srv/mail", "archive", "check"])
+
+        assert args.archive == pathlib.Path("/srv/mail")
