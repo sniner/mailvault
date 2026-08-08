@@ -101,7 +101,11 @@
   a network share the prefix was routinely longer than what it prefixed. A file inside the archive
   is now named as it reads *inside* it, `meta/a1/a1b2….jsonl` rather than the whole path; one that
   lies elsewhere, as `archive import` reads from, keeps its full path, because shortening it
-  against an archive it has nothing to do with would say the wrong thing about where it is
+  against an archive it has nothing to do with would say the wrong thing about where it is. This
+  holds for the log lines as well as the reports -- a damaged message, an unreadable log file, a
+  head that says the wrong place, a message set aside by `--quarantine`. What still names the
+  archive in full is the one message that is *about* the archive: a configuration that has never
+  written here says which archive it was pointed at, and that is the statement, not a prefix
 
 ### Breaking changes
 

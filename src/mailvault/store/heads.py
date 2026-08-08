@@ -49,6 +49,7 @@ import pathlib
 import re
 from datetime import datetime
 
+from mailvault import utils
 from mailvault.store import atomic
 
 log = logging.getLogger(__name__)
@@ -150,6 +151,16 @@ def head_name(job: str, folder: str | None) -> str:
     return f"{slug}.{_identity(job, folder)}"
 
 
+def where(path: pathlib.Path) -> str:
+    """A head file as it reads inside the archive: `heads/gmail_com-INBOX.1c0a75d8`.
+
+    The archive is named once at the start of a run; a file inside it is named
+    the way it reads inside it. A head is read by its path alone, so the
+    directory it lies in is what tells us where we are.
+    """
+    return utils.under_dir(DEFAULT_HEADS_DIR, path)
+
+
 def head_path(root: pathlib.Path, job: str, folder: str | None) -> pathlib.Path:
     """Where the head of one place lives."""
     return root / head_name(job, folder)
@@ -230,33 +241,33 @@ def _decode(path: pathlib.Path, payload: object) -> Head | None:
     AttributeError in the middle of a run.
     """
     if not isinstance(payload, dict):
-        log.warning("%s: expected a JSON object, ignoring it", path)
+        log.warning("%s: expected a JSON object, ignoring it", where(path))
         return None
     version = payload.get("version")
     if version not in SUPPORTED_HEAD_VERSIONS:
-        log.warning("%s: unknown head version %r, ignoring it", path, version)
+        log.warning("%s: unknown head version %r, ignoring it", where(path), version)
         return None
     job = payload.get("job")
     folder = payload.get("folder")
     if not isinstance(job, str) or not (folder is None or isinstance(folder, str)):
-        log.warning("%s: does not say which place it belongs to, ignoring it", path)
+        log.warning("%s: does not say which place it belongs to, ignoring it", where(path))
         return None
 
     last_run = payload.get("last_run")
     if last_run is not None and not isinstance(last_run, str):
-        log.warning("%s: non-string last_run, dropped", path)
+        log.warning("%s: non-string last_run, dropped", where(path))
         last_run = None
 
     resume = payload.get("resume")
     if resume is not None and not _is_usable_resume(resume):
         # Not worth failing over: an unusable resume point means the folder is
         # read in full, which is the safe outcome anyway.
-        log.warning("%s: unusable resume point, the folder is read in full", path)
+        log.warning("%s: unusable resume point, the folder is read in full", where(path))
         resume = None
 
     chain = payload.get("log")
     if chain is not None and not isinstance(chain, str):
-        log.warning("%s: non-string log head, dropped", path)
+        log.warning("%s: non-string log head, dropped", where(path))
         chain = None
 
     return Head(job=job, folder=folder, last_run=last_run, resume=resume, log=chain)
@@ -272,12 +283,12 @@ def read_file(path: pathlib.Path) -> Head | None:
     except FileNotFoundError:
         return None
     except (OSError, UnicodeDecodeError) as exc:
-        log.warning("%s: unreadable, treating the place as unknown: %s", path, exc)
+        log.warning("%s: unreadable, treating the place as unknown: %s", where(path), exc)
         return None
     try:
         payload = json.loads(body)
     except json.JSONDecodeError as exc:
-        log.warning("%s: not valid JSON, treating the place as unknown: %s", path, exc)
+        log.warning("%s: not valid JSON, treating the place as unknown: %s", where(path), exc)
         return None
     return _decode(path, payload)
 
@@ -298,7 +309,7 @@ def read(root: pathlib.Path, job: str, folder: str | None) -> Head | None:
         log.warning(
             "%s: holds %s::%s, not %s::%s -- two places share a name, so this folder"
             " is read in full",
-            path,
+            where(path),
             head.job,
             head.folder,
             job,

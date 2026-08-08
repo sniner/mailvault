@@ -72,6 +72,7 @@ import logging
 import pathlib
 from datetime import datetime
 
+from mailvault import utils
 from mailvault.store import cas, heads
 
 log = logging.getLogger(__name__)
@@ -158,6 +159,16 @@ def log_files(root: pathlib.Path) -> list[pathlib.Path]:
     return sorted(p for p in root.glob("*/*.jsonl") if p.is_file())
 
 
+def where(path: pathlib.Path) -> str:
+    """A log file as it reads inside the archive: `meta/a1/a1b2….jsonl`.
+
+    The archive is named once at the start of a run, so a file inside it is
+    named the way it reads inside it. The log knows the directory it lives in
+    and nothing above that, which is all `under_dir` asks for.
+    """
+    return utils.under_dir(DEFAULT_LOG_DIR, path)
+
+
 def has_logs(root: pathlib.Path) -> bool:
     """True when at least one log file exists."""
     return bool(log_files(root))
@@ -168,7 +179,7 @@ def verify_file(path: pathlib.Path) -> bool:
     try:
         raw = path.read_bytes()
     except OSError as exc:
-        log.warning("%s: unreadable: %s", path, exc)
+        log.warning("%s: unreadable: %s", where(path), exc)
         return False
     return cas.DEFAULT_HASH(raw).hexdigest() == path.name.removesuffix(".jsonl")
 
@@ -304,7 +315,9 @@ class LogWriter:
             _status, hashval, path = store.add(
                 _serialize(mailbox, folder, date.isoformat(), store_ids, prev=_chain(head))
             )
-            log.debug("%s: %s message(s) in %s::%s", path, len(store_ids), mailbox, folder)
+            log.debug(
+                "%s: %s message(s) in %s::%s", where(path), len(store_ids), mailbox, folder
+            )
             _move_head(self.heads_root, head, hashval)
             written.append(path)
         self._places = {}
@@ -333,14 +346,14 @@ def _parse_store_id(path: pathlib.Path, number: int, line: str) -> str | None:
         data = json.loads(line)
     except json.JSONDecodeError:
         # The expected shape of a torn write: the file ends mid-line.
-        log.warning("%s:%d: incomplete line, skipped", path, number)
+        log.warning("%s:%d: incomplete line, skipped", where(path), number)
         return None
     if not isinstance(data, dict):
-        log.warning("%s:%d: not an object, skipped", path, number)
+        log.warning("%s:%d: not an object, skipped", where(path), number)
         return None
     store_id = data.get("store_id")
     if not isinstance(store_id, str) or not store_id:
-        log.warning("%s:%d: no usable store_id, skipped", path, number)
+        log.warning("%s:%d: no usable store_id, skipped", where(path), number)
         return None
     if not cas.is_hashval(store_id):
         # The store cuts a path out of a store id and refuses one that is not a
@@ -349,7 +362,7 @@ def _parse_store_id(path: pathlib.Path, number: int, line: str) -> str | None:
         # skip like any other unusable one. Letting it through would hand the
         # refusal to whoever asks the store next, and cost them the whole folder
         # they were reading for one broken line.
-        log.warning("%s:%d: store_id is not a hash, skipped", path, number)
+        log.warning("%s:%d: store_id is not a hash, skipped", where(path), number)
         return None
     return store_id
 
@@ -363,16 +376,16 @@ def _parse_header(path: pathlib.Path, line: str) -> dict | None:
     try:
         header = json.loads(line)
     except json.JSONDecodeError as exc:
-        log.warning("%s: unreadable header, skipped: %s", path, exc)
+        log.warning("%s: unreadable header, skipped: %s", where(path), exc)
         return None
     if not isinstance(header, dict):
-        log.warning("%s: header is not an object, skipped", path)
+        log.warning("%s: header is not an object, skipped", where(path))
         return None
     if header.get("version") not in SUPPORTED_LOG_VERSIONS:
         log.warning(
             "%s: log version %r is not one of %s, skipped -- it was written by a"
             " different mailvault version; upgrade mailvault to read it",
-            path,
+            where(path),
             header.get("version"),
             ", ".join(str(v) for v in SUPPORTED_LOG_VERSIONS),
         )
@@ -392,15 +405,15 @@ def read_header(path: pathlib.Path) -> dict | None:
         with path.open("rb") as f:
             first = f.readline()
     except OSError as exc:
-        log.warning("%s: unreadable, skipped: %s", path, exc)
+        log.warning("%s: unreadable, skipped: %s", where(path), exc)
         return None
     if not first:
-        log.warning("%s: empty, skipped", path)
+        log.warning("%s: empty, skipped", where(path))
         return None
     try:
         line = first.decode("utf-8")
     except UnicodeDecodeError as exc:
-        log.warning("%s: not valid UTF-8, skipped: %s", path, exc)
+        log.warning("%s: not valid UTF-8, skipped: %s", where(path), exc)
         return None
     return _parse_header(path, line)
 
@@ -431,7 +444,7 @@ def read_log(path: pathlib.Path) -> LogFile | None:
     try:
         raw = path.read_bytes()
     except OSError as exc:
-        log.warning("%s: unreadable, skipped: %s", path, exc)
+        log.warning("%s: unreadable, skipped: %s", where(path), exc)
         return None
 
     # The name is the hash of the content, so the file carries its own integrity
@@ -444,15 +457,15 @@ def read_log(path: pathlib.Path) -> LogFile | None:
     # away 80,000 readable lines because the last one was cut short would be the
     # worse answer. The warning is what lets someone repair the archive.
     if cas.DEFAULT_HASH(raw).hexdigest() != path.name.removesuffix(".jsonl"):
-        log.warning("%s: damaged -- content does not match its name", path)
+        log.warning("%s: damaged -- content does not match its name", where(path))
 
     try:
         lines = raw.decode("utf-8").splitlines()
     except UnicodeDecodeError as exc:
-        log.warning("%s: not valid UTF-8, skipped: %s", path, exc)
+        log.warning("%s: not valid UTF-8, skipped: %s", where(path), exc)
         return None
     if not lines:
-        log.warning("%s: empty, skipped", path)
+        log.warning("%s: empty, skipped", where(path))
         return None
     header = _parse_header(path, lines[0])
     if header is None:
@@ -474,7 +487,7 @@ def read_log(path: pathlib.Path) -> LogFile | None:
     if isinstance(declared, int) and declared != len(store_ids):
         log.warning(
             "%s: header declares %s message(s) but %s were readable, file is damaged",
-            path,
+            where(path),
             declared,
             len(store_ids),
         )
