@@ -118,7 +118,7 @@ def archived_message_counts(
         try:
             header = mailutils.decode_email_header(store.read_header(path))
         except (OSError, ValueError) as exc:
-            log.warning("%s: unreadable, not counted as archived: %s", path, exc)
+            log.warning("%s: unreadable, not counted as archived: %s", store.where(path), exc)
             continue
         known[mailutils.normalize_message_id(mailutils.message_id(header))] += 1
     known.pop("", None)

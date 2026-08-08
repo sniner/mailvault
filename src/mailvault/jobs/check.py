@@ -43,6 +43,7 @@ import os
 import pathlib
 import re
 
+from mailvault import utils
 from mailvault.jobs.common import JobError
 from mailvault.store import cas, heads, metalog
 
@@ -274,12 +275,25 @@ def _check_contents(
             log.info("%s: %s of %s checked", step, f"{read:,}", f"{len(entries):,}")
         try:
             if not store.verify(path):
-                log.error("%s: damaged -- the content does not match its checksum", path)
+                log.error(
+                    "%s: damaged -- the content does not match its checksum",
+                    store.where(path),
+                )
                 result.corrupt.append(path)
         except OSError as exc:
-            log.error("%s: unreadable: %s", path, exc)
+            log.error("%s: unreadable: %s", store.where(path), exc)
             result.unreadable.append(path)
     result.contents_checked = True
+
+
+def _where(path: pathlib.Path) -> str:
+    """A message as it reads inside the archive, for a caller with no store.
+
+    `quarantine_entry` is handed the one path it acts on and nothing else, which
+    is the right amount to know for renaming a file -- but a line about it still
+    belongs to the archive that was named at the start of the run.
+    """
+    return utils.under_dir(cas.MAIL_DIR, path)
 
 
 def quarantine_entry(
@@ -309,11 +323,11 @@ def quarantine_entry(
         try:
             path.rename(target)
         except OSError as exc:
-            log.error("%s: could not be quarantined: %s", path, exc)
+            log.error("%s: could not be quarantined: %s", _where(path), exc)
             return None
-        log.warning("%s: quarantined as %s", path, target.name)
+        log.warning("%s: quarantined as %s", _where(path), target.name)
         return target
-    log.error("%s: could not be quarantined, every name is taken", path)
+    log.error("%s: could not be quarantined, every name is taken", _where(path))
     return None
 
 

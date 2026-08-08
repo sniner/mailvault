@@ -129,7 +129,7 @@ def _replay_metalog(db: metadb.MetaDatabaseConnection, log_root: pathlib.Path) -
     for logfile in metalog.read_all(log_root):
         result.files += 1
         if logfile.mailbox is None:
-            log.warning("%s: no mailbox in the header, skipped", logfile.path)
+            log.warning("%s: no mailbox in the header, skipped", metalog.where(logfile.path))
             continue
         mailbox_id = db.add_mailbox(logfile.mailbox)
         # One transaction per file rather than per entry: the write methods

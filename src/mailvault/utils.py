@@ -64,3 +64,23 @@ def under(root: pathlib.Path, path: pathlib.Path) -> str:
         return str(path.relative_to(root))
     except ValueError:
         return str(path)
+
+
+def under_dir(name: str, path: pathlib.Path) -> str:
+    """A path as it reads from outside the directory `name` it lies in.
+
+    The same shortening as `under`, for the places that do not have the root to
+    shorten against. A file deep in one of an archive's directories is handled by
+    code that knows the directory it belongs to and nothing above it -- the
+    metadata log knows `meta/`, the resume points know `heads/` -- while what a
+    reader has in front of them is the archive those sit in.
+
+    Found by name rather than by counting levels upwards, so how deep a store
+    shards its files stays the store's own business. A path with no such
+    directory above it is returned whole, the same way and for the same reason
+    as in `under`.
+    """
+    for parent in path.parents:
+        if parent.name == name:
+            return under(parent.parent, path)
+    return str(path)

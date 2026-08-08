@@ -225,7 +225,7 @@ def import_state_file(store_path: pathlib.Path) -> int:
 
     imported = 0
     if heads.head_files(heads_root):
-        log.info("%s: heads are already there, the state file is only removed", path)
+        log.info("%s: heads are already there, the state file is only removed", path.name)
     else:
         for mailbox, folder, entry in state.SnapshotState.load(path).entries():
             heads.write(
@@ -428,5 +428,7 @@ def migrate_archive(store_path: pathlib.Path) -> MigrationResult:
         return result
 
     marker.write(store_path)
-    log.info("%s", marker.describe(marker.CURRENT_FORMAT))
+    # What the mark says, and what the mark being written *means* -- on its own
+    # the line reads like a stray remark in the middle of a run.
+    log.info("the archive is up to date: %s", marker.describe(marker.CURRENT_FORMAT))
     return result

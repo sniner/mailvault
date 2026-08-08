@@ -104,13 +104,13 @@ class SnapshotState:
         except FileNotFoundError:
             return cls(path)
         except (OSError, UnicodeDecodeError) as exc:
-            log.warning("%s: unreadable, starting from empty state: %s", path, exc)
+            log.warning("%s: unreadable, starting from empty state: %s", path.name, exc)
             return cls(path)
 
         try:
             payload = json.loads(body)
         except json.JSONDecodeError as exc:
-            log.warning("%s: not valid JSON, starting from empty state: %s", path, exc)
+            log.warning("%s: not valid JSON, starting from empty state: %s", path.name, exc)
             return cls(path)
 
         return cls(path, cls._extract(path, payload))
@@ -124,20 +124,20 @@ class SnapshotState:
         AttributeError in the middle of a backup run.
         """
         if not isinstance(payload, dict):
-            log.warning("%s: expected a JSON object, ignoring content", path)
+            log.warning("%s: expected a JSON object, ignoring content", path.name)
             return {}
         version = payload.get("version")
         if version not in SUPPORTED_STATE_VERSIONS:
             log.warning(
                 "%s: unknown state version %r (expected one of %s), ignoring content",
-                path,
+                path.name,
                 version,
                 ", ".join(str(v) for v in SUPPORTED_STATE_VERSIONS),
             )
             return {}
         raw = payload.get("snapshots")
         if not isinstance(raw, dict):
-            log.warning("%s: 'snapshots' is not an object, ignoring content", path)
+            log.warning("%s: 'snapshots' is not an object, ignoring content", path.name)
             return {}
 
         if version == LEGACY_STATE_VERSION:
@@ -145,13 +145,13 @@ class SnapshotState:
                 "%s: state written by an older version -- its timestamps are kept as a "
                 "record, but they are not resume points, so every folder is read in full "
                 "once",
-                path,
+                path.name,
             )
 
         folders: dict[str, dict[str, FolderState]] = {}
         for mailbox, entries in raw.items():
             if not isinstance(mailbox, str) or not isinstance(entries, dict):
-                log.warning("%s: skipping malformed entry for %r", path, mailbox)
+                log.warning("%s: skipping malformed entry for %r", path.name, mailbox)
                 continue
             valid: dict[str, FolderState] = {}
             for folder, value in entries.items():
@@ -161,7 +161,7 @@ class SnapshotState:
                 if parsed is not None:
                     valid[folder] = parsed
             if len(valid) != len(entries):
-                log.warning("%s: dropped malformed folder entries of %r", path, mailbox)
+                log.warning("%s: dropped malformed folder entries of %r", path.name, mailbox)
             if valid:
                 folders[mailbox] = valid
         return folders
@@ -186,7 +186,9 @@ class SnapshotState:
 
         last_run = value.get("last_run")
         if last_run is not None and not isinstance(last_run, str):
-            log.warning("%s: %s::%s has a non-string last_run, dropped", path, mailbox, folder)
+            log.warning(
+                "%s: %s::%s has a non-string last_run, dropped", path.name, mailbox, folder
+            )
             last_run = None
 
         resume = value.get("resume")
@@ -195,7 +197,7 @@ class SnapshotState:
             # folder is read in full, which is the safe outcome anyway.
             log.warning(
                 "%s: %s::%s has an unusable resume point, the folder is read in full",
-                path,
+                path.name,
                 mailbox,
                 folder,
             )
