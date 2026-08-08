@@ -391,3 +391,72 @@ def test_date_keeps_a_valid_offset_untouched():
     offset = parsed.utcoffset()
     assert offset is not None
     assert offset.total_seconds() == -5 * 3600
+
+
+class TestDateByConvention:
+    """The last rung: repairs that lean on a convention, tried after all others.
+
+    Every case here comes out of the reference archive, where 110 of 131,000
+    Date headers could not be read at all.
+    """
+
+    @staticmethod
+    def _date(value: str):
+        raw = f"From: a@example.com\r\nDate: {value}\r\n\r\n".encode()
+        return mailutils.date(mailutils.decode_email_header(raw))
+
+    def test_a_weekday_no_parser_knows_is_dropped(self):
+        """`Thur` is nobody's abbreviation, and the weekday says nothing anyway."""
+        parsed = self._date("Thur, 11 Dec 1997")
+
+        assert parsed is not None
+        assert (parsed.year, parsed.month, parsed.day) == (1997, 12, 11)
+
+    def test_a_month_spelled_out_in_full_is_read(self):
+        parsed = self._date("Thur, 26 June 1997")
+
+        assert parsed is not None
+        assert (parsed.year, parsed.month, parsed.day) == (1997, 6, 26)
+
+    def test_a_german_month_becomes_the_english_one(self):
+        parsed = self._date("Sa, 14 Dez 2002 00:49:11 +0100")
+
+        assert parsed is not None
+        assert (parsed.year, parsed.month, parsed.day) == (2002, 12, 14)
+        assert (parsed.hour, parsed.minute) == (0, 49)
+
+    def test_a_german_month_written_out(self):
+        parsed = self._date("Do, 5 März 2003 08:15:00 +0100")
+
+        assert parsed is not None
+        assert (parsed.year, parsed.month, parsed.day) == (2003, 3, 5)
+
+    def test_a_dotted_date_is_read_when_it_cannot_be_a_month(self):
+        parsed = self._date("27.11.2002 12:03:27")
+
+        assert parsed is not None
+        assert (parsed.year, parsed.month, parsed.day) == (2002, 11, 27)
+
+    def test_an_ambiguous_dotted_date_stays_unread(self, caplog):
+        """05.03.2002 is March to half the world and May to the other half."""
+        assert self._date("05.03.2002 12:03:27") is None
+        assert "Unreadable Date header" in caplog.text
+
+    def test_a_date_with_no_time_gets_midnight(self):
+        parsed = self._date("Mon, 11 Mar 2002 PST")
+
+        assert parsed is not None
+        assert (parsed.year, parsed.month, parsed.day) == (2002, 3, 11)
+        assert (parsed.hour, parsed.minute) == (0, 0)
+
+    def test_a_date_with_no_year_stays_unread(self, caplog):
+        """A year is never filled in -- it would be this year, not the message's."""
+        assert self._date("Wed, 17 Sep   GMT Daylight Time") is None
+        assert "Unreadable Date header" in caplog.text
+
+    def test_an_ordinary_header_never_reaches_any_of_this(self):
+        """The plain reading wins, so a repair cannot touch what already parses."""
+        parsed = self._date("Wed, 20 Feb 2026 12:00:00 +0100")
+
+        assert parsed is not None
+        assert (parsed.month, parsed.day, parsed.hour) == (2, 20, 12)

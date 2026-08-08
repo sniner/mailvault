@@ -133,32 +133,127 @@ _UTC_OFFSET = re.compile(r"\s*([+-])(\d{2})(\d{2})\b")
 def _repair_date(value: str) -> str:
     """Apply the mechanical repairs to a Date header, language-independently.
 
-    Deliberately only what cannot produce a *wrong* date. Separating a timezone
-    that is glued to the time changes nothing about the value, and an offset of
-    more than 24 hours (`+9752` occurs) is not a timezone by any reading, so
-    dropping it leaves the local time it was attached to.
-
-    Everything else that turns up -- German month names, `27.11.2002`, a weekday
-    spelled `Thur`, a date with no time at all -- needs either a table for one
-    language or a value the message never carried. Both are refused: a wrong date
-    is worse than a missing one, because a missing one is visible.
+    Only what cannot produce a *wrong* date. Separating a timezone that is glued
+    to the time changes nothing about the value, and an offset of more than 24
+    hours (`+9752` occurs) is not a timezone by any reading, so dropping it
+    leaves the local time it was attached to.
     """
     repaired = _GLUED_ZONE.sub(r"\1 \2", value)
     return _UTC_OFFSET.sub(lambda m: "" if int(m.group(2)) >= 24 else m.group(0), repaired)
 
 
+# The weekday a Date header opens with, if it has one.
+_WEEKDAY = re.compile(r"\A\s*[^\W\d_]+\s*,\s*")
+# A date written the German way, all numbers: "27.11.2002".
+_DOTTED = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b")
+# Any time at all, to tell a header that has one from a header that has none.
+_ANY_TIME = re.compile(r"\d{1,2}:\d{2}")
+# The year, which is where a missing time is inserted after.
+_YEAR = re.compile(r"\b(\d{4})\b")
+
+_MONTH_ABBR = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+
+# German month names, for mail written by a program that did not translate them.
+# One language, and the one this archive is full of. Another can be added beside
+# it, but not carelessly: French `Jui` is June or July depending on which
+# abbreviation somebody cut short, and that is where wrong dates start.
+_GERMAN_MONTH_NAMES = (
+    ("jan", "januar"),
+    ("feb", "februar"),
+    ("mrz", "mär", "märz", "maer", "maerz"),
+    ("apr", "april"),
+    ("mai",),
+    ("jun", "juni"),
+    ("jul", "juli"),
+    ("aug", "august"),
+    ("sep", "sept", "september"),
+    ("okt", "oktober"),
+    ("nov", "november"),
+    ("dez", "dezember"),
+)
+
+# Paired with the English abbreviations by position rather than by hand, so a
+# month cannot end up beside the wrong one through a typo in a long table.
+_GERMAN_MONTHS = {
+    name: _MONTH_ABBR[number]
+    for number, names in enumerate(_GERMAN_MONTH_NAMES)
+    for name in names
+}
+_GERMAN_MONTH = re.compile(
+    r"\b(" + "|".join(sorted(_GERMAN_MONTHS, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _repair_date_by_convention(value: str) -> str:
+    """Repair a Date header the ways that lean on a convention rather than on form.
+
+    The rung below `_repair_date`, tried only once every plainer reading has
+    failed, and each step still chosen so that it cannot turn one date into a
+    different one:
+
+    - **The weekday goes.** It is optional in RFC 5322 and says nothing the rest
+      of the header does not, so a `Thur` or a `Sa` that no parser knows costs
+      nothing to drop -- and dropping it is what makes the weekday, of any
+      language, stop being a problem without a table for any of them.
+    - **German month names become English ones.** A table for one language, and
+      `Dez` is December in every reading of it.
+    - **`27.11.2002` becomes `27 Nov 2002`, but only when the first number
+      cannot be a month.** Day-first is the convention wherever the dots are,
+      yet `05.03.2002` is the fifth of March to half the world and the third of
+      May to the other half, so that one stays unread rather than guessed.
+    - **A date with no time at all gets midnight.** The one step here that adds
+      something the message never carried, and the only one that can be wrong --
+      in the time, never in the date. It buys the five `Mon, 11 Mar 2002 PST` of
+      the reference archive a day that is right to sort and to filter by.
+    """
+    repaired = _WEEKDAY.sub("", value)
+    repaired = _GERMAN_MONTH.sub(lambda m: _GERMAN_MONTHS[m.group(1).lower()], repaired)
+    repaired = _DOTTED.sub(_dotted_date, repaired)
+    if not _ANY_TIME.search(repaired):
+        repaired = _YEAR.sub(r"\1 00:00:00", repaired, count=1)
+    return repaired
+
+
+def _dotted_date(match: re.Match[str]) -> str:
+    """Rewrite `27.11.2002` as `27 Nov 2002`, or leave an ambiguous one alone."""
+    day, month, year = (int(part) for part in match.groups())
+    if day <= 12 or not 1 <= month <= 12:
+        return match.group(0)
+    return f"{day} {_MONTH_ABBR[month - 1]} {year}"
+
+
 def _date_candidates(value: str) -> collections.abc.Iterator[str]:
-    """Yield the readings of a Date header worth trying, plainest first."""
-    seen = {value}
-    yield value
+    """Yield the readings of a Date header worth trying, plainest first.
+
+    Two rungs of repair, and the order between them is the point: a header that
+    parses as it stands, or after being decoded, never reaches the repairs that
+    lean on a convention.
+    """
     try:
         decoded = str(email.header.make_header(email.header.decode_header(value)))
     except (ValueError, LookupError, UnicodeDecodeError):
         decoded = value
-    for candidate in (decoded, _repair_date(value), _repair_date(decoded)):
-        if candidate not in seen:
-            seen.add(candidate)
-            yield candidate
+    readings = [value, decoded, _repair_date(value), _repair_date(decoded)]
+    readings += [_repair_date_by_convention(reading) for reading in readings]
+    seen: set[str] = set()
+    for reading in readings:
+        if reading and reading not in seen:
+            seen.add(reading)
+            yield reading
 
 
 def date(msg: email.message.EmailMessage) -> datetime | None:
@@ -172,12 +267,18 @@ def date(msg: email.message.EmailMessage) -> datetime | None:
 
     which decodes to an entirely ordinary `Thu, 18 Dec 1997 22:03:34 +0100
     ((MEZ) Mitteleuropäische Zeit)`. Others glue the timezone to the time or
-    carry an offset of `+9752`. Each reading is tried in turn, plainest first.
+    carry an offset of `+9752`. Others again open with a weekday no parser knows,
+    name their month in German, or leave the time out altogether. Each reading is
+    tried in turn, plainest first, and the ones that lean on a convention come
+    last -- see `_date_candidates`.
 
     What still cannot be read yields None, never an exception. Walking an archive
     must not stop at one bad header -- and None means "unknown", which is a
     truthful thing to store. An epoch date instead would sort these messages in
     among real ones from the seventies and hide them from `WHERE date IS NULL`.
+    That is also why no reading here fills in a *year*: `Wed, 17 Sep GMT Daylight
+    Time` stays unknown rather than being dated by whichever year the run happens
+    to take place in.
     """
     value = header_text(msg, "Date")
     if not value:

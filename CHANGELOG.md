@@ -162,6 +162,18 @@
 
 ### Fixed
 
+- **Ten more kinds of broken `Date` header are read** -- a weekday no parser knows (`Thur`), a
+  month named in German (`Sa, 14 Dez 2002`), the all-numeric `27.11.2002`, and a date that
+  carries no time at all (`Mon, 11 Mar 2002 PST`). On the reference archive that is 13 of the
+  remaining warnings down to 3. These readings are tried only after every plainer one has failed,
+  and each is still chosen so that it cannot turn one date into a different one: the weekday is
+  optional in RFC 5322 and simply dropped, which handles every language at once; `05.03.2002`
+  stays unread, because it is March to half the world and May to the other half; and **no reading
+  ever fills in a year**. What a date-guessing library would do instead was measured -- given
+  `Do, 5 Dez 2002` it answers 2002-05-08, taking the day from the day the run happens to take
+  place on, and given a header with no year it answers this year. A wrong date is worse than a
+  missing one, because a missing one is visible
+
 - **What the commands say about themselves is about the mail, not about the machinery.** `backup`
   offered to "back up mails to the local content-addressed archive", which names an
   implementation nobody using it has to know and leaves out what it actually does: add to the
