@@ -130,15 +130,34 @@ def _make_delta_token(delta_link: str) -> dict:
     }
 
 
-def _parse_graph_datetime(value: str | None) -> datetime | None:
-    """Parse a Graph `receivedDateTime` like `2024-01-01T12:00:00Z`.
+def _parse_graph_datetime(value: object) -> datetime | None:
+    """Parse a Graph `receivedDateTime` like `2024-01-01T12:00:00Z`, or give up.
 
     `datetime.fromisoformat` accepts the trailing `Z` on Python 3.11+, which is
     the project's baseline.
+
+    Never raises, because one of its callers is handed a value out of a resume
+    point -- a file on disk that anything may have happened to. `heads` promises
+    that an unusable resume point degrades to "read the folder in full", and a
+    `ValueError` from here instead escaped `folder_backup`, was caught by the
+    per-folder handler in `_backup_to_log`, and dropped that folder from the
+    backup. Every night, since nothing rewrites the head that caused it.
+
+    A timestamp without a zone is refused for the same reason it cannot be used:
+    subtracting it from an aware `now()` raises, and the only thing it is used
+    for is an age.
     """
-    if not value:
+    if not isinstance(value, str) or not value:
         return None
-    return datetime.fromisoformat(value)
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        log.warning("%r is not a usable timestamp, treating it as unknown", value)
+        return None
+    if parsed.tzinfo is None:
+        log.warning("%r has no timezone, treating it as unknown", value)
+        return None
+    return parsed
 
 
 def _token_age(issued: datetime | None) -> str:

@@ -182,6 +182,34 @@
 
 ### Fixed
 
+- **A catch-up holds its resume point back when the log did not reach disk.** The pass that
+  brings a folder back in step by listing it -- what an archive lifted from a version-1
+  `state.json` does on its first run -- reported only whether the downloads worked. A write
+  that failed after them (a full share, a quota, a read-only remount) left the messages stored
+  with nothing recording where they belong, while the resume point moved past them: no later
+  run asks for them again, and `archive check` reports them as belonging to no known place for
+  good. The ordinary pass has guarded exactly this since 0.8.0; the catch-up threw the answer
+  away
+
+- **A Graph resume point with an unreadable timestamp no longer costs the folder its backup.**
+  Anything but a proper ISO time in the point's `issued` field -- and it is a file on disk,
+  which anything may have happened to -- raised out of the backend, was caught by the
+  per-folder handler, and dropped that folder from the run. Silently, and every night after,
+  because nothing rewrites the head that caused it. Now it degrades to "read the folder in
+  full", which is what `heads` promises for anything unusable. A timestamp without a timezone
+  counts as unusable too: an age cannot be taken from it
+
+- **`archive migrate` and `archive compact` exit non-zero when they did not finish.** Both
+  printed their failure -- "consolidated files did not verify", "NOT marked" -- and returned 0,
+  so a cron job filed the run as a success. For the migration the mark is the verdict and now
+  also the exit code: it is written last, so an archive carrying it got through every step
+
+- **The refusal of a newer archive format is a message again, not a traceback.**
+  `marker.FormatError` was missing from the errors the CLI knows, so the one sentence written
+  for it -- "written by a newer version of mailvault … Upgrade mailvault" -- was buried in
+  stack frames. That is the case it exists for: two machines, one shared archive, one of them
+  still on the old version
+
 - **`archive import` refuses a source that is the archive itself.** `mailvault archive import
   --move .` found every message already stored, answered each with EXISTS, and then deleted it
   from the source -- which was the archive. A ten-message archive ended with none, and the report
