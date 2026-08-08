@@ -182,6 +182,14 @@
 
 ### Fixed
 
+- **`archive import` refuses a source that is the archive itself.** `mailvault archive import
+  --move .` found every message already stored, answered each with EXISTS, and then deleted it
+  from the source -- which was the archive. A ten-message archive ended with none, and the report
+  said `10 message(s) read -- 0 imported, 10 already in .`, exit 0. It became a plausible slip
+  when the archive stopped being a positional argument and turned into the directory one is
+  standing in. Refused now with or without `--move`, and in both directions: a source inside the
+  archive, or an archive inside the source
+
 - **Ten more kinds of broken `Date` header are read** -- a weekday no parser knows (`Thur`), a
   month named in German (`Sa, 14 Dez 2002`), the all-numeric `27.11.2002`, and a date that
   carries no time at all (`Mon, 11 Mar 2002 PST`). On the reference archive that is 13 of the

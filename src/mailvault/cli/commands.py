@@ -597,6 +597,30 @@ def export_entries(
     return 0
 
 
+def _refuse_importing_the_archive(archive: pathlib.Path, source: pathlib.Path) -> None:
+    """Refuse an import whose source and destination are the same mail.
+
+    `import` reads from somewhere else -- that is what makes it an import. Since
+    the archive stopped being a positional argument and became the directory one
+    is standing in, `mailvault archive import --move .` is a plausible slip
+    rather than an absurdity, and it is the one command in the program that
+    deletes mail: every message is found, answered with EXISTS because it is
+    already there, and then removed from the source. Which is the archive.
+
+    Refused with or without `--move`. Without it the run is merely a long way of
+    doing nothing, and one rule is easier to rely on than one that depends on a
+    flag.
+    """
+    here = archive.resolve()
+    there = source.resolve()
+    if here == there or there.is_relative_to(here) or here.is_relative_to(there):
+        raise jobs.JobError(
+            f"{source}: an import reads from somewhere else, and this is the archive"
+            f" itself. With --move it would find every message already stored and"
+            f" then delete it. Name a source outside {archive}"
+        )
+
+
 def run_archive(args: argparse.Namespace) -> int:
     """Run an `archive` subcommand (stats/import/addresses/compress/create-db/...).
 
@@ -621,6 +645,7 @@ def run_archive(args: argparse.Namespace) -> int:
         for where, addr in _external(archive, args.docuware).addresses():
             print(where, addr)
     elif cmd == "import":
+        _refuse_importing_the_archive(archive, args.source)
         source = _external(args.source, args.docuware)
         destination = cas.mail_store(archive, compress=args.compress)
         return report_import(

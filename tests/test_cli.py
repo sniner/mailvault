@@ -524,6 +524,66 @@ class TestWhereTheOptionsLive:
         assert args.archive == pathlib.Path("/srv/mail")
 
 
+class TestImportSource:
+    """An import reads from somewhere else -- that is what makes it an import."""
+
+    @staticmethod
+    def _import_args(archive: pathlib.Path, source: pathlib.Path, move: bool = True):
+        return argparse.Namespace(
+            command="archive",
+            archive_command="import",
+            archive=archive,
+            source=source,
+            docuware=False,
+            move=move,
+            compress=False,
+            dry_run=False,
+        )
+
+    def test_the_archive_itself_is_refused(self, tmp_path):
+        """`cd <archive> && archive import --move .` used to empty the archive."""
+        marker.write(tmp_path)
+        store = cas.mail_store(tmp_path)
+        store.add(b"Message-Id: <a@example.com>\r\n\r\nbody\r\n")
+
+        with pytest.raises(jobs.JobError, match="this is the archive"):
+            commands.run_archive(self._import_args(tmp_path, tmp_path))
+
+        assert len(list((tmp_path / "mail").rglob("*.eml"))) == 1
+
+    def test_a_directory_inside_the_archive_is_refused(self, tmp_path):
+        marker.write(tmp_path)
+        with pytest.raises(jobs.JobError, match="this is the archive"):
+            commands.run_archive(self._import_args(tmp_path, tmp_path / "mail"))
+
+    def test_an_archive_below_the_source_is_refused(self, tmp_path):
+        """The other way round empties it just as thoroughly."""
+        archive = tmp_path / "archive"
+        cas.mail_store(archive)
+        marker.write(archive)
+
+        with pytest.raises(jobs.JobError, match="this is the archive"):
+            commands.run_archive(self._import_args(archive, tmp_path))
+
+    def test_refused_without_move_as_well(self, tmp_path):
+        """One rule beats one that depends on a flag."""
+        marker.write(tmp_path)
+        with pytest.raises(jobs.JobError, match="this is the archive"):
+            commands.run_archive(self._import_args(tmp_path, tmp_path, move=False))
+
+    def test_a_source_elsewhere_is_imported(self, tmp_path):
+        source = tmp_path / "elsewhere"
+        source.mkdir()
+        (source / "a.eml").write_bytes(b"Message-Id: <a@example.com>\r\n\r\nbody\r\n")
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        marker.write(archive)
+
+        assert commands.run_archive(self._import_args(archive, source, move=True)) == 0
+        assert len(list((archive / "mail").rglob("*.eml"))) == 1
+        assert not (source / "a.eml").exists()
+
+
 class TestAnArchiveIsAMarkedDirectory:
     """`FORMAT` answers "is this an archive", the way `.git` does for a repository.
 
