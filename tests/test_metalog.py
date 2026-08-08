@@ -26,6 +26,20 @@ def _write(root, mailbox="job", folder="INBOX", store_ids=(STORE_ID,)):
     return writer.seal(WHEN)
 
 
+def _read_log(path) -> metalog.LogFile:
+    """The log file a test expects to be readable, so a failure lands on the assertion."""
+    logfile = metalog.read_log(path)
+    assert logfile is not None, f"unreadable log file: {path}"
+    return logfile
+
+
+def _read_head(root, job, folder) -> heads.Head:
+    """The head a test expects to be there."""
+    head = heads.read(root, job, folder)
+    assert head is not None, f"no head for {job}::{folder}"
+    return head
+
+
 class TestWriting:
     def test_nothing_observed_writes_no_file(self, tmp_path):
         """An unchanged folder must not litter the log with empty files."""
@@ -97,8 +111,8 @@ class TestWriting:
 
         assert first != second
         assert len(metalog.log_files(root)) == 2
-        assert metalog.read_log(second).prev == first.name.removesuffix(".jsonl")
-        assert metalog.read_log(first).prev is None
+        assert _read_log(second).prev == first.name.removesuffix(".jsonl")
+        assert _read_log(first).prev is None
 
     def test_folder_with_separators_stays_out_of_the_filename(self, tmp_path):
         """Names like 'Archiv/2016' must never become path components."""
@@ -468,14 +482,14 @@ class TestTheChain:
 
         (path,) = self._seal(root, ["aa"])
 
-        assert metalog.read_log(path).prev is None
+        assert _read_log(path).prev is None
 
     def test_the_head_names_the_newest(self, tmp_path):
         root = tmp_path / "meta"
         self._seal(root, ["aa"])
         (second,) = self._seal(root, ["bb"])
 
-        head = heads.read(_heads(root), "job", "INBOX")
+        head = _read_head(_heads(root), "job", "INBOX")
 
         assert head.log == second.name.removesuffix(".jsonl")
 
@@ -484,10 +498,12 @@ class TestTheChain:
         names = [self._seal(root, [sid])[0].name.removesuffix(".jsonl") for sid in "abc"]
 
         walked = []
-        hashval = heads.read(_heads(root), "job", "INBOX").log
+        hashval = _read_head(_heads(root), "job", "INBOX").log
         while hashval is not None:
             walked.append(hashval)
-            hashval = metalog.read_log(metalog.open_store(root).locate(hashval)).prev
+            path = metalog.open_store(root).locate(hashval)
+            assert path is not None
+            hashval = _read_log(path).prev
 
         assert walked == list(reversed(names))
 
@@ -496,11 +512,14 @@ class TestTheChain:
         self._seal(root, ["aa"], folder="INBOX")
         self._seal(root, ["bb"], folder="Sent")
 
-        inbox = heads.read(_heads(root), "job", "INBOX")
-        sent = heads.read(_heads(root), "job", "Sent")
+        inbox = _read_head(_heads(root), "job", "INBOX")
+        sent = _read_head(_heads(root), "job", "Sent")
 
         assert inbox.log != sent.log
-        assert metalog.read_log(metalog.open_store(root).locate(sent.log)).prev is None
+        assert sent.log is not None
+        path = metalog.open_store(root).locate(sent.log)
+        assert path is not None
+        assert _read_log(path).prev is None
 
     def test_a_place_without_a_mailbox_carries_no_chain(self, tmp_path):
         """The type allows it, so it is answered rather than assumed away."""
@@ -510,7 +529,7 @@ class TestTheChain:
 
         (path,) = writer.seal(WHEN)
 
-        assert metalog.read_log(path).prev is None
+        assert _read_log(path).prev is None
         assert heads.head_files(_heads(root)) == []
 
     def test_a_place_without_a_folder_gets_a_head_all_the_same(self, tmp_path):
@@ -548,7 +567,7 @@ class TestCompactAndTheChain:
         metalog.compact(root, _heads(root))
 
         (path,) = metalog.log_files(root)
-        assert metalog.read_log(path).prev is None
+        assert _read_log(path).prev is None
 
     def test_and_the_head_is_moved_onto_it(self, tmp_path):
         root = tmp_path / "meta"
@@ -558,7 +577,7 @@ class TestCompactAndTheChain:
         metalog.compact(root, _heads(root))
 
         (path,) = metalog.log_files(root)
-        head = heads.read(_heads(root), "job", "INBOX")
+        head = _read_head(_heads(root), "job", "INBOX")
         assert head.log == path.name.removesuffix(".jsonl")
 
     def test_compacting_twice_changes_nothing(self, tmp_path):
@@ -566,9 +585,9 @@ class TestCompactAndTheChain:
         TestTheChain._seal(root, ["aa"])
         TestTheChain._seal(root, ["bb"])
         metalog.compact(root, _heads(root))
-        before = heads.read(_heads(root), "job", "INBOX").log
+        before = _read_head(_heads(root), "job", "INBOX").log
 
         metalog.compact(root, _heads(root))
 
-        assert heads.read(_heads(root), "job", "INBOX").log == before
+        assert _read_head(_heads(root), "job", "INBOX").log == before
         assert len(metalog.log_files(root)) == 1

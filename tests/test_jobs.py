@@ -49,14 +49,20 @@ def _token(date: datetime) -> dict:
 ARCHIVED_TOKEN = _token(ARCHIVED_AT)
 
 
-def _head(root, mailbox: str = "test-job", folder: str = "INBOX") -> heads.Head | None:
-    """The head of one place in an archive, or None when there is none."""
-    return heads.read(root / heads.DEFAULT_HEADS_DIR, mailbox, folder)
+def _head(root, mailbox: str = "test-job", folder: str = "INBOX") -> heads.Head:
+    """The head of one place in an archive, which a test only asks for when it is there."""
+    head = heads.read(root / heads.DEFAULT_HEADS_DIR, mailbox, folder)
+    assert head is not None, f"no head for {mailbox}::{folder}"
+    return head
 
 
 def _resume_date(root, mailbox: str = "test-job", folder: str = "INBOX") -> datetime | None:
-    """Read the resume date out of a head, or None when there is none."""
-    head = _head(root, mailbox, folder)
+    """Read the resume date out of a head, or None when there is no head at all.
+
+    Not through `_head`: a folder that failed has no head, and that is one of the
+    things this is asked about.
+    """
+    head = heads.read(root / heads.DEFAULT_HEADS_DIR, mailbox, folder)
     token = None if head is None else head.resume
     return None if token is None else datetime.fromisoformat(token["at"])
 
@@ -456,7 +462,7 @@ class TestCatchUp:
                 self._run(_make_job(folders=["INBOX"]), client, tmp_path)
 
         assert "metadata log not sealed" in caplog.text
-        assert heads.read(tmp_path / "heads", "test-job", "INBOX").resume is None
+        assert _head(tmp_path).resume is None
 
     def test_a_sealed_log_starts_the_point(self, tmp_path):
         """The other side of it: a clean catch-up does earn a resume point."""
@@ -465,7 +471,7 @@ class TestCatchUp:
 
         self._run(_make_job(folders=["INBOX"]), client, tmp_path)
 
-        assert heads.read(tmp_path / "heads", "test-job", "INBOX").resume == {
+        assert _head(tmp_path).resume == {
             "kind": "test-backend",
             "at": "now",
         }
@@ -1197,6 +1203,7 @@ class TestLiftingAnOldArchive:
 
         (logfile,) = metalog.log_files(tmp_path / "meta")
         entry = metalog.read_log(logfile)
+        assert entry is not None
         assert entry.prev is None
         head = _head(tmp_path)
         assert head.log == entry.hashval

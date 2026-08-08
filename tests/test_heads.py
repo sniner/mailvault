@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
 from mailvault.store import atomic, heads
 
@@ -12,10 +13,17 @@ WHEN = datetime(2026, 8, 7, 16, 8, 55, tzinfo=UTC)
 UID = {"kind": "imap-uid", "uid": 4711}
 
 
-def _head(job="gmail.com", folder="INBOX", **overrides) -> heads.Head:
-    fields = dict(job=job, folder=folder, last_run=WHEN.isoformat(), resume=UID)
+def _head(job="gmail.com", folder="INBOX", **overrides: Any) -> heads.Head:
+    fields: dict[str, Any] = dict(job=job, folder=folder, last_run=WHEN.isoformat(), resume=UID)
     fields.update(overrides)
     return heads.Head(**fields)
+
+
+def _read(root, job="gmail.com", folder="INBOX") -> heads.Head:
+    """The head a test expects to be there, so the failure lands on the assertion."""
+    head = heads.read(root, job, folder)
+    assert head is not None, f"no head for {job}::{folder}"
+    return head
 
 
 class TestTheName:
@@ -129,7 +137,7 @@ class TestRoundTrip:
         heads.write(tmp_path, _head())
         heads.write(tmp_path, _head(resume={"kind": "imap-uid", "uid": 9999}))
 
-        assert heads.read(tmp_path, "gmail.com", "INBOX").resume == {
+        assert _read(tmp_path, "gmail.com", "INBOX").resume == {
             "kind": "imap-uid",
             "uid": 9999,
         }
@@ -211,7 +219,7 @@ class TestADamagedHead:
     def test_an_unparsable_timestamp_is_not_a_date(self, tmp_path, caplog):
         heads.write(tmp_path, heads.Head(job="j", folder="f", last_run="letzten Dienstag"))
 
-        assert heads.read(tmp_path, "j", "f").last_run_at() is None
+        assert _read(tmp_path, "j", "f").last_run_at() is None
         assert "unparsable timestamp" in caplog.text
 
     def test_a_naive_timestamp_is_read_as_local_time(self, tmp_path):
@@ -219,7 +227,7 @@ class TestADamagedHead:
         naive = datetime(2026, 8, 7, 16, 8, 55)
         heads.write(tmp_path, heads.Head(job="j", folder="f", last_run=naive.isoformat()))
 
-        got = heads.read(tmp_path, "j", "f").last_run_at()
+        got = _read(tmp_path, "j", "f").last_run_at()
 
         assert got is not None
         assert got.tzinfo is not None
