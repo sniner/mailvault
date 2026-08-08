@@ -1,3 +1,9 @@
+# This file belongs into the archive it describes, as `mailvault.toml`. Every
+# command then finds it by itself: `cd /srv/archive/example && mailvault backup`,
+# or `mailvault --archive /srv/archive/example backup` from anywhere else.
+# Naming a file elsewhere with `--config` still works, and then the archive has
+# to be named too.
+
 [global]
 compress = true
 

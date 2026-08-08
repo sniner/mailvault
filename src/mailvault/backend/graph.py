@@ -32,16 +32,141 @@ RETRY_MAX_DELAY = 60.0
 # Page size for the lightweight message index (no message bodies involved).
 INDEX_PAGE_SIZE = 500
 
+# Page size for a delta round. Only ids come back, so the pages are small and
+# the round trips are what costs -- a folder of 77,000 messages is 155 requests
+# at this size rather than 777. The service caps it where it will not honour it.
+DELTA_PAGE_SIZE = 500
 
-def _parse_graph_datetime(value: str | None) -> datetime | None:
-    """Parse a Graph `receivedDateTime` like `2024-01-01T12:00:00Z`.
+# The `kind` this backend stamps on the resume points it produces. A point
+# carrying any other kind belongs to a different backend and is read in full.
+DELTA_RESUME_KIND = "graph-delta"
+
+# A delta link can stop being honoured, and Graph says so in two different ways.
+# `410 Gone` is the documented sync-reset; an expired token instead arrives as
+# "a 40X-series error with error codes such as syncStateNotFound". Both mean the
+# same thing to us, and both are normal recovery paths rather than exceptional
+# ones -- for Outlook entities there is no fixed lifetime at all, only a
+# service-side cache that drops the oldest tokens as it fills.
+DELTA_EXPIRED_STATUS = 410
+DELTA_EXPIRED_CODES = frozenset(
+    {
+        "syncstatenotfound",
+        "resyncrequired",
+        "resyncchangesapplydifferences",
+        "resyncchangesuploaddifferences",
+    }
+)
+
+
+def _is_delta_expired(resp: httpx.Response) -> bool:
+    """Whether this response means the delta link is no longer usable.
+
+    Restricted to 4xx with a resync error code, plus 410 outright: a 401 or 403
+    is about credentials, not about the token, and must not be mistaken for one.
+    """
+    if resp.status_code == DELTA_EXPIRED_STATUS:
+        return True
+    if not 400 <= resp.status_code < 500:
+        return False
+    try:
+        code = resp.json().get("error", {}).get("code", "")
+    except (ValueError, AttributeError):
+        return False
+    return isinstance(code, str) and code.lower() in DELTA_EXPIRED_CODES
+
+
+class _DeltaExpired(Exception):
+    """Graph refused the delta link it gave us; the round cannot be continued."""
+
+
+def _delta_point(resume: dict | None) -> tuple[str, datetime | None] | None:
+    """Read this backend's own resume point, or None for anything else.
+
+    Returns the delta link and when it was issued -- the latter only so that a
+    rejected token can say how old it was, which is the one way to find out how
+    long these actually live.
+    """
+    if resume is None:
+        return None
+    if resume.get("kind") != DELTA_RESUME_KIND:
+        log.info("resume point of kind %r is not ours, reading in full", resume.get("kind"))
+        return None
+    link = resume.get("delta_link")
+    if not isinstance(link, str) or not link:
+        log.warning("resume point %r has no usable delta link, reading in full", resume)
+        return None
+    return link, _parse_graph_datetime(resume.get("issued"))
+
+
+def _delta_token(new_link: str | None, previous: object, stored: int) -> dict | None:
+    """The point for next time, or None to leave the previous one standing.
+
+    A completed delta round ends on a link meaning "you are caught up here", and
+    it is the *server* saying so rather than something inferred from silence --
+    so a round records it even when nothing changed. That is the whole point:
+    without it, an unchanged folder would be walked from the beginning every
+    night.
+
+    The exception is the very first round over a folder. There is no earlier
+    point to fall back on, and a round that starts from scratch *and* archives
+    nothing is the one case where the link would claim coverage of mail nobody
+    ever showed us -- the shape of the Proton Bridge failure, in Graph terms.
+    Withholding it costs one more round next time, on a folder that by
+    definition had nothing in it.
+    """
+    if new_link is None:
+        return None
+    if previous is None and stored == 0:
+        return None
+    return _make_delta_token(new_link)
+
+
+def _make_delta_token(delta_link: str) -> dict:
+    """Wrap a delta link as a resume point, stamped with when it was issued."""
+    return {
+        "kind": DELTA_RESUME_KIND,
+        "delta_link": delta_link,
+        "issued": datetime.now(UTC).isoformat(),
+    }
+
+
+def _parse_graph_datetime(value: object) -> datetime | None:
+    """Parse a Graph `receivedDateTime` like `2024-01-01T12:00:00Z`, or give up.
 
     `datetime.fromisoformat` accepts the trailing `Z` on Python 3.11+, which is
     the project's baseline.
+
+    Never raises, because one of its callers is handed a value out of a resume
+    point -- a file on disk that anything may have happened to. `heads` promises
+    that an unusable resume point degrades to "read the folder in full", and a
+    `ValueError` from here instead escaped `folder_backup`, was caught by the
+    per-folder handler in `_backup_to_log`, and dropped that folder from the
+    backup. Every night, since nothing rewrites the head that caused it.
+
+    A timestamp without a zone is refused for the same reason it cannot be used:
+    subtracting it from an aware `now()` raises, and the only thing it is used
+    for is an age.
     """
-    if not value:
+    if not isinstance(value, str) or not value:
         return None
-    return datetime.fromisoformat(value)
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        log.warning("%r is not a usable timestamp, treating it as unknown", value)
+        return None
+    if parsed.tzinfo is None:
+        log.warning("%r has no timezone, treating it as unknown", value)
+        return None
+    return parsed
+
+
+def _token_age(issued: datetime | None) -> str:
+    """How old a resume point was, for the log line that reports its rejection."""
+    if issued is None:
+        return "an unknown time"
+    delta = datetime.now(UTC) - issued
+    hours = delta.total_seconds() / 3600
+    return f"{hours:.1f}h" if hours < 48 else f"{delta.days}d"
 
 
 def _backoff_delay(attempt: int) -> float:
@@ -314,37 +439,105 @@ class MSGraphClient:
         self,
         folder_name: str,
         folder_id: str,
-        since: datetime | None = None,
         select: str = "id,receivedDateTime",
         page_size: int = 50,
     ) -> collections.abc.Generator[dict[str, Any], None, None]:
-        """List messages in a folder, optionally filtered by date."""
+        """List every message in a folder, oldest first."""
         url = f"{GRAPH_BASE_URL}/users/{self._user}/mailFolders/{folder_id}/messages"
         params: dict[str, str] = {
             "$top": str(page_size),
             "$select": select,
             "$orderby": "receivedDateTime asc",
         }
-        if since:
-            # The trailing Z says UTC, so the value has to actually be UTC.
-            # `astimezone` converts an aware value and reads a naive one as local
-            # time, which is what a naive one means here.
-            since_str = since.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-            params["$filter"] = f"receivedDateTime ge {since_str}"
-
         yield from self._paginate(url, params)
+
+    def _delta_round(
+        self,
+        folder_name: str,
+        folder_id: str,
+        point: tuple[str, datetime | None] | None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Walk one delta round; return its messages and the link for next time.
+
+        A round is a chain of requests: the first carries the query options, and
+        every one after it is a URL Graph handed back, followed *verbatim*.
+        Graph encodes the options into those tokens, which is why they are given
+        exactly once and why changing `$select` later means starting a new cycle.
+        The chain ends when a response carries `@odata.deltaLink` instead of
+        `@odata.nextLink`.
+
+        Entries marked `@removed` are dropped. They arrive for a message that
+        was deleted *or moved out of this folder*, and Graph emits them whether
+        or not they were asked for: delta tracks the collection, not the
+        individual message. Read/unread flips arrive the same way, and those are
+        kept -- re-storing a message costs a download the storage then discards,
+        while dropping one that only looked unchanged would cost the message.
+
+        A rejected token raises `_DeltaExpired` rather than quietly starting
+        over: reading the folder in full is the caller's decision, because only
+        the caller knows whether the archive can be brought back in step by
+        listing instead of downloading.
+        """
+        ctx = f"{self.job_name}::{folder_name}"
+        if point is not None:
+            url: str = point[0]
+            params: dict[str, str] | None = None
+        else:
+            url = f"{GRAPH_BASE_URL}/users/{self._user}/mailFolders/{folder_id}/messages/delta"
+            params = {"$select": "id"}
+        headers = {"Prefer": f"odata.maxpagesize={DELTA_PAGE_SIZE}"}
+
+        items: list[dict[str, Any]] = []
+        removed = 0
+        while True:
+            resp = self._request("GET", url, params=params, headers=headers)
+            if point is not None and _is_delta_expired(resp):
+                log.info(
+                    "%s: delta token rejected (HTTP %s) after %s",
+                    ctx,
+                    resp.status_code,
+                    _token_age(point[1]),
+                )
+                raise _DeltaExpired
+            resp.raise_for_status()
+            data = resp.json()
+
+            for item in data.get("value", []):
+                if "@removed" in item:
+                    removed += 1
+                    continue
+                items.append(item)
+
+            next_link = data.get("@odata.nextLink")
+            if next_link:
+                url, params = next_link, None
+                continue
+
+            if removed:
+                log.info("%s: %s message(s) gone from the folder", ctx, removed)
+            delta_link = data.get("@odata.deltaLink")
+            if not isinstance(delta_link, str) or not delta_link:
+                # Without it there is no position to carry forward, so the next
+                # run starts over. Costly, never wrong.
+                log.warning("%s: delta round ended without a link", ctx)
+                return items, None
+            return items, delta_link
+
+    def resume_point(self, folder_name: str) -> dict | None:
+        """A fresh delta link over the folder as it stands, fetching no bodies."""
+        folder_id = self._resolve_folder(folder_name)
+        _items, delta_link = self._delta_round(folder_name, folder_id, None)
+        return _make_delta_token(delta_link) if delta_link else None
 
     def message_index(
         self,
         folder_name: str,
-        since: datetime | None = None,
     ) -> collections.abc.Generator[base.MessageRef, None, None]:
-        """List the folder's messages by Message-ID only, without downloading bodies."""
+        """List the folder's messages by Message-ID only, without fetching bodies."""
         folder_id = self._resolve_folder(folder_name)
         for item in self._iter_messages(
             folder_name,
             folder_id,
-            since=since,
             select="id,internetMessageId,receivedDateTime",
             page_size=INDEX_PAGE_SIZE,
         ):
@@ -365,7 +558,7 @@ class MSGraphClient:
         self,
         folder_name: str,
         store: cas.ContentAddressedStorage,
-        since: datetime | None = None,
+        resume: dict | None = None,
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> base.BackupResult:
         """Store a folder's messages, recording each via `callback`.
@@ -374,8 +567,15 @@ class MSGraphClient:
         collected in `BackupResult.deletable`, and the caller purges them only
         after the metadata log is sealed.
         """
+        point = _delta_point(resume)
+        if resume is not None and point is None:
+            # A point was handed in and it is not one of ours.
+            return base.BackupResult(resume_lost=True)
         folder_id = self._resolve_folder(folder_name)
-        messages = list(self._iter_messages(folder_name, folder_id, since))
+        try:
+            messages, delta_link = self._delta_round(folder_name, folder_id, point)
+        except _DeltaExpired:
+            return base.BackupResult(resume_lost=True)
         log.info("%s::%s: found %s messages", self.job_name, folder_name, len(messages))
 
         result = base.BackupResult(total=len(messages))
@@ -413,16 +613,13 @@ class MSGraphClient:
                 log_ctx=log_ctx,
                 callback=callback,
                 metadata_fn=lambda sid: mailutils.metadata(
-                    mailbox=self.job_name, folder=folder_name, store_id=sid
+                    mailbox=self.job_name,
+                    folder=folder_name,
+                    store_id=sid,
                 ),
             )
             if store_id is None:
                 continue
-
-            # `receivedDateTime`, the same field the `$filter` of an incremental
-            # pass compares against, so the resume point speaks the server's
-            # own terms.
-            result.saw(_parse_graph_datetime(msg_info.get("receivedDateTime")))
 
             if result.stored % 100 == 0:
                 log.info(
@@ -442,6 +639,7 @@ class MSGraphClient:
         if self.error_folder:
             self._relocate(folder_name, non_journal, self.error_folder)
 
+        result.resume = _delta_token(delta_link, point, result.stored)
         return result
 
     def _relocate(self, folder_name: str, msg_ids: list[str], dest_folder: str) -> None:

@@ -37,6 +37,17 @@ accumulate, so replaying in any order gives the same result. The `date` in the
 header is what carries the chronology, for a reader that wants it and for any
 future semantics where the newest observation has to win.
 
+The files of one place do form a chain, though -- each header names the file that
+held that place before it, and the newest is named by that place's head in
+`heads/`. **The chain is the check, never the enumeration.** Reading still goes
+through the glob above, so a broken link hides nothing: it is a finding, not a
+loss. What it buys is narrow and worth stating exactly. A log file that vanishes
+usually announces itself already, because its messages turn up in `archive check`
+as having no provenance at all. That does not happen when the same message is
+also recorded elsewhere -- a Gmail message filed under three labels lives in
+three files -- and then the loss of one of its places is completely silent. That
+is the gap the chain closes.
+
 File content -- a header line, then one line per message:
 
     {"version":1,"mailbox":"mail.example.org","folder":"INBOX","date":"...","messages":2}
@@ -61,7 +72,8 @@ import logging
 import pathlib
 from datetime import datetime
 
-from mailvault.store import cas
+from mailvault import utils
+from mailvault.store import cas, heads
 
 log = logging.getLogger(__name__)
 
@@ -70,7 +82,22 @@ DEFAULT_LOG_DIR = "meta"
 
 # Payload format version. Readers reject what they do not know rather than
 # misread it; a file with an unknown version is skipped with a warning.
-LOG_VERSION = 1
+#
+# Version 2 added `prev` to the header: the name of the file that held the same
+# place before this one, so a place's files form a chain rather than a heap. See
+# the module docstring. Version 1 is still read -- an archive is full of files
+# written over years, and refusing the older ones would make most of a long-lived
+# log unreadable for the sake of a field. What a version 1 file means is simply
+# "carries no chain information".
+LOG_VERSION = 2
+LEGACY_LOG_VERSION = 1
+SUPPORTED_LOG_VERSIONS = (LEGACY_LOG_VERSION, LOG_VERSION)
+
+
+# A place: which mailbox, and which folder within it. `None` for the folder is
+# "the mailbox is known, which folder is not" -- representable rather than
+# guessed, see the module docstring.
+Place = tuple[str | None, str | None]
 
 
 @dataclasses.dataclass
@@ -82,6 +109,20 @@ class LogFile:
     folder: str | None
     date: str | None
     store_ids: list[str]
+    # The file that held this place before this one, or None for the first. A
+    # version 1 file has no such field, and there is nothing to distinguish
+    # "first of its place" from "written before the chain existed" -- which is
+    # why `check` reports what no chain reaches instead of assuming.
+    prev: str | None = None
+
+    @property
+    def place(self) -> Place:
+        return (self.mailbox, self.folder)
+
+    @property
+    def hashval(self) -> str:
+        """The name this file is filed under, which is the hash of its content."""
+        return self.path.name.removesuffix(".jsonl")
 
 
 def as_text(value: object) -> str:
@@ -118,6 +159,16 @@ def log_files(root: pathlib.Path) -> list[pathlib.Path]:
     return sorted(p for p in root.glob("*/*.jsonl") if p.is_file())
 
 
+def where(path: pathlib.Path) -> str:
+    """A log file as it reads inside the archive: `meta/a1/a1b2….jsonl`.
+
+    The archive is named once at the start of a run, so a file inside it is
+    named the way it reads inside it. The log knows the directory it lives in
+    and nothing above that, which is all `under_dir` asks for.
+    """
+    return utils.under_dir(DEFAULT_LOG_DIR, path)
+
+
 def has_logs(root: pathlib.Path) -> bool:
     """True when at least one log file exists."""
     return bool(log_files(root))
@@ -128,13 +179,17 @@ def verify_file(path: pathlib.Path) -> bool:
     try:
         raw = path.read_bytes()
     except OSError as exc:
-        log.warning("%s: unreadable: %s", path, exc)
+        log.warning("%s: unreadable: %s", where(path), exc)
         return False
     return cas.DEFAULT_HASH(raw).hexdigest() == path.name.removesuffix(".jsonl")
 
 
 def _serialize(
-    mailbox: str | None, folder: str | None, date: str | None, store_ids: list[str]
+    mailbox: str | None,
+    folder: str | None,
+    date: str | None,
+    store_ids: list[str],
+    prev: str | None = None,
 ) -> bytes:
     """Serialize one place's observations into the on-disk JSONL form.
 
@@ -147,10 +202,39 @@ def _serialize(
         "folder": folder,
         "date": date,
         "messages": len(store_ids),
+        "prev": prev,
     }
     body = json.dumps(header, ensure_ascii=False) + "\n"
     body += "".join(json.dumps({"store_id": s}, ensure_ascii=False) + "\n" for s in store_ids)
     return body.encode("utf-8")
+
+
+def _chain(head: heads.Head | None) -> str | None:
+    """The file a new entry for this place follows, or None to start a chain."""
+    return None if head is None else head.log
+
+
+def _move_head(heads_root: pathlib.Path, head: heads.Head | None, hashval: str) -> None:
+    """Point a place's head at the file that now holds it.
+
+    Written *after* the log file, never before: an interrupt between the two
+    leaves a file no chain reaches, which `archive check` reports and which costs
+    nothing -- the file is still read, because the glob and not the chain is how
+    the log is enumerated. The other order would leave a head naming a file that
+    was never written, which is the same shape as real loss.
+
+    A head that cannot be written is logged and tolerated, for the same reason a
+    resume point that cannot be written is: the observations are already safe in
+    the log, and giving up here would cost the rest of the run for a failure that
+    costs no mail.
+    """
+    if head is None:
+        return
+    head.log = hashval
+    try:
+        heads.write(heads_root, head)
+    except OSError as exc:
+        log.error("%s::%s: log chain head not written: %s", head.job, head.folder, exc)
 
 
 class LogWriter:
@@ -160,11 +244,18 @@ class LogWriter:
     file behind and the log never contains a half-observed place. Entries are
     held as bare store ids, so even a whole-archive export costs roughly what the
     files it produces will cost.
+
+    `heads_root` is where each place's chain head is kept, so that sealing can
+    link the new file to the one it follows and move the head on. It is a
+    separate argument rather than derived from `root`, because the two are
+    independent facts about an archive and guessing one from the other is how a
+    layout ends up written down twice.
     """
 
-    def __init__(self, root: pathlib.Path):
+    def __init__(self, root: pathlib.Path, heads_root: pathlib.Path):
         self.root = root
-        self._places: dict[tuple[str | None, str | None], list[str]] = {}
+        self.heads_root = heads_root
+        self._places: dict[Place, list[str]] = {}
 
     def __len__(self) -> int:
         return sum(len(ids) for ids in self._places.values())
@@ -185,8 +276,17 @@ class LogWriter:
         An empty `folders` records the message as seen in the mailbox without a
         known folder, rather than dropping it: knowing less is not the same as
         knowing nothing.
+
+        A name given twice counts once. Callers assemble the list from more than
+        one source -- the IMAP backend adds the folder it is reading to the
+        labels the server reported -- and the same place named twice would file
+        the message twice in one file.
         """
-        names: list[str | None] = [as_text(f) for f in folders]
+        names: list[str | None] = []
+        for folder in folders:
+            name = as_text(folder)
+            if name not in names:
+                names.append(name)
         for name in names or [None]:
             self._places.setdefault((mailbox, name), []).append(store_id)
 
@@ -208,15 +308,34 @@ class LogWriter:
         written: list[pathlib.Path] = []
         store = open_store(self.root)
         for (mailbox, folder), store_ids in sorted(
-            self._places.items(), key=lambda item: (item[0][0] or "", item[0][1] or "")
+            self._places.items(),
+            key=lambda item: (item[0][0] or "", item[0][1] or ""),
         ):
-            _status, _hashval, path = store.add(
-                _serialize(mailbox, folder, date.isoformat(), store_ids)
+            head = self._head_of(mailbox, folder)
+            _status, hashval, path = store.add(
+                _serialize(mailbox, folder, date.isoformat(), store_ids, prev=_chain(head))
             )
-            log.debug("%s: %s message(s) in %s::%s", path, len(store_ids), mailbox, folder)
+            log.debug(
+                "%s: %s message(s) in %s::%s", where(path), len(store_ids), mailbox, folder
+            )
+            _move_head(self.heads_root, head, hashval)
             written.append(path)
         self._places = {}
         return written
+
+    def _head_of(self, mailbox: str | None, folder: str | None) -> heads.Head | None:
+        """The head of a place, or None where there cannot be one.
+
+        A log entry may name no mailbox at all; a head is keyed by one, so such
+        a place simply carries no chain. It never happens from a backup -- the
+        job name is always there -- and the type allows it, so it is answered
+        rather than assumed away.
+        """
+        if mailbox is None:
+            return None
+        return heads.read(self.heads_root, mailbox, folder) or heads.Head(
+            job=mailbox, folder=folder
+        )
 
 
 def _parse_store_id(path: pathlib.Path, number: int, line: str) -> str | None:
@@ -227,14 +346,14 @@ def _parse_store_id(path: pathlib.Path, number: int, line: str) -> str | None:
         data = json.loads(line)
     except json.JSONDecodeError:
         # The expected shape of a torn write: the file ends mid-line.
-        log.warning("%s:%d: incomplete line, skipped", path, number)
+        log.warning("%s:%d: incomplete line, skipped", where(path), number)
         return None
     if not isinstance(data, dict):
-        log.warning("%s:%d: not an object, skipped", path, number)
+        log.warning("%s:%d: not an object, skipped", where(path), number)
         return None
     store_id = data.get("store_id")
     if not isinstance(store_id, str) or not store_id:
-        log.warning("%s:%d: no usable store_id, skipped", path, number)
+        log.warning("%s:%d: no usable store_id, skipped", where(path), number)
         return None
     if not cas.is_hashval(store_id):
         # The store cuts a path out of a store id and refuses one that is not a
@@ -243,9 +362,77 @@ def _parse_store_id(path: pathlib.Path, number: int, line: str) -> str | None:
         # skip like any other unusable one. Letting it through would hand the
         # refusal to whoever asks the store next, and cost them the whole folder
         # they were reading for one broken line.
-        log.warning("%s:%d: store_id is not a hash, skipped", path, number)
+        log.warning("%s:%d: store_id is not a hash, skipped", where(path), number)
         return None
     return store_id
+
+
+def _parse_header(path: pathlib.Path, line: str) -> dict | None:
+    """Decode a log file's first line, or None when it cannot be used.
+
+    Without a usable header the lines below it have no place to belong to, so
+    every caller here treats None as "skip this file".
+    """
+    try:
+        header = json.loads(line)
+    except json.JSONDecodeError as exc:
+        log.warning("%s: unreadable header, skipped: %s", where(path), exc)
+        return None
+    if not isinstance(header, dict):
+        log.warning("%s: header is not an object, skipped", where(path))
+        return None
+    if header.get("version") not in SUPPORTED_LOG_VERSIONS:
+        log.warning(
+            "%s: log version %r is not one of %s, skipped -- it was written by a"
+            " different mailvault version; upgrade mailvault to read it",
+            where(path),
+            header.get("version"),
+            ", ".join(str(v) for v in SUPPORTED_LOG_VERSIONS),
+        )
+        return None
+    return header
+
+
+def read_header(path: pathlib.Path) -> dict | None:
+    """Read only a log file's header, without its message lines.
+
+    For the questions the header alone answers -- which mailbox, which folder,
+    when -- and where the message lines would be read and thrown away. No
+    integrity check is possible this way: the file's name is the hash of all of
+    it, so verifying means reading all of it. Use `read_log` where that matters.
+    """
+    try:
+        with path.open("rb") as f:
+            first = f.readline()
+    except OSError as exc:
+        log.warning("%s: unreadable, skipped: %s", where(path), exc)
+        return None
+    if not first:
+        log.warning("%s: empty, skipped", where(path))
+        return None
+    try:
+        line = first.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        log.warning("%s: not valid UTF-8, skipped: %s", where(path), exc)
+        return None
+    return _parse_header(path, line)
+
+
+def mailboxes(root: pathlib.Path) -> set[str]:
+    """The mailbox names below `root`, from the headers alone.
+
+    A log file names its mailbox in its first line, so "who has written into this
+    archive" costs one line per file rather than the whole log.
+    """
+    names = set()
+    for path in log_files(root):
+        header = read_header(path)
+        if header is None:
+            continue
+        mailbox = header.get("mailbox")
+        if isinstance(mailbox, str) and mailbox:
+            names.add(mailbox)
+    return names
 
 
 def read_log(path: pathlib.Path) -> LogFile | None:
@@ -257,7 +444,7 @@ def read_log(path: pathlib.Path) -> LogFile | None:
     try:
         raw = path.read_bytes()
     except OSError as exc:
-        log.warning("%s: unreadable, skipped: %s", path, exc)
+        log.warning("%s: unreadable, skipped: %s", where(path), exc)
         return None
 
     # The name is the hash of the content, so the file carries its own integrity
@@ -270,32 +457,18 @@ def read_log(path: pathlib.Path) -> LogFile | None:
     # away 80,000 readable lines because the last one was cut short would be the
     # worse answer. The warning is what lets someone repair the archive.
     if cas.DEFAULT_HASH(raw).hexdigest() != path.name.removesuffix(".jsonl"):
-        log.warning("%s: damaged -- content does not match its name", path)
+        log.warning("%s: damaged -- content does not match its name", where(path))
 
     try:
         lines = raw.decode("utf-8").splitlines()
     except UnicodeDecodeError as exc:
-        log.warning("%s: not valid UTF-8, skipped: %s", path, exc)
+        log.warning("%s: not valid UTF-8, skipped: %s", where(path), exc)
         return None
     if not lines:
-        log.warning("%s: empty, skipped", path)
+        log.warning("%s: empty, skipped", where(path))
         return None
-    try:
-        header = json.loads(lines[0])
-    except json.JSONDecodeError as exc:
-        log.warning("%s: unreadable header, skipped: %s", path, exc)
-        return None
-    if not isinstance(header, dict):
-        log.warning("%s: header is not an object, skipped", path)
-        return None
-    if header.get("version") != LOG_VERSION:
-        log.warning(
-            "%s: log version %r is not %d, skipped -- it was written by a different"
-            " mailvault version; upgrade mailvault to read it",
-            path,
-            header.get("version"),
-            LOG_VERSION,
-        )
+    header = _parse_header(path, lines[0])
+    if header is None:
         return None
 
     mailbox = header.get("mailbox")
@@ -314,17 +487,19 @@ def read_log(path: pathlib.Path) -> LogFile | None:
     if isinstance(declared, int) and declared != len(store_ids):
         log.warning(
             "%s: header declares %s message(s) but %s were readable, file is damaged",
-            path,
+            where(path),
             declared,
             len(store_ids),
         )
 
+    prev = header.get("prev")
     return LogFile(
         path=path,
         mailbox=mailbox if isinstance(mailbox, str) else None,
         folder=folder if isinstance(folder, str) else None,
         date=date if isinstance(date, str) else None,
         store_ids=store_ids,
+        prev=prev if isinstance(prev, str) and cas.is_hashval(prev) else None,
     )
 
 
@@ -349,7 +524,7 @@ class CompactResult:
     transient_removed: int = 0
 
 
-def compact(root: pathlib.Path) -> CompactResult:
+def compact(root: pathlib.Path, heads_root: pathlib.Path) -> CompactResult:
     """Consolidate the log into one file per place, dropping duplicate entries.
 
     Incremental backups overlap -- each run re-records the messages in its lookback
@@ -363,6 +538,13 @@ def compact(root: pathlib.Path) -> CompactResult:
     file that cannot be read is left in place rather than folded away, so damaged
     data is never silently dropped. Producing byte-identical files for the same
     content (via `_serialize`) makes a second run a no-op.
+
+    Each consolidated file **starts its place's chain over**: it holds everything
+    that came before, so pointing back at files that are about to be removed
+    would name what is deliberately gone. The heads are moved on before the
+    originals are dropped, so an interrupt in between leaves duplicates and a
+    chain that reaches the new file -- never a head naming something that was
+    never written.
     """
     result = CompactResult()
     originals = log_files(root)
@@ -391,21 +573,35 @@ def compact(root: pathlib.Path) -> CompactResult:
 
     store = open_store(root)
     written: set[pathlib.Path] = set()
+    roots: list[tuple[Place, str]] = []
     for key in sorted(places, key=lambda k: (k[0] or "", k[1] or "")):
         mailbox, folder = key
         store_ids = sorted(places[key])
         result.entries_after += len(store_ids)
-        _status, _hashval, path = store.add(
-            _serialize(mailbox, folder, dates.get(key), store_ids)
+        _status, hashval, path = store.add(
+            _serialize(mailbox, folder, dates.get(key), store_ids, prev=None)
         )
         written.add(path)
+        roots.append((key, hashval))
 
     # Verify the consolidated files landed before removing anything.
     if not all(verify_file(path) for path in written):
-        log.error("%s: consolidated files did not verify, originals left in place", root)
+        log.error("consolidated files did not verify, originals left in place")
         result.verified = False
         result.files_after = len(log_files(root))
         return result
+
+    # And move each place's head onto its new root before anything is removed --
+    # a head still naming a file that has just been deleted is the one state
+    # worth avoiding here.
+    for (mailbox, folder), hashval in roots:
+        head = (
+            None
+            if mailbox is None
+            else heads.read(heads_root, mailbox, folder)
+            or heads.Head(job=mailbox, folder=folder)
+        )
+        _move_head(heads_root, head, hashval)
 
     # Drop the originals we consolidated, but never one byte-identical to a file
     # just written (an already-compact place produces the same hash).

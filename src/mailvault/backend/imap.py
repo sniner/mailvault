@@ -17,7 +17,6 @@ import re
 import ssl
 import sys
 import threading
-from datetime import datetime, timedelta
 from typing import Any
 
 import imapclient
@@ -41,17 +40,106 @@ from mailvault.store import cas
 
 log = logging.getLogger(__name__)
 
-# Stands in for Gmail's "All Mail", which holds every message that is not in
-# Trash or Spam and is therefore the place a message is in when it carries no
-# label of its own. Gmail has no canonical name for it -- the IMAP folder is
-# localised (`[Gmail]/All Mail`, `[Google Mail]/Alle Nachrichten`) -- so this
-# name follows the convention of the system labels it sits next to. Gmail never
-# reports a user label with a leading backslash, so it cannot collide with one.
-GMAIL_ALL_MAIL = "\\All"
-
-
 # Index page size for message_index(); only envelope metadata is fetched, no bodies.
 INDEX_CHUNK_SIZE = 500
+
+# The `kind` this backend stamps on the resume points it produces. A point
+# carrying any other kind belongs to a different backend and is read in full.
+UID_RESUME_KIND = "imap-uid"
+
+
+def _as_int(value: object) -> int | None:
+    """An int, or None -- and a bool is not an int here, whatever Python says."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+class _UidResume:
+    """Where an incremental pass over one IMAP folder carries on.
+
+    A UID is assigned when a message enters a folder and never changes while it
+    stays there, so asking for everything above the highest one already archived
+    is literally "what has arrived since". Including a message copied or moved
+    in: it keeps its old INTERNALDATE but gets a *new* UID, which is exactly the
+    case a date filter cannot see and the reason for preferring UIDs to dates.
+
+    `UIDVALIDITY` is the server stating whether its UID space is still the same
+    one. When it differs, every remembered UID is meaningless -- an explicit
+    signal rather than something to guess at -- and the folder is read in full,
+    which is the same answer this backend gives to a point it cannot read at all.
+    """
+
+    def __init__(self, previous: dict | None):
+        self._given = previous is not None
+        self._previous = _uid_point(previous)
+        self.uidvalidity: int | None = None
+        self.highest: int | None = None
+        # A point was handed in and could not be read: that is reported, not
+        # worked around. Being given none in the first place is not a loss.
+        self.lost = self._given and self._previous is None
+
+    def accept(self, folder_info: dict, ctx: str) -> int | None:
+        """Take the SELECT response; return the UID to resume above, or None.
+
+        None means read the folder in full, and it is the answer whenever there
+        is any doubt at all about the remembered point.
+        """
+        self.uidvalidity = _as_int(folder_info.get(b"UIDVALIDITY"))
+        if self.uidvalidity is None:
+            # RFC 3501 makes UIDVALIDITY mandatory in a SELECT response, so this
+            # is a broken server rather than an old one. Without it there is
+            # nothing to check a remembered UID against, and one that belongs to
+            # a rebuilt UID space would silently skip the whole folder.
+            log.warning("%s: no UIDVALIDITY in the SELECT response", ctx)
+            self.lost = self._given
+            return None
+        if self._previous is None:
+            return None
+        validity, uid = self._previous
+        if validity != self.uidvalidity:
+            log.info(
+                "%s: UIDVALIDITY changed (%s -> %s), the resume point is void",
+                ctx,
+                validity,
+                self.uidvalidity,
+            )
+            self._previous = None
+            self.lost = True
+            return None
+        return uid
+
+    def saw(self, uid: int) -> None:
+        """Note an archived message's UID, keeping the highest.
+
+        Only for messages that were actually stored: one that failed must not
+        raise the watermark over itself.
+        """
+        if self.highest is None or uid > self.highest:
+            self.highest = uid
+
+    def token(self) -> dict | None:
+        """The point this pass earned, or None if it archived nothing."""
+        if self.highest is None or self.uidvalidity is None:
+            return None
+        return {
+            "kind": UID_RESUME_KIND,
+            "uidvalidity": self.uidvalidity,
+            "uid": self.highest,
+        }
+
+
+def _uid_point(resume: dict | None) -> tuple[int, int] | None:
+    """Read this backend's own resume point, or None for anything else."""
+    if resume is None:
+        return None
+    if resume.get("kind") != UID_RESUME_KIND:
+        log.info("resume point of kind %r is not ours, reading in full", resume.get("kind"))
+        return None
+    validity = _as_int(resume.get("uidvalidity"))
+    uid = _as_int(resume.get("uid"))
+    if validity is None or uid is None:
+        log.warning("resume point %r is incomplete, reading in full", resume)
+        return None
+    return validity, uid
 
 
 class ImapClient:
@@ -66,7 +154,9 @@ class ImapClient:
         self.delete_after_export = job.delete_after_export
         self.exchange_journal = job.exchange_journal
         self.gmail = functools.reduce(
-            lambda acc, c: acc or c.startswith(b"X-GM-"), self.capabilities, False
+            lambda acc, c: acc or c.startswith(b"X-GM-"),
+            self.capabilities,
+            False,
         )
         # MOVE is RFC 6851 (2013), UIDPLUS is RFC 4315 -- neither is in the
         # IMAP4rev1 base, and Exchange's IMAP service in particular is sparing
@@ -163,19 +253,21 @@ class ImapClient:
         message_ids: list[int],
         chunk_size: int = 10,
         result: BackupResult | None = None,
-    ) -> collections.abc.Generator[tuple[int, bytes, datetime | None], None, None]:
+    ) -> collections.abc.Generator[tuple[int, bytes], None, None]:
         for msg_ids in utils.batched(message_ids, chunk_size):
             msg_ids_str = ", ".join([str(i) for i in msg_ids])
             log.debug("%s::%s: fetching %s", self.job_name, folder_name, msg_ids_str)
             msg_id = None
             try:
-                for msg_id, msg_data in self.conn.fetch(
-                    msg_ids, ["INTERNALDATE", "RFC822"]
-                ).items():
-                    yield msg_id, msg_data[b"RFC822"], msg_data[b"INTERNALDATE"]  # type: ignore
+                for msg_id, msg_data in self.conn.fetch(msg_ids, ["RFC822"]).items():
+                    yield msg_id, msg_data[b"RFC822"]  # type: ignore
             except (OSError, imaplib.IMAP4.error) as exc:
                 log.exception(
-                    "%s::%s[%s]: fetch failed: %s", self.job_name, folder_name, msg_id, exc
+                    "%s::%s[%s]: fetch failed: %s",
+                    self.job_name,
+                    folder_name,
+                    msg_id,
+                    exc,
                 )
                 if result is not None:
                     # fetch() returns the whole chunk at once, so nothing of it
@@ -183,21 +275,33 @@ class ImapClient:
                     result.failed += len(msg_ids)
 
     def _collect_metadata(
-        self, folder_name: str, msg_id: Any, store_id: str
+        self,
+        folder_name: str,
+        msg_id: Any,
+        store_id: str,
     ) -> mailutils.MessageMetadata:
         if self.gmail:
-            # X-GM-LABELS reports every folder the message is in, in canonical
-            # form (`\Sent`). The IMAP folder name is a localised view of the
-            # same thing -- `[Google Mail]/Gesendet` on a German account,
-            # `[Gmail]/Sent Mail` on an English one -- so taking it as well would
-            # record one place twice, once in a spelling that differs per
-            # account. Hence Gmail's own list is the only source here.
-            folders = self.conn.get_gmail_labels(msg_id).get(msg_id, [])
-            if not folders:
-                # "All Mail" is not a label, so a message filed nowhere else
-                # reports nothing at all. Name that place instead of leaving the
-                # message without one -- it is where the message actually is.
-                folders = [GMAIL_ALL_MAIL]
+            # X-GM-LABELS reports the other places the message is in, and leaves
+            # out the one belonging to the folder currently selected -- measured
+            # against a live account: every message in INBOX reports no label at
+            # all, while the same messages fetched from All Mail report
+            # `\Inbox`. So the folder being read has to be added back, or a
+            # backup of one Gmail folder would record every message as being
+            # somewhere else, or nowhere.
+            #
+            # Added rather than substituted, and unconditionally: if Gmail ever
+            # starts reporting it, the union simply already contains it.
+            #
+            # What it is added *as* is the folder's own name, which is what this
+            # backend was asked to read. Deriving Gmail's label for it would mean
+            # keeping a table of the places where Gmail's two vocabularies
+            # disagree -- LIST calls the starred folder `\Flagged`, the label is
+            # `\Starred` -- and that table would need feeding every time Gmail
+            # changes something. The cost of not having it: a place seen from two
+            # directions is recorded under two names, each of them the name the
+            # server gave in that context.
+            labels = self.conn.get_gmail_labels(msg_id).get(msg_id, [])
+            folders = [*labels, folder_name]
         else:
             folders = [folder_name]
         return mailutils.metadata(
@@ -223,21 +327,25 @@ class ImapClient:
             except Exception as exc:
                 log.error("%s::%s: %s", self.job_name, folder_name, exc)
 
-    def _search_folder(self, since: datetime | None = None) -> list[int]:
-        """Search the selected folder for messages, optionally limited by date."""
-        if since:
-            start_date = since - timedelta(days=1)
-            query = ["NOT", "DELETED", "SINCE", start_date.date()]
-        else:
-            query = ["NOT", "DELETED"]
-        return self.conn.search(query)  # type: ignore
+    def _search_folder(self, above_uid: int | None = None) -> list[int]:
+        """Search the selected folder, from a UID watermark where there is one."""
+        if above_uid is None:
+            return self.conn.search(["NOT", "DELETED"])  # type: ignore
+        criteria = ["NOT", "DELETED", "UID", f"{above_uid + 1}:*"]
+        found: list[int] = self.conn.search(criteria)  # type: ignore
+        # RFC 3501 makes a UID range unordered, and says so explicitly: the last
+        # message is included even when its UID is below the lower bound. So
+        # `4711:*` on a folder whose newest message is 4700 comes back with 4700.
+        # Dropping everything at or below the watermark is what keeps a quiet
+        # folder from re-fetching its last message on every single run.
+        return [uid for uid in found if uid > above_uid]
 
     def _iter_folder(
         self,
         folder_name: str,
-        since: datetime | None = None,
+        resume: _UidResume | None = None,
         result: BackupResult | None = None,
-    ) -> collections.abc.Generator[tuple[int, bytes, datetime | None], None, None]:
+    ) -> collections.abc.Generator[tuple[int, bytes], None, None]:
         """Select the folder read-only, search and yield its messages.
 
         A read-only pass: nothing is deleted here. Messages are removed from the
@@ -250,7 +358,16 @@ class ImapClient:
             folder_info = self.conn.select_folder(folder_name, readonly=True)
             try:
                 items_in_folder = folder_info[b"EXISTS"]
-                message_ids = self._search_folder(since)
+                above_uid = (
+                    resume.accept(folder_info, f"{self.job_name}::{folder_name}")
+                    if resume is not None
+                    else None
+                )
+                if resume is not None and resume.lost:
+                    # Nothing is yielded and nothing is fetched: what to do with
+                    # a void point is the caller's call, not this backend's.
+                    return
+                message_ids = self._search_folder(above_uid)
                 items_found = len(message_ids)
                 if result is not None:
                     result.total = items_found
@@ -264,13 +381,14 @@ class ImapClient:
                     )
                 else:
                     log.info(
-                        "%s::%s: found %s messages", self.job_name, folder_name, items_found
+                        "%s::%s: found %s messages",
+                        self.job_name,
+                        folder_name,
+                        items_found,
                     )
                 processed = 0
-                for msg_id, msg, msg_date in self._walk_folder(
-                    folder_name, message_ids, result=result
-                ):
-                    yield msg_id, msg, msg_date
+                for msg_id, msg in self._walk_folder(folder_name, message_ids, result=result):
+                    yield msg_id, msg
                     processed += 1
                     if processed % 100 == 0:
                         log.info(
@@ -341,7 +459,7 @@ class ImapClient:
         self,
         folder_name: str,
         store: cas.ContentAddressedStorage,
-        since: datetime | None = None,
+        resume: dict | None = None,
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> BackupResult:
         """Store a folder's messages read-only, recording each via `callback`.
@@ -351,10 +469,11 @@ class ImapClient:
         after the metadata log is sealed.
         """
         result = BackupResult()
+        watermark = _UidResume(resume)
         # Collected during the read-only pass and relocated once it is over --
-        # a skip is not a failure, so the snapshot may still advance either way.
+        # a skip is not a failure, so the resume point may still advance either way.
         non_journal: list[int] = []
-        for msg_id, msg, msg_date in self._iter_folder(folder_name, since, result=result):
+        for msg_id, msg in self._iter_folder(folder_name, watermark, result=result):
             if self.exchange_journal:
                 msg = mailutils.unwrap_exchange_journal_item(msg)
                 if msg is None:
@@ -374,15 +493,15 @@ class ImapClient:
                 log_ctx=f"{self.job_name}::{folder_name}[{msg_id}]",
                 callback=callback,
                 metadata_fn=lambda sid, mid=msg_id: self._collect_metadata(
-                    folder_name=folder_name, msg_id=mid, store_id=sid
+                    folder_name=folder_name,
+                    msg_id=mid,
+                    store_id=sid,
                 ),
             )
             if store_id is None:
                 continue
-            # INTERNALDATE, the same clock the SINCE search filters on, so the
-            # point the next run resumes from is expressed in the terms the
-            # server itself will be asked in.
-            result.saw(msg_date)
+            # The UID, which is what the next pass will ask the server about.
+            watermark.saw(msg_id)
             # Not deleted here: a message is removed from the server only after
             # the folder's log is sealed. A non-journal item skipped above never
             # reaches this point, so it can never be deleted unarchived.
@@ -392,6 +511,9 @@ class ImapClient:
             self._relocate(folder_name, non_journal, self.error_folder)
         if self.gmail and self.trash_folder:
             self._clear_folder(self.trash_folder)
+        if watermark.lost:
+            return BackupResult(resume_lost=True)
+        result.resume = watermark.token()
         return result
 
     def purge(self, folder_name: str, msg_ids: collections.abc.Sequence[int]) -> None:
@@ -413,14 +535,39 @@ class ImapClient:
             finally:
                 self.conn.unselect_folder()
 
+    def resume_point(self, folder_name: str) -> dict | None:
+        """The folder's current UID watermark, without fetching anything."""
+        with self.lock:
+            folder_info = self.conn.select_folder(folder_name, readonly=True)
+            try:
+                uidvalidity = _as_int(folder_info.get(b"UIDVALIDITY"))
+                if uidvalidity is None:
+                    log.warning(
+                        "%s::%s: no UIDVALIDITY in the SELECT response, no resume point",
+                        self.job_name,
+                        folder_name,
+                    )
+                    return None
+                uids = self._search_folder()
+                if not uids:
+                    return None
+                return {
+                    "kind": UID_RESUME_KIND,
+                    "uidvalidity": uidvalidity,
+                    "uid": max(uids),
+                }
+            finally:
+                self.conn.unselect_folder()
+
     def message_index(
-        self, folder_name: str, since: datetime | None = None
+        self,
+        folder_name: str,
     ) -> collections.abc.Generator[MessageRef, None, None]:
         """List the folder's messages by Message-ID only, without fetching bodies."""
         with self.lock:
             self.conn.select_folder(folder_name, readonly=True)
             try:
-                message_ids = self._search_folder(since)
+                message_ids = self._search_folder()
                 log.info(
                     "%s::%s: indexing %s messages",
                     self.job_name,

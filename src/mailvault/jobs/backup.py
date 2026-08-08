@@ -15,75 +15,79 @@ import logging
 import pathlib
 from datetime import UTC, datetime
 
-from mailvault import conf, mailutils
+from mailvault import conf, mailutils, utils
 from mailvault.backend import base, session
 from mailvault.jobs.common import _seal_log
 from mailvault.jobs.migration import migrate_archive
+from mailvault.jobs.reconcile import places_from_log, reconcile_folder
 from mailvault.jobs.storedb import DEFAULT_QUERY_DB_NAME, refresh_db
-from mailvault.store import cas, metalog, state
+from mailvault.store import cas, heads, metalog
 
 log = logging.getLogger(__name__)
 
 
-def _record_snapshot(
-    snapshot_state: state.SnapshotState, job_name: str, folder: str, date: datetime
+class _ArchivedPlaces:
+    """What the archive already holds, read from the log at most once per run.
+
+    Only a folder that has to be caught up needs this, and reading the whole
+    metadata log is not a cost an ordinary incremental run should carry. In the
+    steady state every folder has a resume point, nothing asks, and the log stays
+    unread.
+    """
+
+    def __init__(self, log_root: pathlib.Path, job_name: str):
+        self._log_root = log_root
+        self._job_name = job_name
+        self._places: dict[tuple[str, str | None], set[str]] | None = None
+
+    def of(self, folder: str) -> set[str]:
+        if self._places is None:
+            log.info("%s: reading the metadata log", self._job_name)
+            self._places = places_from_log(self._log_root)
+        return self._places.get((self._job_name, folder), set())
+
+
+def _resume_point(heads_root: pathlib.Path, job_name: str, folder: str) -> dict | None:
+    """Where the next pass over this folder carries on, or None to read it all.
+
+    The value is handed to the backend as it was stored. Nothing here knows what
+    a `uid` or a `delta_link` means, and nothing here should.
+    """
+    head = heads.read(heads_root, job_name, folder)
+    return None if head is None else head.resume
+
+
+def _record_pass(
+    heads_root: pathlib.Path,
+    job_name: str,
+    folder: str,
+    last_run: datetime,
+    resume: dict | None,
 ) -> None:
-    """Advance the snapshot of one folder.
+    """Note that a pass read this folder, and where the next one may carry on.
 
-    A state file that cannot be written is logged and otherwise tolerated. The
-    folder is simply fetched again next time, which the content-addressed storage
-    absorbs; aborting here would instead cost the remaining folders of the run for
-    a failure that has no effect on the archived mail.
+    `last_run` is written whatever the outcome -- it says the folder was read,
+    not that the read went well. `resume` is None unless this pass earned a new
+    one, and None leaves the previous point standing rather than clearing it:
+    a pass that archived nothing has no new point to offer, and forgetting the
+    old one would throw away coverage that still holds. That is why the head is
+    read before it is replaced, rather than built from scratch -- the same read
+    also keeps the chain head of the metadata log, which belongs to `compact`
+    and not to this pass.
+
+    A head that cannot be written is logged and otherwise tolerated. The folder
+    is simply fetched again next time, which the content-addressed storage
+    absorbs; aborting here would instead cost the remaining folders of the run
+    for a failure that has no effect on the archived mail.
     """
-    snapshot_state.set_date(job_name, folder, date)
+    head = heads.read(heads_root, job_name, folder) or heads.Head(job=job_name, folder=folder)
+    head.last_run = last_run.isoformat()
+    if resume is not None:
+        head.resume = resume
     try:
-        snapshot_state.save()
+        heads.write(heads_root, head)
     except OSError as exc:
-        log.error("%s: resume state not written: %s", snapshot_state.path, exc)
-
-
-def _resume_point(
-    result: base.BackupResult,
-    current: datetime | None,
-    observed_at: datetime,
-    full_pass: bool = False,
-) -> datetime | None:
-    """Where the next run may resume, or None to leave the snapshot untouched.
-
-    The snapshot means "everything up to here is in the archive", and the only
-    thing that can back that claim up is mail that was actually stored. Taking
-    the wall clock instead trusts the source to have shown everything it had,
-    which is exactly what a mailbox that is still starting up does not do:
-    Proton Bridge answers before its first sync has run, and reports an empty
-    folder rather than an error. A clock-based snapshot would then jump to
-    today, and every message already sitting in that mailbox would fall before
-    the next date filter -- fetched never, missed silently.
-
-    Hence: no message stored, no advance. The folder is read in full again next
-    run, which costs a search and, for what is already there, nothing else --
-    the content-addressed storage absorbs the repeats.
-
-    `full_pass` says the folder was read without a date filter, and that makes
-    the result authoritative: everything the source was willing to show was
-    seen, so the point is set to exactly that -- backwards too, if the mail says
-    so. An unfiltered pass against a source holding less than it should is the
-    one case where trusting it is safe, because the error runs the harmless way:
-    the next window comes out too wide and costs a download the storage
-    discards, rather than too narrow and costing the mail itself.
-    """
-    if result.newest is None:
-        return None
-    # A message dated in the future -- a sender's clock is off, or the server
-    # stamped it oddly -- must not carry the resume point past the moment the
-    # folder was actually read.
-    candidate = min(result.newest, observed_at)
-    # Only ever forwards, unless the pass was authoritative. The incremental
-    # search window reaches back a day before the snapshot, so such a pass can
-    # legitimately end on an older message than the one the snapshot was taken
-    # from; moving back to it would widen every future run's window for no gain.
-    if not full_pass and current is not None and candidate <= current:
-        return None
-    return candidate
+        log.error("%s::%s: resume point not written: %s", job_name, folder, exc)
 
 
 def _location_writer(
@@ -110,12 +114,22 @@ def _backup_to_log(
     incremental: bool = True,
 ) -> None:
     """Back up the selected folders, recording locations and resume state."""
-    snapshot_state = state.SnapshotState.load(store_path / state.DEFAULT_STATE_NAME)
+    heads_root = store_path / heads.DEFAULT_HEADS_DIR
     log_root = store_path / metalog.DEFAULT_LOG_DIR
+    places = _ArchivedPlaces(log_root, job.name)
     folders = job.folders if job.folders else mb.folders()
     for folder in folders:
         try:
-            _backup_folder(mb, store, job, folder, snapshot_state, log_root, incremental)
+            _backup_folder(
+                mb,
+                store,
+                job,
+                folder,
+                heads_root,
+                log_root,
+                places,
+                incremental,
+            )
         except Exception as exc:
             # One folder that cannot be read must not cost the remaining ones;
             # its snapshot simply does not advance and the next run tries again.
@@ -127,44 +141,64 @@ def _backup_folder(
     store: cas.ContentAddressedStorage,
     job: conf.JobConfig,
     folder: str,
-    snapshot_state: state.SnapshotState,
+    heads_root: pathlib.Path,
     log_root: pathlib.Path,
+    places: _ArchivedPlaces,
     incremental: bool = True,
 ) -> None:
-    """Back up one folder, recording where its messages were seen."""
-    current = snapshot_state.get_date(job.name, folder)
-    start_date = current if incremental else None
+    """Back up one folder, recording where its messages were seen.
+
+    The resume point is the backend's to make and the backend's to read; nothing
+    here looks inside it. `--full` (`incremental=False`) simply withholds it,
+    which is what makes a full pass authoritative: a backend given no point has
+    nothing to hold itself back from and records exactly what it found.
+    """
+    previous = _resume_point(heads_root, job.name, folder) if incremental else None
+    if previous is None and incremental:
+        if _catch_up_if_possible(mb, store, job, folder, heads_root, log_root, places):
+            return
+
     observed_at = datetime.now(UTC)
-    log_writer = metalog.LogWriter(log_root)
+    log_writer = metalog.LogWriter(log_root, heads_root)
     result = mb.folder_backup(
-        folder, store, since=start_date, callback=_location_writer(log_writer)
+        folder,
+        store,
+        resume=previous,
+        callback=_location_writer(log_writer),
     )
+
+    if result.resume_lost:
+        # The source will not honour the point any more and did nothing rather
+        # than deciding for us. Listing beats downloading the folder again, and
+        # where that is not on offer the full read is at least an explicit one.
+        log.info("%s::%s: the resume point is void", job.name, folder)
+        if _catch_up_if_possible(mb, store, job, folder, heads_root, log_root, places):
+            return
+        log.info("%s::%s: reading the folder in full", job.name, folder)
+        result = mb.folder_backup(
+            folder,
+            store,
+            resume=None,
+            callback=_location_writer(log_writer),
+        )
     # The seal date stamps the log with when the folder was read, which is a
     # fact about the run and stays the wall clock. Where the *next* run resumes
-    # is a claim about coverage, and that one is derived from the mail itself.
+    # is a claim about coverage, and that one comes back from the backend.
     sealed = _seal_log(log_writer, observed_at)
+    resume: dict | None = None
     if result.complete and sealed:
-        resume_at = _resume_point(result, current, observed_at, full_pass=not incremental)
-        if resume_at is not None:
-            _record_snapshot(snapshot_state, job.name, folder, resume_at)
-        elif current is None:
-            # No snapshot yet and nothing came back. Either the folder really is
-            # empty, or the source is not serving its mail yet -- and the two are
-            # indistinguishable from here, so treat it as the second and read the
-            # folder in full again next run.
-            log.info("%s::%s: no messages offered, snapshot not started", job.name, folder)
-        else:
-            log.debug(
-                "%s::%s: nothing newer than %s, snapshot held",
-                job.name,
-                folder,
-                current,
-            )
+        resume = result.resume
+        if resume is None and previous is None:
+            # Nothing came back and there was nothing to begin with. Either the
+            # folder really is empty, or the source is not serving its mail yet --
+            # and the two are indistinguishable from here, so treat it as the
+            # second and read the folder in full again next run.
+            log.info("%s::%s: no messages offered, resume point not started", job.name, folder)
     elif not result.complete:
-        # Advancing the snapshot now would push the failed messages
-        # out of every future date filter, losing them permanently.
+        # Taking the new point now would push the failed messages out of
+        # everything the next pass asks for, losing them permanently.
         log.warning(
-            "%s::%s: %s of %s message(s) failed, snapshot not advanced",
+            "%s::%s: %s of %s message(s) failed, resume point not advanced",
             job.name,
             folder,
             result.failed,
@@ -172,10 +206,117 @@ def _backup_folder(
         )
     else:
         # Downloads were clean but the location log did not reach disk. Holding
-        # the snapshot back re-fetches the folder next run and writes the log
+        # the point back re-fetches the folder next run and writes the log
         # again, rather than advancing past locations that were never recorded.
-        log.warning("%s::%s: metadata log not sealed, snapshot not advanced", job.name, folder)
+        log.warning(
+            "%s::%s: metadata log not sealed, resume point not advanced",
+            job.name,
+            folder,
+        )
+    # Written whatever the outcome: the folder *was* read, and that is all
+    # `last_run` claims. Only `resume` is held back when the pass fell short.
+    _record_pass(heads_root, job.name, folder, observed_at, resume)
     _purge_after_seal(mb, job, folder, result, sealed)
+
+
+def _can_catch_up(job: conf.JobConfig) -> bool:
+    """Whether this job may be caught up by listing instead of downloading.
+
+    Two jobs may not, for reasons that have nothing to do with speed:
+
+    `delete_after_export` removes a message from the server once its location is
+    durable, and that only happens for messages a pass actually *fetched*. A
+    catch-up skips whatever is already archived, so those would stay on the
+    server -- and stay below the new resume point, meaning no later run would
+    ever see them again to delete them.
+
+    `exchange_journal` stores the unwrapped message, whose Message-ID is not the
+    one the server reports for the journal envelope around it. The comparison a
+    catch-up rests on would match nothing and it would re-fetch the entire
+    folder, which is the same reason `verify` refuses these jobs outright.
+    """
+    return not job.delete_after_export and not job.exchange_journal
+
+
+def _catch_up_if_possible(
+    mb: base.MailboxClient,
+    store: cas.ContentAddressedStorage,
+    job: conf.JobConfig,
+    folder: str,
+    heads_root: pathlib.Path,
+    log_root: pathlib.Path,
+    places: _ArchivedPlaces,
+) -> bool:
+    """Bring the folder back in step by listing it. False when that is no option.
+
+    No option means either the job is one that must not be caught up that way, or
+    the archive holds nothing at this place to compare against -- in which case
+    listing first would only add a round trip to a download that has to happen
+    anyway.
+    """
+    if not _can_catch_up(job):
+        return False
+    archived = places.of(folder)
+    if not archived:
+        return False
+    _catch_up_folder(mb, store, job, folder, heads_root, log_root, archived)
+    return True
+
+
+def _catch_up_folder(
+    mb: base.MailboxClient,
+    store: cas.ContentAddressedStorage,
+    job: conf.JobConfig,
+    folder: str,
+    heads_root: pathlib.Path,
+    log_root: pathlib.Path,
+    archived: set[str],
+) -> None:
+    """Read a folder in full, downloading only what the archive does not have.
+
+    Reached when a folder holds archived mail but no resume point -- an archive
+    upgraded from a format that had none, or one whose state file was lost. The
+    alternative is downloading a mailbox that is already on disk.
+
+    The position is taken *before* the comparison, not after: a message arriving
+    while it runs is then either found by the listing and archived, or left above
+    the point and picked up next run. Taking the point afterwards would leave a
+    window in which a message is neither.
+    """
+    observed_at = datetime.now(UTC)
+    log.info(
+        "%s::%s: no resume point but %s archived message(s) -- reconciling against"
+        " the archive by Message-ID instead of downloading the folder",
+        job.name,
+        folder,
+        f"{len(archived):,}",
+    )
+    resume = mb.resume_point(folder)
+    result = reconcile_folder(
+        mb, store, log_root, heads_root, archived, job.name, folder, repair=True
+    )
+    if not result.complete:
+        log.warning(
+            "%s::%s: %s of %s message(s) failed, resume point not started",
+            job.name,
+            folder,
+            result.failed,
+            result.missing,
+        )
+        resume = None
+    elif not result.sealed:
+        # Downloads were clean but the locations did not reach disk. The same
+        # rule as the ordinary pass in `_backup_folder`: holding the point back
+        # reads the folder again next run and writes the log again, where
+        # advancing would push messages whose place was never recorded out of
+        # everything a later run asks for.
+        log.warning(
+            "%s::%s: metadata log not sealed, resume point not started",
+            job.name,
+            folder,
+        )
+        resume = None
+    _record_pass(heads_root, job.name, folder, observed_at, resume)
 
 
 def _purge_after_seal(
@@ -240,7 +381,7 @@ def backup(
     """
     migrate_archive(store_path)
     with session.open_mailbox(job) as mb:
-        store = cas.ContentAddressedStorage(store_path, suffix=".eml", compress=compress)
+        store = cas.mail_store(store_path, compress=compress)
         _backup_to_log(mb, store, job, store_path, incremental=incremental)
     if index_db:
         _refresh_query_db(store_path)
@@ -255,17 +396,18 @@ def _refresh_query_db(store_path: pathlib.Path) -> None:
     unreadable.
     """
     db_path = store_path / DEFAULT_QUERY_DB_NAME
+    name = utils.under(store_path, db_path)
     try:
         result = refresh_db(store_path, db_path)
     except Exception as exc:
-        log.error("%s: query database not updated: %s", db_path, exc)
+        log.error("%s: query database not updated: %s", name, exc)
         return
     if result.rebuilt:
-        log.info("%s: query database rebuilt, %s message(s)", db_path, result.messages)
+        log.info("%s: query database built, %s message(s)", name, f"{result.messages:,}")
     else:
         log.info(
             "%s: query database updated, %s new message(s) from %s log file(s)",
-            db_path,
-            result.messages,
-            result.files,
+            name,
+            f"{result.messages:,}",
+            f"{result.files:,}",
         )

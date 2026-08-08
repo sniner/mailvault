@@ -401,3 +401,33 @@ def test_a_leftover_copy_section_is_reported(tmp_path, caplog):
     assert "removed in 0.9.0" in caplog.text
     assert not hasattr(config, "copy")
     assert config.jobs[0].name == "a"
+
+
+# ---------------------------------------------------------------------------
+# The archive a configuration does not belong to
+# ---------------------------------------------------------------------------
+
+
+class TestTheConfigNamesNoArchive:
+    """A configuration does not say which archive it belongs to. It lies in it.
+
+    A path in the file cannot carry across machines: the NAS is mounted at a
+    different place on each of them, so no single path is right on both. A
+    configuration inside the archive has that distance by construction.
+    """
+
+    @staticmethod
+    def _load(tmp_path, line: str = "", name: str = "mailvault.toml"):
+        path = tmp_path / name
+        path.write_text(f'[global]\n{line}\n[[job]]\nname = "j"\nserver = "s"\n')
+        return conf.load(path)
+
+    def test_there_is_no_such_option(self):
+        assert not hasattr(conf.Config(), "destination")
+
+    def test_one_left_over_in_a_file_is_reported_rather_than_obeyed(self, tmp_path, caplog):
+        """It never shipped, so it needs no retirement notice -- but not silence either."""
+        config = self._load(tmp_path, 'destination = "/archive/private"')
+
+        assert "destination" in caplog.text
+        assert config.jobs[0].name == "j", "and the rest of the file is still read"

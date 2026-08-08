@@ -1,192 +1,199 @@
-"""Tests for mailvault.store.state (the durable snapshot state file)."""
+"""Tests for `mailvault.store.state`, which is now only the reader for the import.
+
+Nothing writes this format any more. What has to keep working is reading both
+versions out of an archive that predates `heads/`, once, and degrading into
+"nothing known" -- which costs a full pass and never mail -- for anything that
+cannot be trusted.
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
+
+import pytest
 
 from mailvault.store import state
 
-SNAPSHOT = datetime(2026, 2, 1, 12, 30, tzinfo=UTC)
+LAST_RUN = datetime(2026, 2, 1, 12, 30, tzinfo=UTC)
+UID_TOKEN = {"kind": "imap-uid", "uidvalidity": 1239278212, "uid": 48127}
 
 
 def _write(path, payload) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-class TestLoad:
-    def test_missing_file_yields_empty_state(self, tmp_path):
-        s = state.SnapshotState.load(tmp_path / "state.json")
-        assert s.get_date("job", "INBOX") is None
-        assert list(s.entries()) == []
+def _v2(snapshots) -> dict:
+    return {"version": state.STATE_VERSION, "snapshots": snapshots}
 
-    def test_unknown_mailbox_or_folder_is_none(self, tmp_path):
+
+def _v1(snapshots) -> dict:
+    return {"version": state.LEGACY_STATE_VERSION, "snapshots": snapshots}
+
+
+def _places(path) -> dict[tuple[str, str], state.FolderState]:
+    return {(mb, f): entry for mb, f, entry in state.SnapshotState.load(path).entries()}
+
+
+class TestVersion2:
+    """`last_run` and an opaque `resume`, both carried over."""
+
+    def test_both_fields_come_through(self, tmp_path):
         path = tmp_path / "state.json"
-        s = state.SnapshotState(path)
-        s.set_date("job", "INBOX", SNAPSHOT)
-        s.save()
+        _write(
+            path,
+            _v2({"job": {"INBOX": {"last_run": LAST_RUN.isoformat(), "resume": UID_TOKEN}}}),
+        )
 
-        s = state.SnapshotState.load(path)
-        assert s.get_date("other-job", "INBOX") is None
-        assert s.get_date("job", "Sent") is None
+        entry = _places(path)[("job", "INBOX")]
 
-    def test_broken_json_yields_empty_state(self, tmp_path, caplog):
+        assert entry.last_run == LAST_RUN.isoformat()
+        assert entry.resume == UID_TOKEN
+
+    def test_a_backend_specific_payload_survives_untouched(self, tmp_path):
+        """This module must not need changing when a backend learns something."""
+        token = {"kind": "graph-delta", "delta_link": "https://…/delta?$skip=X", "extra": 7}
         path = tmp_path / "state.json"
-        path.write_text('{"version": 1, "snapshots": {', encoding="utf-8")
+        _write(path, _v2({"job": {"INBOX": {"resume": token}}}))
 
-        s = state.SnapshotState.load(path)
+        assert _places(path)[("job", "INBOX")].resume == token
 
-        assert list(s.entries()) == []
+    def test_a_token_without_a_kind_is_refused(self, tmp_path, caplog):
+        path = tmp_path / "state.json"
+        _write(path, _v2({"job": {"INBOX": {"last_run": LAST_RUN.isoformat(), "resume": {}}}}))
+
+        entry = _places(path)[("job", "INBOX")]
+
+        assert entry.resume is None, "read the folder in full, which is the safe outcome"
+        assert entry.last_run == LAST_RUN.isoformat(), "the record of the run survives it"
+        assert "unusable resume point" in caplog.text
+
+    def test_a_token_that_is_not_an_object_is_refused(self, tmp_path, caplog):
+        path = tmp_path / "state.json"
+        _write(
+            path,
+            _v2({"job": {"INBOX": {"last_run": LAST_RUN.isoformat(), "resume": "uid:48127"}}}),
+        )
+
+        assert _places(path)[("job", "INBOX")].resume is None
+        assert "unusable resume point" in caplog.text
+
+    def test_a_folder_with_neither_is_not_an_entry(self, tmp_path):
+        path = tmp_path / "state.json"
+        _write(path, _v2({"job": {"INBOX": {}}}))
+
+        assert _places(path) == {}
+
+
+class TestVersion1:
+    """A bare timestamp. It was used as a resume point, and it must not be again."""
+
+    def test_the_timestamp_becomes_a_last_run(self, tmp_path):
+        path = tmp_path / "state.json"
+        _write(path, _v1({"job": {"INBOX": LAST_RUN.isoformat()}}))
+
+        assert _places(path)[("job", "INBOX")].last_run == LAST_RUN.isoformat()
+
+    def test_and_never_a_resume_point(self, tmp_path, caplog):
+        """A date is a statement about the run, not about coverage.
+
+        Adopting it would inherit exactly the gap version 2 exists to close: a
+        message copied into a folder keeps its old date and lands behind it.
+        """
+        path = tmp_path / "state.json"
+        _write(path, _v1({"job": {"INBOX": LAST_RUN.isoformat()}}))
+
+        with caplog.at_level(logging.INFO):
+            assert _places(path)[("job", "INBOX")].resume is None
+
+        assert "not resume points" in caplog.text
+
+    def test_a_naive_timestamp_is_carried_over_as_written(self, tmp_path):
+        """Parsing is the reader's business at the other end, not this one's."""
+        naive = "2026-02-01T12:30:00"
+        path = tmp_path / "state.json"
+        _write(path, _v1({"job": {"INBOX": naive}}))
+
+        assert _places(path)[("job", "INBOX")].last_run == naive
+
+
+class TestWhatCannotBeTrusted:
+    """Everything here degrades to "nothing known", which costs a pass, not mail."""
+
+    def test_a_missing_file(self, tmp_path):
+        assert list(state.SnapshotState.load(tmp_path / "state.json").entries()) == []
+
+    def test_broken_json(self, tmp_path, caplog):
+        path = tmp_path / "state.json"
+        path.write_text('{"version": 2, "snapshots": {', encoding="utf-8")
+
+        assert _places(path) == {}
         assert "not valid JSON" in caplog.text
 
-    def test_unknown_version_is_rejected(self, tmp_path, caplog):
+    def test_a_version_nobody_knows(self, tmp_path, caplog):
         path = tmp_path / "state.json"
-        _write(path, {"version": 99, "snapshots": {"job": {"INBOX": SNAPSHOT.isoformat()}}})
+        _write(path, {"version": 99, "snapshots": {"job": {"INBOX": {"resume": UID_TOKEN}}}})
 
-        s = state.SnapshotState.load(path)
-
-        assert s.get_date("job", "INBOX") is None
+        assert _places(path) == {}
         assert "unknown state version" in caplog.text
 
-    def test_non_object_payload_is_rejected(self, tmp_path, caplog):
+    def test_a_payload_that_is_not_an_object(self, tmp_path, caplog):
         path = tmp_path / "state.json"
         _write(path, ["not", "an", "object"])
 
-        assert list(state.SnapshotState.load(path).entries()) == []
+        assert _places(path) == {}
         assert "expected a JSON object" in caplog.text
 
-    def test_malformed_entries_are_dropped_but_valid_ones_kept(self, tmp_path, caplog):
+    def test_snapshots_that_are_not_an_object(self, tmp_path, caplog):
+        path = tmp_path / "state.json"
+        _write(path, {"version": state.STATE_VERSION, "snapshots": []})
+
+        assert _places(path) == {}
+        assert "'snapshots' is not an object" in caplog.text
+
+    def test_one_broken_entry_does_not_cost_the_others(self, tmp_path, caplog):
         path = tmp_path / "state.json"
         _write(
             path,
-            {
-                "version": state.STATE_VERSION,
-                "snapshots": {
-                    "good-job": {"INBOX": SNAPSHOT.isoformat(), "Sent": 12345},
+            _v2(
+                {
+                    "good-job": {"INBOX": {"resume": UID_TOKEN}, "Sent": 12345},
                     "broken-job": "not-an-object",
-                },
-            },
+                }
+            ),
         )
 
-        s = state.SnapshotState.load(path)
+        places = _places(path)
 
-        assert s.get_date("good-job", "INBOX") == SNAPSHOT
-        assert s.get_date("good-job", "Sent") is None
-        assert s.get_date("broken-job", "INBOX") is None
+        assert places[("good-job", "INBOX")].resume == UID_TOKEN
+        assert ("good-job", "Sent") not in places
+        assert ("broken-job", "INBOX") not in places
         assert "skipping malformed entry" in caplog.text
 
-    def test_unparsable_timestamp_counts_as_unknown(self, tmp_path, caplog):
-        path = tmp_path / "state.json"
-        _write(path, {"version": state.STATE_VERSION, "snapshots": {"job": {"INBOX": "soon"}}})
 
-        assert state.SnapshotState.load(path).get_date("job", "INBOX") is None
-        assert "unparsable timestamp" in caplog.text
-
-
-class TestSave:
-    def test_roundtrip_preserves_timestamp(self, tmp_path):
-        path = tmp_path / "state.json"
-        s = state.SnapshotState(path)
-        s.set_date("job", "INBOX", SNAPSHOT)
-        s.save()
-
-        assert state.SnapshotState.load(path).get_date("job", "INBOX") == SNAPSHOT
-
-    def test_folder_names_with_separators_survive(self, tmp_path):
-        """Folder names are dictionary keys, never path components."""
-        path = tmp_path / "state.json"
-        s = state.SnapshotState(path)
-        s.set_date("job", "Archiv/2016", SNAPSHOT)
-        s.set_date("job", "\\Sent", SNAPSHOT)
-        s.save()
-
-        s = state.SnapshotState.load(path)
-        assert s.get_date("job", "Archiv/2016") == SNAPSHOT
-        assert s.get_date("job", "\\Sent") == SNAPSHOT
-        assert list(tmp_path.iterdir()) == [path]
-
-    def test_leaves_no_temporary_file_behind(self, tmp_path):
-        path = tmp_path / "state.json"
-        s = state.SnapshotState(path)
-        s.set_date("job", "INBOX", SNAPSHOT)
-        s.save()
-
-        assert [p.name for p in tmp_path.iterdir()] == ["state.json"]
-
-    def test_replaces_previous_content(self, tmp_path):
-        path = tmp_path / "state.json"
-        later = datetime(2026, 3, 1, tzinfo=UTC)
-
-        s = state.SnapshotState(path)
-        s.set_date("job", "INBOX", SNAPSHOT)
-        s.save()
-        s.set_date("job", "INBOX", later)
-        s.save()
-
-        assert state.SnapshotState.load(path).get_date("job", "INBOX") == later
-
-    def test_creates_missing_parent_directory(self, tmp_path):
-        path = tmp_path / "fresh-archive" / "state.json"
-        s = state.SnapshotState(path)
-        s.set_date("job", "INBOX", SNAPSHOT)
-        s.save()
-
-        assert path.exists()
-
-    def test_written_file_is_readable_json(self, tmp_path):
-        """The file is meant to be inspectable without mailvault."""
-        path = tmp_path / "state.json"
-        s = state.SnapshotState(path)
-        s.set_date("job", "INBOX", SNAPSHOT)
-        s.save()
-
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        assert payload == {
-            "version": state.STATE_VERSION,
-            "snapshots": {"job": {"INBOX": SNAPSHOT.isoformat()}},
-        }
-
-
-class TestEntries:
-    def test_entries_are_sorted(self, tmp_path):
-        s = state.SnapshotState(tmp_path / "state.json")
-        s.set_date("b-job", "INBOX", SNAPSHOT)
-        s.set_date("a-job", "Sent", SNAPSHOT)
-        s.set_date("a-job", "INBOX", SNAPSHOT)
-
-        assert [(m, f) for m, f, _ in s.entries()] == [
-            ("a-job", "INBOX"),
-            ("a-job", "Sent"),
-            ("b-job", "INBOX"),
-        ]
-
-
-class TestTimezones:
-    def test_a_naive_timestamp_is_read_as_local_time(self, tmp_path):
-        """Older versions wrote datetime.now(), which means local time.
-
-        Left naive, a caller that stamps it `Z` would read it as UTC -- later
-        than meant -- and skip the mail that arrived in between.
-        """
-        path = tmp_path / "state.json"
-        _write(
-            path,
+def test_entries_come_out_sorted(tmp_path):
+    path = tmp_path / "state.json"
+    _write(
+        path,
+        _v2(
             {
-                "version": state.STATE_VERSION,
-                "snapshots": {"job": {"INBOX": "2025-10-16T19:16:59.494153"}},
-            },
-        )
+                "zeta": {"Sent": {"resume": UID_TOKEN}},
+                "alpha": {"Sent": {"resume": UID_TOKEN}, "INBOX": {"resume": UID_TOKEN}},
+            }
+        ),
+    )
 
-        parsed = state.SnapshotState.load(path).get_date("job", "INBOX")
+    assert [(mb, f) for mb, f, _ in state.SnapshotState.load(path).entries()] == [
+        ("alpha", "INBOX"),
+        ("alpha", "Sent"),
+        ("zeta", "Sent"),
+    ]
 
-        assert parsed is not None
-        assert parsed.tzinfo is not None
-        assert parsed.replace(tzinfo=None) == datetime(2025, 10, 16, 19, 16, 59, 494153)
 
-    def test_an_aware_timestamp_is_left_alone(self, tmp_path):
-        path = tmp_path / "state.json"
-        s = state.SnapshotState(path)
-        s.set_date("job", "INBOX", SNAPSHOT)
-        s.save()
+@pytest.mark.parametrize("payload", [{}, {"version": state.STATE_VERSION}, 42])
+def test_anything_unusable_yields_no_places(tmp_path, payload):
+    path = tmp_path / "state.json"
+    _write(path, payload)
 
-        assert state.SnapshotState.load(path).get_date("job", "INBOX") == SNAPSHOT
+    assert _places(path) == {}

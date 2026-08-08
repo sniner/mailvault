@@ -31,6 +31,7 @@ import re
 import time
 from typing import Any
 
+from mailvault import utils
 from mailvault.store import atomic, zstd
 
 log = logging.getLogger(__name__)
@@ -63,6 +64,14 @@ _TEMP_ATTEMPTS = 100
 # belongs to a run that is over. Generous on purpose -- the cost of waiting a day
 # is a few kilobytes, the cost of being wrong is another writer's entry.
 TRANSIENT_MIN_AGE = 24 * 60 * 60
+
+# Where an archive keeps its messages. Its own directory rather than the
+# archive root, because the root is what somebody standing in the archive sees:
+# 256 shard directories there bury the handful of files that are worth looking
+# at. It also gives the root back to the archive -- while the store claimed it,
+# a stray file lying there was nobody's to judge, and `archive check` had to
+# pass over it in silence.
+MAIL_DIR = "mail"
 
 
 def is_hashval(value: str) -> bool:
@@ -281,6 +290,16 @@ class ContentAddressedStorage:
         """The name this content would be stored under, without storing it."""
         return self.hashfactory(data).hexdigest()
 
+    def where(self, path: pathlib.Path) -> str:
+        """One of this store's files as it reads inside the archive.
+
+        `mail/a1/a1b2….eml`, never the whole path: the archive is named once at
+        the start of a run and every line after it is about that archive. The
+        store's own directory is part of the answer, because what the reader has
+        in front of them is the archive, not the store inside it.
+        """
+        return utils.under(self.root_dir.parent, path)
+
     def hashval_of(self, path: pathlib.Path) -> str | None:
         """The hash a file name claims, or None when the file is not an entry."""
         for tail in (self.suffix + ".zst", self.suffix):
@@ -312,7 +331,7 @@ class ContentAddressedStorage:
         hashval = self._hashval(reader)
         existing = self._find_existing(hashval)
         if existing:
-            log.debug(f"{existing}: already exists")
+            log.debug(f"{self.where(existing)}: already exists")
             return "EXISTS", hashval, existing
         path, filename = self._destination(hashval)
         file = path / filename
@@ -324,7 +343,7 @@ class ContentAddressedStorage:
                     self._copy(reader, compressor.write)
             else:
                 self._copy(reader, f.write)
-        log.debug(f"{file}: new entry")
+        log.debug(f"{self.where(file)}: new entry")
         return "NEW", hashval, file
 
     @contextlib.contextmanager
@@ -433,7 +452,7 @@ class ContentAddressedStorage:
                 # Deliberately broad: a codec error is not an OSError, and one
                 # damaged entry must not stop a pass over a whole archive. The
                 # file is named in the result, so the caller can still tell.
-                log.error(f"{path}: {operation} failed: {exc}")
+                log.error(f"{self.where(path)}: {operation} failed: {exc}")
                 result.failed.append(path)
             else:
                 result.converted += 1
@@ -492,7 +511,7 @@ class ContentAddressedStorage:
         try:
             return path.stat().st_mtime <= time.time() - min_age
         except OSError as exc:
-            log.debug(f"{path}: kept: {exc}")
+            log.debug(f"{self.where(path)}: kept: {exc}")
             return False
 
     def prune_transient_files(self, min_age: float = TRANSIENT_MIN_AGE) -> int:
@@ -529,9 +548,9 @@ class ContentAddressedStorage:
         try:
             path.unlink()
         except OSError as exc:
-            log.debug(f"{path}: kept: {exc}")
+            log.debug(f"{self.where(path)}: kept: {exc}")
             return False
-        log.info(f"{path}: leftover of an interrupted write, removed")
+        log.info(f"{self.where(path)}: leftover of an interrupted write, removed")
         return True
 
     def prune_empty_dirs(self) -> int:
@@ -555,7 +574,7 @@ class ContentAddressedStorage:
             try:
                 directory.rmdir()
             except OSError as exc:
-                log.debug(f"{directory}: kept: {exc}")
+                log.debug(f"{self.where(directory)}: kept: {exc}")
                 continue
             removed += 1
         return removed
@@ -575,3 +594,13 @@ class ContentAddressedStorage:
                 entry = pathlib.Path(path, fname)
                 if self.hashval_of(entry) is not None:
                     yield entry
+
+
+def mail_store(archive: pathlib.Path, compress: bool = False) -> ContentAddressedStorage:
+    """Open the message store of `archive`.
+
+    Every command that reads or writes messages comes through here, so where
+    the store lies is decided once. It used to be composed at a dozen call
+    sites, which is a layout written down a dozen times.
+    """
+    return ContentAddressedStorage(archive / MAIL_DIR, suffix=".eml", compress=compress)

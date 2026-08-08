@@ -38,15 +38,20 @@ class BackupResult:
     advance the incremental snapshot — otherwise those messages would fall
     outside the date filter of every future run and stay lost for good.
 
-    `newest` is the server-side timestamp of the newest message this pass
-    actually stored, and it is the only evidence there is for how far the
-    archive has caught up. The caller resumes from it rather than from the wall
-    clock, because "it is now 12:00" says nothing about what the source was
-    willing to show: a mailbox that is still starting up -- Proton Bridge before
-    its first sync, an IMAP proxy with a cold cache -- reports an empty folder
-    without reporting an error, and a snapshot taken from the clock would then
-    claim coverage of mail that was never offered. It stays None when nothing
-    was stored, which is what keeps the snapshot where it is.
+    `resume` is where the next pass over this folder may carry on, in whatever
+    shape the backend that produced it uses. It is built from what this pass
+    actually archived, never from the clock: "it is now 12:00" says nothing
+    about what the source was willing to show, and a mailbox that is still
+    starting up -- Proton Bridge before its first sync, an IMAP proxy with a
+    cold cache -- reports an empty folder without reporting an error. It stays
+    None when the pass earned no new point, and the caller then leaves the
+    previous one standing.
+
+    `resume_lost` says the point the caller handed in is no longer usable -- a
+    UID space the server rebuilt, a delta token it will not honour, a point from
+    a backend that is not this one. The pass then does *nothing*: reading the
+    folder in full is the caller's decision, because only the caller knows
+    whether the archive can be brought back in step by listing instead.
 
     `deletable` lists the backend message ids that were stored successfully and
     may be removed from the server -- but only once the metadata log for this
@@ -60,32 +65,14 @@ class BackupResult:
     total: int = 0
     stored: int = 0
     failed: int = 0
-    newest: datetime | None = None
+    resume: dict | None = None
+    resume_lost: bool = False
     deletable: list[Any] = dataclasses.field(default_factory=list)
 
     @property
     def complete(self) -> bool:
         """True if every message seen on the server was accounted for."""
         return self.failed == 0
-
-    def saw(self, date: datetime | None) -> None:
-        """Note the timestamp of a stored message, keeping the newest one.
-
-        Call it only for messages that were actually archived: the value becomes
-        the point the next run resumes from, so a message that failed must not
-        contribute its date and let the next date filter skip past it.
-
-        A naive value is read as local time. That is what the IMAP backend hands
-        over -- imapclient normalises INTERNALDATE to local time and drops the
-        offset -- and it matches how the state file reads back a naive entry, so
-        the two cannot disagree by a timezone.
-        """
-        if date is None:
-            return
-        if date.tzinfo is None:
-            date = date.astimezone()
-        if self.newest is None or date > self.newest:
-            self.newest = date
 
 
 @dataclasses.dataclass(frozen=True)
@@ -116,10 +103,20 @@ class MailboxClient(Protocol):
         self,
         folder_name: str,
         store: cas.ContentAddressedStorage,
-        since: datetime | None = ...,
+        resume: dict | None = ...,
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = ...,
     ) -> BackupResult:
         """Store a folder's messages, recording each via `callback`.
+
+        `resume` is a point this backend produced on an earlier pass. What it
+        contains is the backend's own business -- the caller only stores it and
+        hands it back. A point that is no longer usable is *reported* rather than
+        worked around: the pass stops and sets `BackupResult.resume_lost`, and
+        what to do instead is the caller's decision. A point of None means read
+        the folder in full, which is how the caller asks for exactly that.
+
+        Returns the point for next time in `BackupResult.resume`, built from what
+        was actually archived, or None when the pass earned none.
 
         Deletes nothing; the ids of stored messages go into
         `BackupResult.deletable` for the caller to `purge` after the log is sealed.
@@ -138,8 +135,16 @@ class MailboxClient(Protocol):
     def message_index(
         self,
         folder_name: str,
-        since: datetime | None = ...,
     ) -> collections.abc.Generator[MessageRef, None, None]: ...
+
+    def resume_point(self, folder_name: str) -> dict | None:
+        """A resume point over the folder as it stands right now, fetching nothing.
+
+        For when a folder was brought back in step by other means and only its
+        position still has to be recorded. Returns None when no point can be
+        established, which leaves the folder to be read in full again.
+        """
+        ...
 
     def fetch_message(self, msg_id: Any, folder_name: str) -> bytes: ...
 

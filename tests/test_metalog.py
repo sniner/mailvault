@@ -8,14 +8,19 @@ import os
 import time
 from datetime import UTC, datetime
 
-from mailvault.store import cas, metalog
+from mailvault.store import cas, heads, metalog
 
 WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
 STORE_ID = "df3823f1cd1638d0f374745bb0e200e3"
 
 
+def _heads(log_root):
+    """Where the chain heads live for a log root of `<archive>/meta`."""
+    return log_root.parent / heads.DEFAULT_HEADS_DIR
+
+
 def _write(root, mailbox="job", folder="INBOX", store_ids=(STORE_ID,)):
-    writer = metalog.LogWriter(root)
+    writer = metalog.LogWriter(root, _heads(root))
     for store_id in store_ids:
         writer.add(mailbox, [folder] if folder is not None else [], store_id)
     return writer.seal(WHEN)
@@ -24,7 +29,7 @@ def _write(root, mailbox="job", folder="INBOX", store_ids=(STORE_ID,)):
 class TestWriting:
     def test_nothing_observed_writes_no_file(self, tmp_path):
         """An unchanged folder must not litter the log with empty files."""
-        writer = metalog.LogWriter(tmp_path / "meta")
+        writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
 
         assert writer.seal(WHEN) == []
         assert not (tmp_path / "meta").exists()
@@ -53,7 +58,7 @@ class TestWriting:
 
     def test_each_place_becomes_its_own_file(self, tmp_path):
         """One file is one (mailbox, folder) -- that is what makes it unambiguous."""
-        writer = metalog.LogWriter(tmp_path / "meta")
+        writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         writer.add("job", ["INBOX", "\\Sent"], STORE_ID)
         writer.add("other", ["INBOX"], STORE_ID)
 
@@ -64,7 +69,7 @@ class TestWriting:
         assert places == {("job", "INBOX"), ("job", "\\Sent"), ("other", "INBOX")}
 
     def test_files_written_together_get_distinct_names(self, tmp_path):
-        writer = metalog.LogWriter(tmp_path / "meta")
+        writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         for folder in ("a", "b", "c", "d", "e"):
             writer.add("job", [folder], STORE_ID)
 
@@ -72,14 +77,28 @@ class TestWriting:
 
         assert len({p.name for p in paths}) == 5
 
-    def test_identical_content_is_stored_once(self, tmp_path):
-        """Content addressing, applied to the log: the same seal is one file."""
-        root = tmp_path / "meta"
-        first = _write(root)
-        second = _write(root)
+    def test_the_same_observations_again_are_a_new_link(self, tmp_path):
+        """What the chain costs, said out loud.
 
-        assert first == second
-        assert len(metalog.log_files(root)) == 1
+        Before there was a chain, two seals of the same content produced the same
+        bytes and therefore the same file -- content addressing folded them. Now
+        the second names the first as its predecessor, so it differs and is its
+        own file. That is not a regression to fix but what a chain *is*: seeing
+        the same messages again is a second observation, and the log records
+        observations.
+
+        It costs little in practice. A folder with a resume point offers nothing
+        the next run has not seen, so nothing is observed and nothing is sealed;
+        and `compact` folds a place's whole chain back into one file.
+        """
+        root = tmp_path / "meta"
+        (first,) = _write(root)
+        (second,) = _write(root)
+
+        assert first != second
+        assert len(metalog.log_files(root)) == 2
+        assert metalog.read_log(second).prev == first.name.removesuffix(".jsonl")
+        assert metalog.read_log(first).prev is None
 
     def test_folder_with_separators_stays_out_of_the_filename(self, tmp_path):
         """Names like 'Archiv/2016' must never become path components."""
@@ -99,7 +118,7 @@ class TestWriting:
 
     def test_byte_folder_names_are_decoded(self, tmp_path):
         """Gmail reports its folder names as raw bytes, which JSON cannot hold."""
-        writer = metalog.LogWriter(tmp_path / "meta")
+        writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         writer.add("job", [b"\\Sent"], STORE_ID)
 
         (path,) = writer.seal(WHEN)
@@ -110,7 +129,7 @@ class TestWriting:
 
     def test_message_without_a_folder_is_recorded_against_the_mailbox(self, tmp_path):
         """Knowing less is not the same as knowing nothing."""
-        writer = metalog.LogWriter(tmp_path / "meta")
+        writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         writer.add("job", [], STORE_ID)
 
         (path,) = writer.seal(WHEN)
@@ -134,7 +153,7 @@ class TestWriting:
         assert header["messages"] == 2
 
     def test_writer_is_reusable_after_sealing(self, tmp_path):
-        writer = metalog.LogWriter(tmp_path / "meta")
+        writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         writer.add("job", ["INBOX"], STORE_ID)
         writer.seal(WHEN)
 
@@ -186,7 +205,7 @@ class TestReading:
         path.write_text(json.dumps({"version": 99, "mailbox": "j"}) + "\n", encoding="utf-8")
 
         assert metalog.read_log(path) is None
-        assert "is not 1" in caplog.text
+        assert "is not one of 1, 2" in caplog.text
 
     def test_unreadable_header_discards_the_file(self, tmp_path, caplog):
         path = tmp_path / "log.jsonl"
@@ -277,10 +296,54 @@ class TestDiscovery:
         assert len(list(metalog.read_all(root))) == 1
 
 
+class TestHeaderOnly:
+    """The header alone answers where a file belongs, without its message lines."""
+
+    def test_it_reads_the_place(self, tmp_path):
+        (path,) = _write(tmp_path / "meta", mailbox="gmail.com", folder="Sent")
+
+        header = metalog.read_header(path)
+
+        assert header is not None
+        assert header["mailbox"] == "gmail.com"
+        assert header["folder"] == "Sent"
+
+    def test_an_unusable_file_yields_nothing(self, tmp_path):
+        path = tmp_path / "broken.jsonl"
+        path.write_text("not json\n", encoding="utf-8")
+
+        assert metalog.read_header(path) is None
+
+    def test_an_empty_file_yields_nothing(self, tmp_path):
+        path = tmp_path / "empty.jsonl"
+        path.write_text("", encoding="utf-8")
+
+        assert metalog.read_header(path) is None
+
+    def test_mailboxes_gathers_the_names(self, tmp_path):
+        root = tmp_path / "meta"
+        _write(root, mailbox="gmail.com", folder="INBOX")
+        _write(root, mailbox="gmail.com", folder="Sent")
+        _write(root, mailbox="posteo.de", folder="INBOX")
+
+        assert metalog.mailboxes(root) == {"gmail.com", "posteo.de"}
+
+    def test_mailboxes_of_an_empty_archive(self, tmp_path):
+        assert metalog.mailboxes(tmp_path / "meta") == set()
+
+    def test_a_damaged_file_costs_only_itself(self, tmp_path):
+        root = tmp_path / "meta"
+        _write(root, mailbox="gmail.com")
+        (root / "ff").mkdir(exist_ok=True)
+        (root / "ff" / "ff00.jsonl").write_text("broken", encoding="utf-8")
+
+        assert metalog.mailboxes(root) == {"gmail.com"}
+
+
 class TestCompact:
     @staticmethod
     def _write(root, store_ids, mailbox="job", folder="INBOX", when=WHEN):
-        writer = metalog.LogWriter(root)
+        writer = metalog.LogWriter(root, _heads(root))
         for store_id in store_ids:
             writer.add(mailbox, [folder], store_id)
         writer.seal(when)
@@ -298,7 +361,7 @@ class TestCompact:
         leftover.write_bytes(b'{"version":1,"mailbox":"job"')
         os.utime(leftover, (0, time.time() - cas.TRANSIENT_MIN_AGE - 60))
 
-        result = metalog.compact(root)
+        result = metalog.compact(root, _heads(root))
 
         assert result.transient_removed == 1
         assert not leftover.exists()
@@ -311,7 +374,7 @@ class TestCompact:
         self._write(root, ["c", "d"])  # 'c' repeats
         assert len(metalog.log_files(root)) == 3
 
-        result = metalog.compact(root)
+        result = metalog.compact(root, _heads(root))
 
         assert result.files_before == 3
         assert result.files_after == 1
@@ -328,7 +391,7 @@ class TestCompact:
         self._write(root, ["c", "d"])
         shards_before = [d for d in root.iterdir() if d.is_dir()]
 
-        metalog.compact(root)
+        metalog.compact(root, _heads(root))
 
         assert len(shards_before) > 1  # the runs really did land in several shards
         assert [d for d in root.iterdir() if d.is_dir() and not list(d.iterdir())] == []
@@ -338,7 +401,7 @@ class TestCompact:
         self._write(root, ["a"], folder="INBOX")
         self._write(root, ["b"], folder="Sent")
 
-        result = metalog.compact(root)
+        result = metalog.compact(root, _heads(root))
 
         assert result.files_after == 2
         assert result.places == 2
@@ -349,10 +412,10 @@ class TestCompact:
         root = tmp_path / "meta"
         self._write(root, ["a", "b"])
         self._write(root, ["b", "c"])
-        metalog.compact(root)
+        metalog.compact(root, _heads(root))
         files = set(metalog.log_files(root))
 
-        result = metalog.compact(root)
+        result = metalog.compact(root, _heads(root))
 
         assert set(metalog.log_files(root)) == files  # nothing rewritten or removed
         assert result.files_before == result.files_after
@@ -364,13 +427,13 @@ class TestCompact:
         self._write(root, ["b"], when=datetime(2026, 8, 3, tzinfo=UTC))
         self._write(root, ["c"], when=datetime(2026, 8, 2, tzinfo=UTC))
 
-        metalog.compact(root)
+        metalog.compact(root, _heads(root))
 
         (logfile,) = list(metalog.read_all(root))
         assert logfile.date == datetime(2026, 8, 3, tzinfo=UTC).isoformat()
 
     def test_empty_log_is_a_no_op(self, tmp_path):
-        result = metalog.compact(tmp_path / "meta")
+        result = metalog.compact(tmp_path / "meta", tmp_path / "heads")
 
         assert result.files_before == 0
         assert result.files_after == 0
@@ -382,9 +445,130 @@ class TestCompact:
         broken = root / "ff" / "ff00.jsonl"
         broken.write_text("broken", encoding="utf-8")
 
-        result = metalog.compact(root)
+        result = metalog.compact(root, _heads(root))
 
         assert broken.exists()  # left in place, its contents not lost
         assert result.entries_after == 2
         places = {(lf.mailbox, lf.folder): set(lf.store_ids) for lf in metalog.read_all(root)}
         assert places[("job", "INBOX")] == {"a", "b"}
+
+
+class TestTheChain:
+    """Each place's files name their predecessor; the newest is named by its head."""
+
+    @staticmethod
+    def _seal(root, store_ids, mailbox="job", folder="INBOX"):
+        writer = metalog.LogWriter(root, _heads(root))
+        for store_id in store_ids:
+            writer.add(mailbox, [folder], store_id)
+        return writer.seal(WHEN)
+
+    def test_the_first_file_of_a_place_starts_one(self, tmp_path):
+        root = tmp_path / "meta"
+
+        (path,) = self._seal(root, ["aa"])
+
+        assert metalog.read_log(path).prev is None
+
+    def test_the_head_names_the_newest(self, tmp_path):
+        root = tmp_path / "meta"
+        self._seal(root, ["aa"])
+        (second,) = self._seal(root, ["bb"])
+
+        head = heads.read(_heads(root), "job", "INBOX")
+
+        assert head.log == second.name.removesuffix(".jsonl")
+
+    def test_following_it_back_reaches_every_file_of_the_place(self, tmp_path):
+        root = tmp_path / "meta"
+        names = [self._seal(root, [sid])[0].name.removesuffix(".jsonl") for sid in "abc"]
+
+        walked = []
+        hashval = heads.read(_heads(root), "job", "INBOX").log
+        while hashval is not None:
+            walked.append(hashval)
+            hashval = metalog.read_log(metalog.open_store(root).locate(hashval)).prev
+
+        assert walked == list(reversed(names))
+
+    def test_two_places_keep_two_chains(self, tmp_path):
+        root = tmp_path / "meta"
+        self._seal(root, ["aa"], folder="INBOX")
+        self._seal(root, ["bb"], folder="Sent")
+
+        inbox = heads.read(_heads(root), "job", "INBOX")
+        sent = heads.read(_heads(root), "job", "Sent")
+
+        assert inbox.log != sent.log
+        assert metalog.read_log(metalog.open_store(root).locate(sent.log)).prev is None
+
+    def test_a_place_without_a_mailbox_carries_no_chain(self, tmp_path):
+        """The type allows it, so it is answered rather than assumed away."""
+        root = tmp_path / "meta"
+        writer = metalog.LogWriter(root, _heads(root))
+        writer.add(None, ["INBOX"], STORE_ID)
+
+        (path,) = writer.seal(WHEN)
+
+        assert metalog.read_log(path).prev is None
+        assert heads.head_files(_heads(root)) == []
+
+    def test_a_place_without_a_folder_gets_a_head_all_the_same(self, tmp_path):
+        """What the store.db migration writes: mailbox known, folder not."""
+        root = tmp_path / "meta"
+        writer = metalog.LogWriter(root, _heads(root))
+        writer.add("job", [], STORE_ID)
+        (path,) = writer.seal(WHEN)
+
+        head = heads.read(_heads(root), "job", None)
+
+        assert head is not None
+        assert head.log == path.name.removesuffix(".jsonl")
+
+    def test_a_version_1_file_simply_carries_no_chain(self, tmp_path):
+        """An archive is full of files written over years; refusing them is worse."""
+        path = tmp_path / "log.jsonl"
+        header = {"version": 1, "mailbox": "job", "folder": "INBOX", "messages": 0}
+        path.write_text(json.dumps(header) + "\n", encoding="utf-8")
+
+        logfile = metalog.read_log(path)
+
+        assert logfile is not None
+        assert logfile.prev is None
+
+
+class TestCompactAndTheChain:
+    def test_the_consolidated_file_starts_the_chain_over(self, tmp_path):
+        """It holds everything that came before, so naming what is about to be
+        removed would point at something deliberately gone."""
+        root = tmp_path / "meta"
+        TestTheChain._seal(root, ["aa"])
+        TestTheChain._seal(root, ["bb"])
+
+        metalog.compact(root, _heads(root))
+
+        (path,) = metalog.log_files(root)
+        assert metalog.read_log(path).prev is None
+
+    def test_and_the_head_is_moved_onto_it(self, tmp_path):
+        root = tmp_path / "meta"
+        TestTheChain._seal(root, ["aa"])
+        TestTheChain._seal(root, ["bb"])
+
+        metalog.compact(root, _heads(root))
+
+        (path,) = metalog.log_files(root)
+        head = heads.read(_heads(root), "job", "INBOX")
+        assert head.log == path.name.removesuffix(".jsonl")
+
+    def test_compacting_twice_changes_nothing(self, tmp_path):
+        root = tmp_path / "meta"
+        TestTheChain._seal(root, ["aa"])
+        TestTheChain._seal(root, ["bb"])
+        metalog.compact(root, _heads(root))
+        before = heads.read(_heads(root), "job", "INBOX").log
+
+        metalog.compact(root, _heads(root))
+
+        assert heads.read(_heads(root), "job", "INBOX").log == before
+        assert len(metalog.log_files(root)) == 1

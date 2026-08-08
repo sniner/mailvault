@@ -1,5 +1,271 @@
 # Changelog
 
+## 0.10.0 (2026-08-09)
+
+### Added
+
+- **A backup into the wrong archive is refused before it starts.** The configuration file and the
+  destination are two independent arguments, and `--config work.toml backup ~/mail/private` looks
+  perfectly fine until the first message is written. `backup` and `verify` now check, before the
+  first login, that each selected job has written into that archive before -- the archive knows
+  from `heads/`, or from the metadata log if that is gone. A job that has not stops the run
+  and is named. The check looks only in the writing direction: a mailbox in the archive with no
+  job in the configuration is nobody's business, so removing a job, commenting one out or picking
+  a few with `--job` stay free of ceremony, and an archive nobody has written into takes anything
+
+- **`--allow-new-mailbox`** is the way past it for the one case it cannot tell from a mix-up: a
+  genuinely new job. One run with the flag, and from the next one it is known
+
+- **`archive export`** writes a message back out, byte for byte as it went in -- to standard
+  output, or to a file with `--output`. It takes the message id the reports print, and that is all
+  it takes: whether the message lies compressed, and where in the archive it lies, is the store's
+  business. The way to look at a message the reports can only name
+
+- **`archive check` runs the integrity check by default.** `--contents` is gone; the check it
+  asked for is what the command does, and **`--no-integrity-check`** leaves it out. It was made
+  optional on the assumption that reading every message costs an order of magnitude more than
+  walking the tree, and measurement says otherwise: on a 131,000-message archive over SMB the walk
+  took 16 minutes and reading every message 17. A network share charges for round trips, not for
+  bytes -- the walk pays one per shard directory, the read one per message, and at a couple of
+  messages per shard those come out level. Being able to find a message whose bytes changed under
+  it is worth a factor of two. `--quarantine` no longer needs a companion flag; it refuses to be
+  combined with `--no-integrity-check` instead
+
+- **`archive check` says whether the archive is all right**, in words, instead of leaving the
+  verdict to an exit code nobody reads unless they went looking for it -- and it says which kind
+  of run it was, because one with `--no-integrity-check` never read a message and cannot have
+  found one whose bytes changed. Its counts are in plain terms too, and there are only counts a
+  reader can act on: `5 message(s) stored, 4 of them accounted for by 2 log file(s) in 3
+  place(s)`. Those two message counts are there to be subtracted -- the difference is the list of
+  messages with no provenance further down. What used to stand between them was the number of log
+  entries, which counts a message once per folder it was filed in and so ran to six figures on a
+  real archive: neither files nor messages nor folders, nothing following from it either way, and
+  duly read as a file count. Findings say what is wrong rather than
+  how the store found out -- a message is *damaged* when its content does not match its checksum,
+  where it used to "not match the name it is filed under". The long passes number themselves
+  (`step 1 of 3: looking through the archive`), so a run that takes half an hour says how much of
+  it is still ahead
+
+- **`archive import --dry-run`** reads and hashes every message and reports how many the archive
+  would gain, without writing anything or removing a source file. Mail that has been through
+  another program on its way here may not be byte-identical to what the archive already holds --
+  a header added or stripped is enough -- and such a message is stored a second time under a
+  different name, after which nothing tells it apart from one that really is new. A "would be
+  imported" count where a small one was expected is the only warning there is, and this is how to
+  see it beforehand. `import` now also reports what it did on a real run, and exits non-zero when
+  a source file could not be read
+
+- **The configuration lives in the archive.** An archive's own `mailvault.toml` is what every
+  command reads, so a backup from inside it needs nothing at all: `cd /srv/archive/private &&
+  mailvault backup`. A configuration and an archive can no longer drift apart, because they are
+  the same directory -- and a backup of the archive now carries the recipe along with the mail
+  instead of saving the mail and losing the recipe. `--config FILE` still names one from
+  elsewhere; it then has to name the archive too, since reaching for a file somewhere else is
+  what somebody does who is *not* standing in the archive
+
+- **`--archive DIR`** is the other way to say which archive, and the only other way -- what
+  `git -C` is. It applies to every command, so `mailvault --archive /srv/archive/private archive
+  check` works from anywhere
+
+- **An archive says which layout it is written in.** A `FORMAT` file in its root holds one
+  self-explanatory line -- `mailvault archive format 1` -- so a `cat` five years from now answers
+  the question without this program. Recognising a layout by its structure only works backwards: a
+  newer one looks familiar in exactly the wrong way, because every directory the reader knows is
+  present. A version that finds a number it does not know refuses the archive and says to upgrade,
+  rather than misreading it. No file means the layout as it was before the mark existed
+
+- **The messages live in `mail/`**, not in the archive root. The root is what somebody standing in
+  the archive sees, and 256 shard directories there bury the handful of files worth looking at. It
+  also gives the root back to the archive: while the store claimed it, a stray file lying there was
+  nobody's to judge and `archive check` had to pass over it in silence
+
+- **The resume points live in `heads/`, one small file per place**, where `state.json` held them
+  all in one structure. A backup writes after every folder, so a run over forty of them rewrote the
+  whole thing forty times -- but the reason is what a damaged file costs: `state.json` was decoded
+  as a whole, so one bad byte discarded every folder of every job and sent the next run over all of
+  them in full. One file per place makes the same bad byte cost one folder
+
+- **`archive migrate` lifts an archive of any earlier shape**, in one command: `state.json` into
+  `heads/`, a pre-0.8.0 `store.db` into the metadata log, the messages into `mail/`, the log
+  consolidated, and only then the mark. The next backup does it by itself. The mark is written last
+  on purpose -- an interruption leaves the older number standing and the next run picks the work up,
+  where a mark written first would claim a layout that only half exists. Moving the messages is at
+  most 256 directory renames, so it does not grow with the size of the archive
+
+- **A place's log files form a chain.** Each header names the file that held that place before it,
+  and `heads/` names the newest. The chain is the check, never the enumeration -- reading still goes
+  through the directory, so a broken link hides nothing. What it catches is narrow and worth saying
+  exactly: a lost log file usually announces itself already, because its messages turn up in
+  `archive check` as having no provenance. That does not happen when the same message is recorded
+  elsewhere too -- a Gmail message filed under three labels lives in three files -- and then the
+  loss of one of its places is completely silent
+
+- **The archive is named once, at the start of a run, and nowhere else.** Every line after it is
+  about that archive, and repeating the path on each of them buried the statement behind it -- over
+  a network share the prefix was routinely longer than what it prefixed. A file inside the archive
+  is now named as it reads *inside* it, `meta/a1/a1b2….jsonl` rather than the whole path; one that
+  lies elsewhere, as `archive import` reads from, keeps its full path, because shortening it
+  against an archive it has nothing to do with would say the wrong thing about where it is. This
+  holds for the log lines as well as the reports -- a damaged message, an unreadable log file, a
+  head that says the wrong place, a message set aside by `--quarantine`. What still names the
+  archive in full is the one message that is *about* the archive: a configuration that has never
+  written here says which archive it was pointed at, and that is the statement, not a prefix
+
+### Breaking changes
+
+- **An archive is a directory with a `FORMAT` file in it, and `mailvault archive init` is what
+  makes one** -- what `git init` is, and answered the same way: a repository is a directory with
+  a `.git`, and nothing else counts. `init` lays out the archive and writes a `mailvault.toml`
+  to fill in; an existing configuration is never touched. Every other command asks first and
+  refuses a directory that is not an archive, naming both ways on: `init` for a new one,
+  `archive migrate` for one from before 0.10. Only those two accept an unmarked directory.
+  Before this, each command simply opened `<directory>/mail` and worked on what it found there,
+  which on an unmigrated archive is nothing at all -- `archive check` reported a healthy
+  131,000-message archive as a total loss, and `verify --repair` set about downloading the
+  mailbox a second time
+
+- **No command takes an archive as a positional argument any more.** The archive is the directory
+  you are standing in, or `--archive DIR`. `mailvault backup ./backup` becomes
+  `mailvault --archive ./backup backup`, and `mailvault archive check ./backup` becomes
+  `mailvault --archive ./backup archive check`. `archive import` keeps its one positional, which
+  was never the archive: it is the foreign directory being read from
+
+- **`--config` is no longer required** by `folders`, `backup` and `verify`, and passing it to
+  `backup` or `verify` without `--archive` is now an error rather than a run into whichever
+  directory the shell happened to be in
+
+- **`--job`, `--allow-exec` and `--allow-new-mailbox` are written after the command**, not
+  before it: `mailvault backup --job proton.me`, where it used to have to be
+  `mailvault --job proton.me backup`. That is the order everybody reaches for anyway, and the
+  old one was never anything but an accident of where the options were declared -- they say
+  which jobs to run and what the configuration may do, which are statements about the command
+  doing the work and mean nothing to `archive check`. The help text admitted as much by having
+  to list the commands each of them applied to. What stays before the command is what is true
+  of the whole run: `--archive`, `--config`, `-v/-q` and `--log-file`
+
+- **Move your configuration into the archive it describes**, as `mailvault.toml`. Nothing does
+  this for you and nothing looks for the old location, so a run without `--config` after
+  upgrading says which file it wanted and did not find. `archive check` knows the file as a
+  legitimate inhabitant and does not report it
+
+- **The archive layout moved. Run `mailvault archive migrate` once per archive**, before anything
+  else -- every command refuses an archive that has not been lifted, and says so. Nothing is
+  deleted by the migration. **Upgrade every machine that writes into the
+  archive before lifting it.** The `FORMAT` file protects this version from a *newer* archive; it
+  cannot protect an archive from an *older* mailvault, which knows nothing about it. A 0.9.x run
+  against a lifted archive finds no messages where it looks and no resume state, takes the archive
+  for empty, and downloads everything again into the old location -- nothing is lost, but you end
+  up with the mail in two places and a full re-download to undo
+
+### Changed
+
+- **An incremental backup resumes from where the server says it is, not from a date.** IMAP now
+  asks for everything above the highest UID it has archived, Microsoft 365 follows a delta link.
+  Both close a hole a date filter cannot: a message copied or moved into a folder keeps its
+  original date, so it lands *behind* the resume date and is never asked for again -- while it
+  gets a new UID and turns up in the next delta round. On a real 77,000-message mailbox this had
+  swallowed 29 messages over the years, silently. If you have been backing up with an earlier
+  version, `verify --repair` will find what it missed
+
+- **`state.json` is version 2**, splitting what used to be one timestamp into two things that were
+  never the same: `last_run` says when a run last read a folder, `resume` says where the next one
+  carries on. Version 1 files are still read and their timestamps kept as `last_run`, but they do
+  not become resume points -- they came from the wall clock, and adopting them would inherit
+  exactly the gap they could hide. The first run after upgrading therefore reads every folder in
+  full, once, and says so
+
+- **Reading a folder in full no longer means downloading it again.** Where the archive already
+  holds mail at that place -- after the upgrade above, or when a server voids its own resume point
+  -- the folder is listed and compared, and only what is missing is fetched. Listing 77,000
+  messages takes half a minute; downloading them does not. `backup --full` is unchanged and stays
+  the read that trusts nothing
+
+### Fixed
+
+- **A catch-up holds its resume point back when the log did not reach disk.** The pass that
+  brings a folder back in step by listing it -- what an archive lifted from a version-1
+  `state.json` does on its first run -- reported only whether the downloads worked. A write
+  that failed after them (a full share, a quota, a read-only remount) left the messages stored
+  with nothing recording where they belong, while the resume point moved past them: no later
+  run asks for them again, and `archive check` reports them as belonging to no known place for
+  good. The ordinary pass has guarded exactly this since 0.8.0; the catch-up threw the answer
+  away
+
+- **A Graph resume point with an unreadable timestamp no longer costs the folder its backup.**
+  Anything but a proper ISO time in the point's `issued` field -- and it is a file on disk,
+  which anything may have happened to -- raised out of the backend, was caught by the
+  per-folder handler, and dropped that folder from the run. Silently, and every night after,
+  because nothing rewrites the head that caused it. Now it degrades to "read the folder in
+  full", which is what `heads` promises for anything unusable. A timestamp without a timezone
+  counts as unusable too: an age cannot be taken from it
+
+- **`archive migrate` and `archive compact` exit non-zero when they did not finish.** Both
+  printed their failure -- "consolidated files did not verify", "NOT marked" -- and returned 0,
+  so a cron job filed the run as a success. For the migration the mark is the verdict and now
+  also the exit code: it is written last, so an archive carrying it got through every step
+
+- **The refusal of a newer archive format is a message again, not a traceback.**
+  `marker.FormatError` was missing from the errors the CLI knows, so the one sentence written
+  for it -- "written by a newer version of mailvault … Upgrade mailvault" -- was buried in
+  stack frames. That is the case it exists for: two machines, one shared archive, one of them
+  still on the old version
+
+- **`archive import` refuses a source that is the archive itself.** `mailvault archive import
+  --move .` found every message already stored, answered each with EXISTS, and then deleted it
+  from the source -- which was the archive. A ten-message archive ended with none, and the report
+  said `10 message(s) read -- 0 imported, 10 already in .`, exit 0. It became a plausible slip
+  when the archive stopped being a positional argument and turned into the directory one is
+  standing in. Refused now with or without `--move`, and in both directions: a source inside the
+  archive, or an archive inside the source
+
+- **Ten more kinds of broken `Date` header are read** -- a weekday no parser knows (`Thur`), a
+  month named in German (`Sa, 14 Dez 2002`), the all-numeric `27.11.2002`, and a date that
+  carries no time at all (`Mon, 11 Mar 2002 PST`). On the reference archive that is 13 of the
+  remaining warnings down to 3. These readings are tried only after every plainer one has failed,
+  and each is still chosen so that it cannot turn one date into a different one: the weekday is
+  optional in RFC 5322 and simply dropped, which handles every language at once; `05.03.2002`
+  stays unread, because it is March to half the world and May to the other half; and **no reading
+  ever fills in a year**. What a date-guessing library would do instead was measured -- given
+  `Do, 5 Dez 2002` it answers 2002-05-08, taking the day from the day the run happens to take
+  place on, and given a header with no year it answers this year. A wrong date is worse than a
+  missing one, because a missing one is visible
+
+- **The backup says why it is reading the whole archive.** With `--index-db` on and no `index.db`
+  yet, a backup that had nothing left to fetch went on to read every message there is -- twenty
+  minutes on a 131,000-message archive, announced by nothing but a number climbing in steps of
+  two thousand. It now says that there is no query database yet and that it is building one from
+  the archive, before it starts, and every line of the count says what it is counting for
+
+- **What the commands say about themselves is about the mail, not about the machinery.** `backup`
+  offered to "back up mails to the local content-addressed archive", which names an
+  implementation nobody using it has to know and leaves out what it actually does: add to the
+  archive what the mailboxes hold and it does not, carrying each folder on from where the last
+  run left it. `archive migrate` still described moving things out of `store.db` and into
+  `state.json`, which is not what it has done for two versions. `archive check` explained itself
+  in shards and entries. All of them now say what happens and why it is worth having, and
+  `archive migrate` says what it does today
+
+- **Gmail recorded mail as being somewhere else.** `X-GM-LABELS` leaves out the label of the
+  folder currently selected -- measured: of 80 messages in `INBOX` not one reported a label, while
+  the same messages fetched from All Mail report `\Inbox`. The labels alone were taken as the whole
+  location, so backing up any Gmail folder but All Mail recorded every message as being "somewhere
+  in All Mail" instead of in the folder being backed up. The folder being read is now always among
+  the places recorded. Three more things follow from that one line: `verify` looked up what was
+  archived by folder name and found nothing, so a Gmail job reported the *entire* folder as
+  unarchived; the backup's catch-up used the same key and therefore read Gmail folders in full
+  instead of listing them; and a repaired message is now filed where a backup would file it
+
+- **`verify` says what it is doing while it does it.** Every line it logged reported completion, so
+  the two passes that take the time announced themselves only once they were over -- minutes of
+  silence on a large archive, and a run that looks like a hung process is one nobody trusts. Both
+  now report before and during. Worth naming explicitly: the long one is reading the *local*
+  archive, not the mailbox
+
+- **A message could hide behind another with the same Message-ID.** `verify` and the new full read
+  ask how many copies of a Message-ID the archive holds rather than whether it holds one, so a
+  second message that shares the id but differs in its bytes is no longer taken for one already
+  archived
+
 ## 0.9.4 (2026-08-06)
 
 ### Added

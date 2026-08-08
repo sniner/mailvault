@@ -19,9 +19,6 @@ from mailvault.cli import commands
 
 log = logging.getLogger(__name__)
 
-# Commands that read a job configuration file and therefore require --config.
-_CONFIG_COMMANDS = {"folders", "backup", "verify"}
-
 
 def get_version() -> str:
     """Return the installed package version, or 'unknown' when not packaged."""
@@ -45,6 +42,42 @@ def setup_logger(loglevel: int = logging.INFO, logfile: pathlib.Path | None = No
             logging.getLogger(name).setLevel(logging.WARNING)
 
 
+def add_mailbox_options(parser: argparse.ArgumentParser, writes: bool = False) -> None:
+    """The options a command takes that reads the configuration and logs in.
+
+    They belong to the command, not to `mailvault` itself. Which jobs to run and
+    what the configuration may do are statements about the work being done, and
+    `archive check` has no use for either -- an option whose help text has to
+    name the commands it applies to is standing one level too high. It also puts
+    them where the hand expects them: `backup --job proton.me` is how everybody
+    writes it, and only the parser used to insist on `--job proton.me backup`.
+
+    `writes` adds the one that only means anything to a command that puts
+    messages *into* an archive.
+    """
+    parser.add_argument(
+        "--job",
+        action="append",
+        metavar="NAME",
+        help="Run only the named job(s); may be repeated",
+    )
+    parser.add_argument(
+        "--allow-exec",
+        action="store_true",
+        help="Let the configuration's _cmd fields run, e.g. to fetch a password",
+    )
+    if writes:
+        parser.add_argument(
+            "--allow-new-mailbox",
+            action="store_true",
+            help=(
+                "Let a job write into an archive it has never written into before;"
+                " without it such a run is refused, on the assumption that the"
+                " configuration and the archive do not belong together"
+            ),
+        )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mailvault",
@@ -66,62 +99,72 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write the log to this file instead of stderr",
     )
     parser.add_argument(
+        "--archive",
+        type=pathlib.Path,
+        metavar="DIR",
+        help="The archive to work on (default: the directory you are standing in)",
+    )
+    parser.add_argument(
         "--config",
         type=pathlib.Path,
-        help="Configuration file (TOML); required by folders/backup/verify",
-    )
-    parser.add_argument(
-        "--allow-exec",
-        action="store_true",
-        help="Allow execution of _cmd fields in the configuration file",
-    )
-    parser.add_argument(
-        "--job",
-        action="append",
-        metavar="NAME",
-        help="Run only the named job(s); may be repeated (folders/backup/verify)",
+        metavar="FILE",
+        help=(
+            "Configuration file (TOML); by default the archive's own"
+            f" {commands.DEFAULT_CONFIG_NAME}"
+        ),
     )
 
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
-    sub.add_parser(
+    p_folders = sub.add_parser(
         "folders",
         help="List the folders of each configured mailbox",
         description="List available folders on the configured IMAP/Graph mailboxes.",
     )
+    add_mailbox_options(p_folders)
 
     p_backup = sub.add_parser(
         "backup",
         help="Back up mailboxes to a local archive",
-        description="Back up mails to the local content-addressed archive.",
+        description=(
+            "Add to the archive whatever the configured mailboxes hold and it does"
+            " not. Each folder carries on where the last run left it, so a repeated"
+            " run costs only the mail that has arrived since."
+        ),
     )
-    p_backup.add_argument(
-        "--compress", action="store_true", help="Compress stored emails with zstd"
-    )
-    p_backup.add_argument(
-        "--index-db",
-        action="store_true",
-        help="Maintain an index.db alongside the archive, refreshed after the backup",
-    )
+    add_mailbox_options(p_backup, writes=True)
     p_backup.add_argument(
         "--full",
         action="store_true",
         help="Re-read every folder in full, ignoring where the last run left off",
     )
-    p_backup.add_argument("destination", type=pathlib.Path, help="Destination base directory")
+    p_backup.add_argument(
+        "--compress",
+        action="store_true",
+        help="Store the messages compressed with zstd",
+    )
+    p_backup.add_argument(
+        "--index-db",
+        action="store_true",
+        help="Keep index.db in step with the archive, so the mail can be queried with SQL",
+    )
 
     p_verify = sub.add_parser(
         "verify",
         help="Compare mailboxes against the archive and report gaps",
         description="Compare mailboxes against their archives and report missing messages.",
     )
+    add_mailbox_options(p_verify, writes=True)
     p_verify.add_argument(
-        "--repair", action="store_true", help="Download and store the missing emails"
+        "--repair",
+        action="store_true",
+        help="Download and store the missing emails",
     )
     p_verify.add_argument(
-        "--compress", action="store_true", help="Compress stored emails with zstd"
+        "--compress",
+        action="store_true",
+        help="Store the messages compressed with zstd",
     )
-    p_verify.add_argument("destination", type=pathlib.Path, help="Archive directory to check")
 
     p_archive = sub.add_parser(
         "archive",
@@ -129,7 +172,28 @@ def build_parser() -> argparse.ArgumentParser:
         description="Manage and maintain the local email archive.",
     )
     asub = p_archive.add_subparsers(
-        dest="archive_command", metavar="<subcommand>", required=True
+        dest="archive_command",
+        metavar="<subcommand>",
+        required=True,
+    )
+
+    a_init = asub.add_parser(
+        "init",
+        help="Make a directory an archive",
+        description=(
+            "Make a directory into an archive: the three directories it is made"
+            " of, the mark that says which layout they are written in, and a"
+            f" {commands.DEFAULT_CONFIG_NAME} to fill in. What `git init` is,"
+            " down to taking the directory as an argument and making it if it is"
+            " not there. Every other command works on an archive and refuses a"
+            " directory that is not one. An existing configuration is left alone."
+        ),
+    )
+    a_init.add_argument(
+        "directory",
+        nargs="?",
+        type=pathlib.Path,
+        help="Where to make the archive (default: --archive, or the one you are standing in)",
     )
 
     a_stats = asub.add_parser(
@@ -138,9 +202,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="Show statistics of the email archive.",
     )
     a_stats.add_argument(
-        "--docuware", action="store_true", help="Archive is a Docuware archive"
+        "--docuware",
+        action="store_true",
+        help="Archive is a Docuware archive",
     )
-    a_stats.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
     a_import = asub.add_parser(
         "import",
@@ -148,16 +213,48 @@ def build_parser() -> argparse.ArgumentParser:
         description="Import emails from a source archive into the destination archive.",
     )
     a_import.add_argument(
-        "--docuware", action="store_true", help="Source archive is a Docuware email archive"
+        "--docuware",
+        action="store_true",
+        help="Source archive is a Docuware email archive",
     )
     a_import.add_argument(
-        "--move", action="store_true", help="Remove emails from the source after import"
+        "--move",
+        action="store_true",
+        help="Remove emails from the source after import",
     )
     a_import.add_argument(
-        "--compress", action="store_true", help="Compress stored emails with zstd"
+        "--compress",
+        action="store_true",
+        help="Compress stored emails with zstd",
+    )
+    a_import.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Only count what would be imported: nothing is written, nothing is removed",
     )
     a_import.add_argument("source", type=pathlib.Path, help="Directory to copy/move mails from")
-    a_import.add_argument("destination", type=pathlib.Path, help="Archive directory")
+
+    a_export = asub.add_parser(
+        "export",
+        help="Write out a stored message, decompressed and unchanged",
+        description=(
+            "Write out a message, exactly as it was stored. Takes the message id"
+            " the reports print; without --output the message goes to standard"
+            " output, which is the way to look at one the reports could only name."
+        ),
+    )
+    a_export.add_argument(
+        "--output",
+        "-o",
+        type=pathlib.Path,
+        help="Write to this file, or into this directory when several are named",
+    )
+    a_export.add_argument(
+        "entry",
+        nargs="+",
+        metavar="ID",
+        help="Message id, as the reports print it",
+    )
 
     a_addr = asub.add_parser(
         "addresses",
@@ -165,57 +262,59 @@ def build_parser() -> argparse.ArgumentParser:
         description="Show mail addresses of all emails in the archive.",
     )
     a_addr.add_argument(
-        "--docuware", action="store_true", help="Directory is a Docuware archive"
+        "--docuware",
+        action="store_true",
+        help="Directory is a Docuware archive",
     )
-    a_addr.add_argument("source", type=pathlib.Path, help="Archive directory")
 
-    a_comp = asub.add_parser(
+    asub.add_parser(
         "compress",
         help="Compress uncompressed archive files",
         description="Compress uncompressed files in the archive with zstd.",
     )
-    a_comp.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
-    a_decomp = asub.add_parser(
+    asub.add_parser(
         "decompress",
         help="Decompress compressed archive files",
         description="Decompress compressed files in the archive.",
     )
-    a_decomp.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
     a_create = asub.add_parser(
         "create-db",
         help="Build a queryable database from the archive",
         description=(
-            "Build an SQLite database from the archived messages and the metadata"
-            " log, for querying with SQL. The archive itself holds no database:"
-            " what this writes is a snapshot, accurate for the moment it was built"
-            " and stale from the next backup onwards."
+            "Build an SQLite database of everything the archive knows about its"
+            " mail -- sender, recipients, subject, date, and which mailbox and"
+            " folder each message was seen in -- for querying with SQL. The archive"
+            " itself holds no database: what this writes is a snapshot, accurate for"
+            " the moment it was built and stale from the next backup onwards."
         ),
     )
     a_create.add_argument(
-        "--mailbox", type=str, help="Mailbox identifier for messages the log does not place"
+        "--mailbox",
+        type=str,
+        help="Mailbox to file messages under whose mailbox the archive does not record",
     )
     a_create.add_argument(
-        "--force", action="store_true", help="Replace the database file if it already exists"
+        "--force",
+        action="store_true",
+        help="Replace the database file if it already exists",
     )
-    a_create.add_argument("source", type=pathlib.Path, help="Email archive directory")
     a_create.add_argument("database", type=pathlib.Path, help="Database file to write")
 
-    a_migrate = asub.add_parser(
+    asub.add_parser(
         "migrate",
-        help="Move an older archive off its metadata database",
+        help="Bring an archive written by an earlier version up to date",
         description=(
-            "Move the resume timestamps and the mailbox/folder locations out of an"
-            " archive's store.db and into state.json and the metadata log. The"
-            " database is not deleted, it is renamed to store.db.migrated and no"
-            " longer used. Runs automatically at the start of a backup; this"
-            " command only lets you do it deliberately."
+            "Bring an archive of any earlier shape up to the layout this version"
+            " writes, and say what was lifted. A backup does this by itself; the"
+            " command is for doing it deliberately, once, and seeing the result."
+            " Nothing is deleted, and a run that is interrupted is simply picked"
+            " up by the next one."
         ),
     )
-    a_migrate.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
-    a_compact = asub.add_parser(
+    asub.add_parser(
         "compact",
         help="Consolidate the metadata log, dropping duplicate entries",
         description=(
@@ -226,33 +325,30 @@ def build_parser() -> argparse.ArgumentParser:
             " only after the consolidated files are written and verified."
         ),
     )
-    a_compact.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
     a_check = asub.add_parser(
         "check",
         help="Check that the archive is what it says it is",
         description=(
-            "Hold an archive against what it claims: every file in a shard is an"
-            " entry, every entry the metadata log names is there, every log file"
-            " still matches its own name. With --contents every entry is read and"
-            " held against the name it is filed under, which is the only way to"
-            " find one whose bytes have changed under it -- and an order of"
-            " magnitude more work, so it is asked for rather than assumed. Reports"
-            " what it finds and repairs nothing; the only thing it removes is the"
-            " transient file of a write that was interrupted."
+            "Hold an archive against what it claims: every message it records is"
+            " there, nothing lies in it that is not a message it knows, what it"
+            " wrote down about them is undamaged, and every message still matches"
+            " its checksum -- the last one being the only way to find one whose"
+            " bytes have changed under it. --no-integrity-check leaves that last"
+            " check out. Reports what it finds and repairs nothing; the only thing"
+            " it removes is the leftover of a write that was interrupted."
         ),
     )
     a_check.add_argument(
-        "--contents",
+        "--no-integrity-check",
         action="store_true",
-        help="Read every entry and check it against the name it is filed under",
+        help="Skip the integrity check: no message is read, so none can be found damaged",
     )
     a_check.add_argument(
         "--quarantine",
         action="store_true",
-        help="Rename entries that fail that check, so they count as missing again",
+        help="Set damaged messages aside, so they count as missing and can be fetched again",
     )
-    a_check.add_argument("source", type=pathlib.Path, help="Email archive directory")
 
     return parser
 
@@ -264,8 +360,6 @@ def main() -> int:
     if args.command is None:
         parser.print_help()
         return 2
-    if args.command in _CONFIG_COMMANDS and args.config is None:
-        parser.error("the following arguments are required: --config")
 
     if args.verbose:
         loglevel = logging.DEBUG
@@ -275,7 +369,14 @@ def main() -> int:
         loglevel = logging.INFO
     setup_logger(loglevel=loglevel, logfile=args.log_file)
 
-    log.info("START")
+    # The archive is named once, here, and nowhere else. Every line after this
+    # is about it, and repeating the path on each of them buries the statement
+    # behind it -- over a network share the prefix is routinely longer than what
+    # it prefixes. `folders` is the one command that works on no archive at all.
+    if args.command == "folders":
+        log.info("START")
+    else:
+        log.info("START -- archive: %s", commands.archive_path(args))
     exit_code = 0
     try:
         if args.command in {"folders", "backup", "verify"}:

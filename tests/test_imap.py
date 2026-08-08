@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import imaplib
+import logging
+import pathlib
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, call, patch
@@ -11,7 +13,7 @@ import pytest
 
 from mailvault import conf
 from mailvault.backend import imap
-from mailvault.store import cas
+from mailvault.store import cas, metalog
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -231,9 +233,7 @@ class TestWalkFolder:
 
         results = list(client._walk_folder("INBOX", [1, 2], chunk_size=10))
         assert len(results) == 2
-        assert results[0][0] == 1
-        assert results[0][1] == DUMMY_EML
-        assert results[0][2] == msg_date
+        assert results[0] == (1, DUMMY_EML)
 
     def test_chunked_fetching(self):
         conn = _make_mock_conn()
@@ -263,6 +263,133 @@ class TestWalkFolder:
 # ---------------------------------------------------------------------------
 
 
+class TestUidResume:
+    """The UID watermark: what it asks for, and what it hands back."""
+
+    @staticmethod
+    def _point(uidvalidity: int = 42, uid: int = 4711) -> dict:
+        return {"kind": imap.UID_RESUME_KIND, "uidvalidity": uidvalidity, "uid": uid}
+
+    @staticmethod
+    def _select(uidvalidity: int | None = 42) -> dict:
+        info: dict = {b"EXISTS": 0}
+        if uidvalidity is not None:
+            info[b"UIDVALIDITY"] = uidvalidity
+        return info
+
+    def test_a_matching_uidvalidity_resumes_above_the_watermark(self):
+        resume = imap._UidResume(self._point())
+
+        assert resume.accept(self._select(), "job::INBOX") == 4711
+
+    def test_a_changed_uidvalidity_voids_the_point(self, caplog):
+        """The server saying its UID space was rebuilt, not something to guess."""
+        resume = imap._UidResume(self._point(uidvalidity=42))
+
+        with caplog.at_level(logging.INFO):
+            assert resume.accept(self._select(uidvalidity=43), "job::INBOX") is None
+
+        assert "UIDVALIDITY changed" in caplog.text
+        assert resume.lost is True
+
+    def test_being_given_no_point_is_not_a_loss(self):
+        """Nothing was handed in, so nothing was lost -- just read the folder."""
+        resume = imap._UidResume(None)
+
+        assert resume.accept(self._select(), "job::INBOX") is None
+        assert resume.lost is False
+
+    def test_a_missing_uidvalidity_voids_a_point(self, caplog):
+        """RFC 3501 makes it mandatory, so its absence is a broken server."""
+        resume = imap._UidResume(self._point())
+
+        assert resume.accept(self._select(uidvalidity=None), "job::INBOX") is None
+        assert resume.lost is True
+        assert "no UIDVALIDITY" in caplog.text
+
+    def test_a_point_from_another_backend_is_a_loss(self, caplog):
+        with caplog.at_level(logging.INFO):
+            resume = imap._UidResume({"kind": "graph-delta", "delta_link": "https://x"})
+
+        assert resume.accept(self._select(), "job::INBOX") is None
+        assert resume.lost is True
+        assert "is not ours" in caplog.text
+
+    def test_an_incomplete_point_is_a_loss(self, caplog):
+        resume = imap._UidResume({"kind": imap.UID_RESUME_KIND, "uid": 5})
+
+        assert resume.accept(self._select(), "job::INBOX") is None
+        assert resume.lost is True
+        assert "incomplete" in caplog.text
+
+    def test_a_boolean_is_not_a_uid(self):
+        """`True == 1` in Python, and a UID of True would resume from nowhere sane."""
+        resume = imap._UidResume({"kind": imap.UID_RESUME_KIND, "uidvalidity": 42, "uid": True})
+
+        assert resume.accept(self._select(), "job::INBOX") is None
+
+    def test_the_token_is_the_highest_uid_actually_archived(self):
+        resume = imap._UidResume(None)
+        resume.accept(self._select(), "job::INBOX")
+
+        resume.saw(7)
+        resume.saw(12)
+        resume.saw(9)
+
+        assert resume.token() == self._point(uid=12)
+
+    def test_a_pass_that_archived_nothing_earns_no_token(self):
+        """The Proton Bridge case, in UID terms: no mail, no claim."""
+        resume = imap._UidResume(self._point())
+        resume.accept(self._select(), "job::INBOX")
+
+        assert resume.token() is None
+
+
+class TestVoidResumePoint:
+    """A point the server will not honour stops the pass instead of redoing it."""
+
+    def test_nothing_is_fetched_and_the_loss_is_reported(self, tmp_path):
+        conn = _make_mock_conn()
+        conn.select_folder.return_value = {b"EXISTS": 5, b"UIDVALIDITY": 43}
+        client = _make_client(conn=conn)
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+
+        result = client.folder_backup(
+            "INBOX",
+            store,
+            resume={"kind": imap.UID_RESUME_KIND, "uidvalidity": 42, "uid": 4711},
+        )
+
+        assert result.resume_lost is True
+        assert result.stored == 0
+        conn.search.assert_not_called()
+        conn.fetch.assert_not_called()
+        # The folder is still released.
+        conn.unselect_folder.assert_called_once()
+
+
+class TestSearchFolder:
+    def test_the_star_range_trap_is_filtered_out(self):
+        """RFC 3501: `4712:*` still matches the newest message when it is older.
+
+        Without dropping those, a folder where nothing has arrived would re-fetch
+        its last message on every single run.
+        """
+        conn = _make_mock_conn()
+        conn.search.return_value = [4700]
+        client = _make_client(conn=conn)
+
+        assert client._search_folder(above_uid=4711) == []
+
+    def test_genuinely_newer_uids_survive(self):
+        conn = _make_mock_conn()
+        conn.search.return_value = [4700, 4712, 4713]
+        client = _make_client(conn=conn)
+
+        assert client._search_folder(above_uid=4711) == [4712, 4713]
+
+
 class TestIterFolder:
     def test_basic_iteration(self):
         conn = _make_mock_conn()
@@ -279,19 +406,26 @@ class TestIterFolder:
         assert results[0][0] == 1
         conn.unselect_folder.assert_called_once()
 
-    def test_since_filter(self):
+    def test_a_resume_point_narrows_the_search_to_new_uids(self):
         conn = _make_mock_conn()
-        conn.select_folder.return_value = {b"EXISTS": 0}
+        conn.select_folder.return_value = {b"EXISTS": 0, b"UIDVALIDITY": 42}
         conn.search.return_value = []
         client = _make_client(conn=conn)
 
-        since = datetime(2026, 2, 15, tzinfo=UTC)
-        list(client._iter_folder("INBOX", since=since))
+        resume = imap._UidResume({"kind": imap.UID_RESUME_KIND, "uidvalidity": 42, "uid": 4711})
+        list(client._iter_folder("INBOX", resume))
 
-        search_query = conn.search.call_args[0][0]
-        assert "NOT" in search_query
-        assert "DELETED" in search_query
-        assert "SINCE" in search_query
+        assert conn.search.call_args[0][0] == ["NOT", "DELETED", "UID", "4712:*"]
+
+    def test_without_a_resume_point_the_whole_folder_is_searched(self):
+        conn = _make_mock_conn()
+        conn.select_folder.return_value = {b"EXISTS": 0, b"UIDVALIDITY": 42}
+        conn.search.return_value = []
+        client = _make_client(conn=conn)
+
+        list(client._iter_folder("INBOX", imap._UidResume(None)))
+
+        assert conn.search.call_args[0][0] == ["NOT", "DELETED"]
 
     def test_unselect_on_exception(self):
         conn = _make_mock_conn()
@@ -706,17 +840,16 @@ class TestCollectMetadata:
         assert md.store_id == "hash123"
         assert md.folders == ["INBOX"]
 
-    def test_gmail_reports_its_own_folders_only(self):
-        """The IMAP folder name is a localised view of what X-GM-LABELS already
-        says, so taking both would record one place twice."""
+    def test_gmail_labels_and_the_folder_being_read(self):
+        """Both, because X-GM-LABELS answers with everything *except* the folder
+        one is standing in -- so the labels alone are never the whole location."""
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
         conn.get_gmail_labels.return_value = {1: [b"\\Important", b"Work"]}
         client = _make_client(conn=conn)
 
         md = client._collect_metadata("INBOX", 1, "hash123")
 
-        assert md.folders == [b"\\Important", b"Work"]
-        assert "INBOX" not in md.folders
+        assert md.folders == [b"\\Important", b"Work", "INBOX"]
 
     def test_gmail_localised_pseudo_folder_is_not_recorded(self):
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
@@ -725,17 +858,35 @@ class TestCollectMetadata:
 
         md = client._collect_metadata("[Google Mail]/Sent", 1, "hash123")
 
-        assert md.folders == [b"\\Sent"]
+        assert md.folders == [b"\\Sent", "[Google Mail]/Sent"]
 
-    def test_gmail_message_without_labels_lands_in_all_mail(self):
-        """A message filed nowhere else is in All Mail, which is a place too."""
+    def test_the_folder_being_read_is_always_among_the_places(self):
+        """Gmail leaves out the label of the folder one is standing in.
+
+        Measured against a live account: every message in INBOX reports no label
+        at all, while the same messages fetched from All Mail report `\\Inbox`.
+        Without adding it back, backing up one Gmail folder would record every
+        message as being somewhere else -- or, with no labels at all, nowhere.
+        """
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
         conn.get_gmail_labels.return_value = {}
         client = _make_client(conn=conn)
 
         md = client._collect_metadata("[Google Mail]/Alle Nachrichten", 1, "hash123")
 
-        assert md.folders == [imap.GMAIL_ALL_MAIL]
+        assert md.folders == ["[Google Mail]/Alle Nachrichten"]
+
+    def test_a_label_reported_twice_is_one_place(self):
+        """Should Gmail ever report the folder's own label, the union holds."""
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
+        conn.get_gmail_labels.return_value = {1: [b"Sales"]}
+        client = _make_client(conn=conn)
+        md = client._collect_metadata("Sales", 1, "hash123")
+
+        writer = metalog.LogWriter(pathlib.Path("/nonexistent"), pathlib.Path("/nonexistent"))
+        writer.add("job", md.folders, "hash123")
+
+        assert writer.places == 1
 
 
 # ---------------------------------------------------------------------------
@@ -843,15 +994,15 @@ class TestMessageIndex:
         conn.select_folder.assert_called_with("Archive", readonly=True)
         conn.unselect_folder.assert_called_once()
 
-    def test_since_narrows_the_search(self):
+    def test_it_always_lists_the_whole_folder(self):
+        """verify needs everything; a filtered index could only hide a gap."""
         conn = _make_mock_conn()
         conn.search.return_value = []
         client = _make_client(conn=conn)
 
-        list(client.message_index("INBOX", since=datetime(2026, 2, 20, tzinfo=UTC)))
+        list(client.message_index("INBOX"))
 
-        query = conn.search.call_args[0][0]
-        assert "SINCE" in query
+        assert conn.search.call_args[0][0] == ["NOT", "DELETED"]
 
     def test_fetch_failure_is_reported(self):
         conn = _make_mock_conn()

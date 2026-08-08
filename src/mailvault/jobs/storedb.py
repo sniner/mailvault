@@ -84,12 +84,15 @@ def _mark_logs_applied(db: metadb.MetaDatabaseConnection, paths: list[pathlib.Pa
     with db.transaction():
         for path in paths:
             db.execute(
-                "INSERT OR IGNORE INTO applied_log (hash) VALUES (?)", (_log_hash(path),)
+                "INSERT OR IGNORE INTO applied_log (hash) VALUES (?)",
+                (_log_hash(path),),
             )
 
 
 def _insert_message_from_path(
-    db: metadb.MetaDatabaseConnection, store: cas.ContentAddressedStorage, path: pathlib.Path
+    db: metadb.MetaDatabaseConnection,
+    store: cas.ContentAddressedStorage,
+    path: pathlib.Path,
 ) -> int:
     """Read one archived message's headers and insert its row, returning its id.
 
@@ -126,7 +129,7 @@ def _replay_metalog(db: metadb.MetaDatabaseConnection, log_root: pathlib.Path) -
     for logfile in metalog.read_all(log_root):
         result.files += 1
         if logfile.mailbox is None:
-            log.warning("%s: no mailbox in the header, skipped", logfile.path)
+            log.warning("%s: no mailbox in the header, skipped", metalog.where(logfile.path))
             continue
         mailbox_id = db.add_mailbox(logfile.mailbox)
         # One transaction per file rather than per entry: the write methods
@@ -176,7 +179,7 @@ def create_db(
     """
     if db_path.exists() and not force:
         raise JobError(f"{db_path}: already exists, use --force to replace it")
-    store = cas.ContentAddressedStorage(store_path, suffix=".eml")
+    store = cas.mail_store(store_path)
     result = RebuildResult()
     tmp_path = db_path.with_name(db_path.name + "._tmp_")
     tmp_path.unlink(missing_ok=True)
@@ -212,7 +215,11 @@ def _build_db(
                     if mb_id:
                         db.assign_message_to_mailbox(msg_id, mb_id)
                     result.messages += 1
-            log.info("%s: %s message(s) read", store_path, result.messages)
+            # Named for what it is doing, not merely counted. This reads every
+            # message in the archive and takes half an hour on a large one, and
+            # a bare "N message(s) read" in the middle of a backup leaves a
+            # reader watching a number climb with no idea what it is for.
+            log.info("building the query database: %s message(s) read", f"{result.messages:,}")
 
         result.replay = _replay_metalog(db, log_root)
         # Prime the bookkeeping so a later refresh reads only files added since.
@@ -233,17 +240,29 @@ def refresh_db(store_path: pathlib.Path, db_path: pathlib.Path) -> RefreshResult
     """
     result = RefreshResult()
     if not db_path.exists():
+        # Said before the work starts, not after: building one means reading
+        # every message in the archive, which is minutes to half an hour of a
+        # backup that had nothing else left to do. Why it is happening at all is
+        # the part a reader cannot guess.
+        log.info(
+            "%s: no query database yet, building one from the whole archive",
+            utils.under(store_path, db_path),
+        )
         result.rebuilt = True
         result.messages = create_db(store_path, db_path, force=True).messages
         return result
 
-    store = cas.ContentAddressedStorage(store_path, suffix=".eml")
+    store = cas.mail_store(store_path)
     log_root = store_path / metalog.DEFAULT_LOG_DIR
     try:
         with metadb.MetaDatabase(path=db_path) as db:
             _apply_new_logs(db, store, log_root, result)
     except sqlite3.DatabaseError as exc:
-        log.warning("%s: not a usable database (%s), rebuilding from scratch", db_path, exc)
+        log.warning(
+            "%s: not a usable database (%s), building one from the whole archive",
+            utils.under(store_path, db_path),
+            exc,
+        )
         db_path.unlink(missing_ok=True)
         result.rebuilt = True
         result.messages = create_db(store_path, db_path, force=True).messages
@@ -292,12 +311,15 @@ def _apply_new_logs(
                     db.add_message_labels(msg_id, logfile.folder)
                 result.applied += 1
             db.execute(
-                "INSERT OR IGNORE INTO applied_log (hash) VALUES (?)", (_log_hash(path),)
+                "INSERT OR IGNORE INTO applied_log (hash) VALUES (?)",
+                (_log_hash(path),),
             )
 
 
 def _insert_message(
-    db: metadb.MetaDatabaseConnection, store: cas.ContentAddressedStorage, store_id: str
+    db: metadb.MetaDatabaseConnection,
+    store: cas.ContentAddressedStorage,
+    store_id: str,
 ) -> int | None:
     """Insert the row for one archived message, or None when its blob is gone."""
     path = store.locate(store_id, exists=True)

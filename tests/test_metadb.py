@@ -95,7 +95,8 @@ def test_store_db_add_message_with_mailbox(tmp_path):
             mailbox_id=mb_id,
         )
         row = db.execute(
-            "SELECT mailbox_id FROM message_mailbox WHERE message_id=?", (msg_id,)
+            "SELECT mailbox_id FROM message_mailbox WHERE message_id=?",
+            (msg_id,),
         ).fetchone()
         assert row is not None
         assert row[0] == mb_id
@@ -117,7 +118,8 @@ def test_store_db_assign_message_to_mailbox(tmp_path):
         db.assign_message_to_mailbox(msg_id, mb_id)
 
         rows = db.execute(
-            "SELECT mailbox_id FROM message_mailbox WHERE message_id=?", (msg_id,)
+            "SELECT mailbox_id FROM message_mailbox WHERE message_id=?",
+            (msg_id,),
         ).fetchall()
         assert len(rows) == 1
 
