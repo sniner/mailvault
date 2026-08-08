@@ -61,6 +61,34 @@ def config_file(args: argparse.Namespace, archive: pathlib.Path) -> pathlib.Path
     return archive / DEFAULT_CONFIG_NAME
 
 
+# The two commands that are allowed to meet a directory that is not an archive
+# yet: one makes an archive out of it, the other lifts an older one into this
+# layout. Everything else has an archive as its subject and says so.
+WITHOUT_AN_ARCHIVE = {"init", "migrate"}
+
+
+def require_archive(archive: pathlib.Path) -> None:
+    """Stop a command that was pointed at something which is not an archive.
+
+    The mark is the whole test, the way `.git` is for a repository. Before this,
+    every command opened `<directory>/mail` and worked on whatever it found --
+    which on an archive from before 0.10 is nothing at all, because the messages
+    are still in the root. `archive check` then reported a healthy 131,000-message
+    archive as a total loss, and `verify --repair` set about downloading the
+    mailbox a second time.
+
+    Both cases the mark cannot tell apart get named, because the answer differs:
+    an older archive is lifted, a wrong directory is left alone.
+    """
+    if marker.is_archive(archive):
+        return
+    raise jobs.JobError(
+        f"{archive}: not a mailvault archive -- no {marker.FORMAT_NAME} file."
+        f" `mailvault archive init` makes one here; an archive from before"
+        f" mailvault 0.10 is lifted by `mailvault archive migrate`"
+    )
+
+
 # --- folders / backup / verify -------------------------------------------------
 
 
@@ -132,6 +160,8 @@ def run_mailbox(args: argparse.Namespace) -> int:
         )
 
     archive = archive_path(args)
+    if needs_archive:
+        require_archive(archive)
     path = config_file(args, archive)
     try:
         config = conf.load(path, allow_exec=args.allow_exec)
@@ -200,6 +230,23 @@ def _human_size(size: int) -> str:
             break
         value /= 1024
     return f"{value:.1f} {unit}"
+
+
+def report_init(archive: pathlib.Path, result: jobs.InitResult) -> int:
+    """Say that there is an archive here now, and what is left to do.
+
+    Which directories were made is the archive's own business -- `git init` says
+    it made a repository, not which files went into `.git`. What the reader does
+    need is the one thing still missing: an archive nobody has configured cannot
+    back anything up.
+    """
+    print(f"{archive}: {'archive created' if result.created else 'already an archive'}")
+    if result.config is not None:
+        if result.config_existed:
+            print(f"{result.config.name} is already there and was left alone")
+        else:
+            print(f"{result.config.name} written -- fill in your mailboxes, then back up")
+    return 0
 
 
 def report_migration(source: pathlib.Path, result: jobs.MigrationResult) -> None:
@@ -560,8 +607,12 @@ def run_archive(args: argparse.Namespace) -> int:
     """
     cmd = args.archive_command
     archive = archive_path(args)
+    if cmd not in WITHOUT_AN_ARCHIVE:
+        require_archive(archive)
 
-    if cmd == "export":
+    if cmd == "init":
+        return report_init(archive, jobs.init_archive(archive, DEFAULT_CONFIG_NAME))
+    elif cmd == "export":
         return export_entries(archive, args.entry, args.output)
     elif cmd == "stats":
         count, size = _external(archive, args.docuware).stats()

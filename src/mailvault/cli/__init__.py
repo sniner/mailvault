@@ -177,6 +177,18 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
+    asub.add_parser(
+        "init",
+        help="Make this directory an archive",
+        description=(
+            "Make a directory into an archive: the three directories it is made"
+            " of, the mark that says which layout they are written in, and a"
+            f" {commands.DEFAULT_CONFIG_NAME} to fill in. What `git init` is."
+            " Every other command works on an archive and refuses a directory"
+            " that is not one. An existing configuration is left alone."
+        ),
+    )
+
     a_stats = asub.add_parser(
         "stats",
         help="Show archive statistics",
