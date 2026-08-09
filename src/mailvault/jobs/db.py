@@ -72,11 +72,14 @@ _HEAD_INDEX_DDL = """
 """
 
 
-# How a reader is told to build the projection again. Named once because it is a
-# command line, and command lines move: this one is `archive create-db` today and
-# becomes `db create` when the projection gets its own namespace. Advice that
-# names a command which no longer exists is worse than no advice.
-REBUILD_COMMAND = "mailvault archive create-db --force"
+# The two moves a reader can be told to make, and they are not interchangeable.
+# Building again reads every message in the archive; updating reads what has been
+# added since. Naming the expensive one where the cheap one would do is a wrong
+# hint of the quieter kind: it works, and it costs half an hour it did not have
+# to. Named here because command lines move -- these were `archive create-db`
+# until the projection got its own namespace.
+REBUILD_COMMAND = "mailvault db create --force"
+UPDATE_COMMAND = "mailvault db update"
 
 
 @dataclasses.dataclass
@@ -109,8 +112,8 @@ class Freshness:
             places += f" and {len(self.behind) - 3:,} more"
         return (
             f"{db_name}: behind the archive in {len(self.behind):,} place(s)"
-            f" ({places}) -- mail archived since is not in it, bring it up to date"
-            f" with `{REBUILD_COMMAND}`"
+            f" ({places}) -- mail archived since is not in it, take it in with"
+            f" `{UPDATE_COMMAND}`"
         )
 
 
@@ -407,7 +410,7 @@ def refresh_db(store_path: pathlib.Path, db_path: pathlib.Path) -> RefreshResult
 
     Only backups feed this: a message reaches the projection because a log file
     records it. Mail added by `archive import`, which writes no log, is not
-    picked up here -- rebuild with `archive create-db` when that matters.
+    picked up here -- build it again when that matters.
     """
     result = RefreshResult()
     if not db_path.exists():
@@ -502,6 +505,171 @@ def _apply_new_logs(
                 "INSERT OR IGNORE INTO applied_log (hash) VALUES (?)",
                 (_log_hash(path),),
             )
+
+
+def drop_db(db_path: pathlib.Path) -> bool:
+    """Delete the projection; True when there was one to delete.
+
+    The one destructive command in the program that needs no confirmation and no
+    dry run. Nothing is lost that the archive cannot produce again -- which is
+    the whole difference between this and every other file in there.
+    """
+    if not db_path.exists():
+        return False
+    db_path.unlink()
+    return True
+
+
+@dataclasses.dataclass
+class SearchQuery:
+    """What to look for. Every field given has to match; empty means unfiltered.
+
+    The text fields match anywhere in the value and ignore case, because that is
+    what somebody typing `--from ruhl` means. `since` and `until` are dates and
+    compare against the day a message is dated, whatever timezone it carried.
+    """
+
+    sender: str | None = None
+    recipient: str | None = None
+    subject: str | None = None
+    mailbox: str | None = None
+    folder: str | None = None
+    since: str | None = None
+    until: str | None = None
+    limit: int | None = None
+
+    def is_empty(self) -> bool:
+        return not any(
+            (
+                self.sender,
+                self.recipient,
+                self.subject,
+                self.mailbox,
+                self.folder,
+                self.since,
+                self.until,
+            )
+        )
+
+
+@dataclasses.dataclass
+class SearchHit:
+    """One message the search found, with what a person needs to recognise it."""
+
+    store_id: str
+    date: str | None
+    sender: str | None
+    subject: str | None
+    places: list[str]
+
+
+def _like(value: str) -> str:
+    """A substring match, with the wildcards a user typed left as literals.
+
+    Somebody searching for `100%` means the three characters, and a value that
+    silently turned into a pattern would quietly match the wrong messages.
+    """
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _conditions(query: SearchQuery) -> tuple[list[str], list[str]]:
+    """The WHERE clauses and their values, one pair per filter that was given."""
+    where: list[str] = []
+    values: list[str] = []
+
+    def address_in(table: str, value: str) -> None:
+        where.append(
+            f"EXISTS (SELECT 1 FROM {table} x JOIN address a USING (address_id)"
+            f" WHERE x.message_id = m.message_id AND a.address LIKE ? ESCAPE '\\')"
+        )
+        values.append(_like(value))
+
+    def place_in(column: str, table: str, value: str) -> None:
+        where.append(
+            f"EXISTS (SELECT 1 FROM message_location loc JOIN {table} p"
+            f" USING ({column}) WHERE loc.message_id = m.message_id"
+            f" AND p.name LIKE ? ESCAPE '\\')"
+        )
+        values.append(_like(value))
+
+    if query.sender:
+        address_in("message_sender", query.sender)
+    if query.recipient:
+        address_in("message_recipient", query.recipient)
+    if query.subject:
+        where.append("subj.text LIKE ? ESCAPE '\\'")
+        values.append(_like(query.subject))
+    if query.mailbox:
+        place_in("mailbox_id", "mailbox", query.mailbox)
+    if query.folder:
+        place_in("folder_id", "folder", query.folder)
+    # Compared on the day alone. A stored date carries the offset it was written
+    # with, so a lexicographic comparison of whole timestamps would put an hour
+    # of one day on the wrong side of a boundary the user thinks in days.
+    if query.since:
+        where.append("substr(m.date, 1, 10) >= ?")
+        values.append(query.since)
+    if query.until:
+        where.append("substr(m.date, 1, 10) <= ?")
+        values.append(query.until)
+    return where, values
+
+
+_SEARCH_SQL = """
+SELECT
+    m.store_id,
+    m.date,
+    (SELECT a.address FROM message_sender s JOIN address a USING (address_id)
+      WHERE s.message_id = m.message_id ORDER BY a.address LIMIT 1) AS sender,
+    subj.text AS subject,
+    (SELECT group_concat(
+        CASE
+            WHEN mb.name IS NULL THEN f.name
+            WHEN f.name IS NULL THEN mb.name
+            ELSE mb.name || '::' || f.name
+        END, char(10))
+      FROM message_location loc
+      LEFT JOIN mailbox mb USING (mailbox_id)
+      LEFT JOIN folder f USING (folder_id)
+      WHERE loc.message_id = m.message_id) AS places
+FROM message m
+LEFT JOIN subject subj USING (subject_id)
+"""
+
+
+def search(db_path: pathlib.Path, query: SearchQuery) -> list[SearchHit]:
+    """Find the messages the projection records matching every filter given.
+
+    One row per message and not per address: a message with four recipients is
+    one message. Ordered by date, oldest first, with the messages whose date
+    could not be read at the end -- they are unknown, not old.
+    """
+    where, values = _conditions(query)
+    sql = _SEARCH_SQL
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY m.date IS NULL, m.date, m.store_id"
+    if query.limit is not None:
+        sql += f" LIMIT {int(query.limit):d}"
+
+    with index_db.IndexDatabase(path=db_path) as db:
+        if db.outdated:
+            raise JobError(
+                f"{db_path.name}: built by an earlier version of mailvault and not"
+                f" readable by this one -- build it again with `{REBUILD_COMMAND}`"
+            )
+        rows = db.execute(sql, values).fetchall()
+    return [
+        SearchHit(
+            store_id=row["store_id"],
+            date=row["date"],
+            sender=row["sender"],
+            subject=row["subject"],
+            places=row["places"].split("\n") if row["places"] else [],
+        )
+        for row in rows
+    ]
 
 
 def _insert_message(

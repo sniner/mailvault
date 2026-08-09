@@ -758,3 +758,106 @@ class TestExitCodes:
             )
             == 0
         )
+
+
+class TestDbCommands:
+    """The four things one can do to a database that is only ever a copy."""
+
+    def _db_args(self, archive: pathlib.Path, **overrides: Any) -> argparse.Namespace:
+        defaults: dict[str, Any] = dict(
+            db_command="search",
+            archive=archive,
+            sender=None,
+            recipient=None,
+            subject=None,
+            mailbox=None,
+            folder=None,
+            since=None,
+            until=None,
+            limit=None,
+            ids=False,
+            csv=False,
+            json=False,
+        )
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
+    def _archive(self, tmp_path) -> pathlib.Path:
+        marker.write(tmp_path)
+        _archive_with_a_log(tmp_path)
+        return tmp_path
+
+    def test_create_then_update_then_drop(self, tmp_path, capsys):
+        archive = self._archive(tmp_path)
+        db_path = archive / commands.DEFAULT_DB_NAME
+
+        assert (
+            commands.run_db(
+                self._db_args(archive, db_command="create", mailbox=None, force=False)
+            )
+            == 0
+        )
+        assert db_path.exists()
+        assert commands.run_db(self._db_args(archive, db_command="update")) == 0
+        assert commands.run_db(self._db_args(archive, db_command="drop")) == 0
+        assert not db_path.exists()
+
+    def test_a_second_create_is_refused_and_points_at_update(self, tmp_path):
+        """Refused rather than done: building again reads every message."""
+        archive = self._archive(tmp_path)
+        commands.run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
+
+        with pytest.raises(jobs.JobError, match="db update"):
+            commands.run_db(
+                self._db_args(archive, db_command="create", mailbox=None, force=False)
+            )
+
+    def test_force_builds_it_again(self, tmp_path):
+        archive = self._archive(tmp_path)
+        commands.run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
+
+        assert (
+            commands.run_db(
+                self._db_args(archive, db_command="create", mailbox=None, force=True)
+            )
+            == 0
+        )
+
+    def test_dropping_what_is_not_there_is_not_a_failure(self, tmp_path, capsys):
+        archive = self._archive(tmp_path)
+
+        assert commands.run_db(self._db_args(archive, db_command="drop")) == 0
+        assert "nothing to delete" in capsys.readouterr().out
+
+    def test_searching_without_a_database_says_how_to_get_one(self, tmp_path):
+        archive = self._archive(tmp_path)
+
+        with pytest.raises(jobs.JobError, match="db create"):
+            commands.run_db(self._db_args(archive, db_command="search"))
+
+    def test_ids_alone_are_what_export_takes(self, tmp_path, capsys):
+        archive = self._archive(tmp_path)
+        commands.run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
+        capsys.readouterr()  # what building it said is not what is under test
+
+        commands.run_db(self._db_args(archive, db_command="search", ids=True))
+
+        printed = capsys.readouterr().out.split()
+        assert printed
+        for store_id in printed:
+            assert cas.is_hashval(store_id), store_id
+
+    def test_a_search_on_a_database_that_is_behind_says_so(self, tmp_path, caplog):
+        archive = self._archive(tmp_path)
+        commands.run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
+        # A folder backed up since the database was built.
+        writer = metalog.LogWriter(
+            archive / metalog.DEFAULT_LOG_DIR, archive / heads.DEFAULT_HEADS_DIR
+        )
+        writer.add("job", ["Sent"], cas.mail_store(archive).add(b"another")[1])
+        writer.seal(datetime(2026, 8, 2, tzinfo=UTC))
+
+        with caplog.at_level(logging.WARNING):
+            commands.run_db(self._db_args(archive, db_command="search"))
+
+        assert any("db update" in r.getMessage() for r in caplog.records)

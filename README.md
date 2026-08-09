@@ -25,12 +25,11 @@
 > atomically. An archive still carrying a `store.db` is lifted by the same
 > command, and the database is renamed rather than removed.
 >
-> **If you queried that database with SQL, read this.** There is no longer a
-> database inside the archive to point your tools at. You build one from the
-> archive whenever you need it, wherever you want it — or set `--index-db` (or
-> `index_db = true` in the config) to maintain a fresh `index.db` beside the
-> archive after every backup. Either way it is a snapshot of the archive, not
-> part of it — see [Querying an archive with SQL](#querying-an-archive-with-sql).
+> **If you queried that database with SQL, read this.** The archive no longer
+> keeps its truth in one. What it can do is build a query database on demand,
+> as `index.db` inside the archive: `mailvault db create`, kept up to date by
+> `db update` or by `--index-db` on a backup, and searchable without SQL at all
+> — see [Searching the archive](#searching-the-archive).
 >
 > See the [CHANGELOG](CHANGELOG.md) for the full list.
 
@@ -98,7 +97,8 @@ Wheels and pre-compiled Windows executables are also available on the
 * `mailvault archive init` -- make a directory into an archive, once, before
   anything else
 * `mailvault archive ...` -- manage the local email archive (import, compress,
-  statistics, build a database for querying, etc.)
+  statistics, check, compact, etc.)
+* `mailvault db ...` -- build, update and search the archive's query database
 
 Two things are said **before** the command, because they are true of the whole
 run whatever it is: which archive and configuration to work with (`--archive`,
@@ -501,52 +501,85 @@ file should not cost you the conversion of a whole archive. Those files are
 named, left exactly as they are, and the command exits non-zero, so a script
 finds out about a conversion that only partly happened.
 
-### Querying an archive with SQL
+### Searching the archive
 
-The archive itself holds no database. To run SQL against it, build one:
+The archive holds mail, not answers. To ask it questions, build its query
+database once:
 
 ```console
-$ mailvault --archive ./backup archive create-db ./backup.db
+$ mailvault --archive ./backup db create
 130,997 message(s) read from the archive
 metadata log: 60 file(s), 219,690 of 219,690 location(s) applied
-./backup.db: written -- a snapshot, stale from the next backup onwards
+index.db: written
 ```
 
 It is assembled from the messages -- which carry their own subject, sender,
-recipients and date -- and from the archive's record of where each message was
-seen. It goes wherever you say and is not part of the archive. **It is a
-snapshot:** correct for the moment it was built, out of date from the next backup
-onwards. Build it again when that matters -- or have one maintained for you.
+recipients and date -- and from the archive's record of which folder of which
+mailbox each was seen in. It lives in the archive as `index.db`, and **it is a
+copy**: everything in it comes from the archive, so it can be thrown away and
+built again at any time. Nothing else in mailvault depends on it.
 
-**Maintaining an `index.db`.** Pass `--index-db` to `backup` (or set
-`index_db = true` in the `[global]` config) and mailvault keeps a queryable
-`index.db` beside the archive, refreshed after every backup. The refresh is
-incremental -- only the log files added since the last one are folded in -- and it
-stays a projection, never a source of truth: a database that is missing or
-unreadable is rebuilt from scratch, so you can delete it at any time. That first
-build reads every message in the archive and says so before it starts -- on a
-large archive it is the longest part of an otherwise quick backup. Mail added
-by `archive import` writes no log and is not picked up this way; rebuild with
-`create-db` when that matters.
-
-An existing file is refused unless you pass `--force`, which replaces it rather
-than adding to it -- merging two runs into one file would give you neither
-snapshot:
+Then search it. Every filter you give has to match, text matches anywhere in the
+value and ignores case:
 
 ```console
-$ mailvault --archive ./backup archive create-db ./backup.db
-./backup.db: already exists, use --force to replace it
+$ mailvault --archive ./backup db search --from ruhl --since 2024-01-01
+2024-03-11  a3f1c8e04b71…  info@ruhlgroup.com                Rechnung 4711
+2024-05-02  9b0d47f2a180…  info@ruhlgroup.com                Lieferschein 8842
+2 message(s)
 ```
 
-Two views are there for convenience, `v_messages` and `v_duplicates`:
+`--from`, `--to`, `--subject`, `--mailbox`, `--folder`, `--since`, `--until` and
+`--limit`. A message whose Date header could not be read matches neither
+`--since` nor `--until` -- its date is unknown, not old.
+
+**The message id in the table is shortened to be read, not typed.** For anything
+that goes on to another program there is `--ids`, which prints the full ids and
+nothing else -- so a search and an export make a pipeline:
 
 ```console
-$ sqlite3 ./backup.db "SELECT date, sender, subject FROM v_messages LIMIT 5"
+$ mailvault --archive ./backup db search --from ruhl --ids \
+    | xargs mailvault --archive ./backup archive export --output ./rechnungen/
 ```
 
-Use `--mailbox NAME` for archives that predate the location record, where nothing
-says which job a message came from; every message is then attributed to that one
-name.
+`--csv` and `--json` print the whole result, ids in full, for anything else.
+
+**Keeping it up to date.** `db update` takes in what the archive has recorded
+since -- a few small reads rather than a pass over every message:
+
+```console
+$ mailvault --archive ./backup db update
+index.db: 3 log file(s) taken in, 412 message(s) added
+```
+
+Or have it done for you: pass `--index-db` to `backup` (or set `index_db = true`
+in the `[global]` config) and every backup updates it at the end.
+
+**It says when it has fallen behind.** The database records how far into the
+archive's metadata log it has read; when the archive has moved on since, a
+search says so before it prints anything:
+
+```console
+index.db: behind the archive in 2 place(s) (ruhlgroup.com::INBOX, ruhlgroup.com::Sent)
+          -- mail archived since is not in it, take it in with `mailvault db update`
+```
+
+Mail added by `archive import` writes no log and is not picked up by an update;
+`db create --force` reads the archive again and finds it.
+
+**`db drop`** deletes it. There is no confirmation and no `--force`, because
+there is nothing to lose: `db create` produces it again from the archive.
+
+**Or use SQL directly.** It is an ordinary SQLite file, with two views for
+convenience, `v_messages` and `v_duplicates`:
+
+```console
+$ sqlite3 ./backup/index.db "SELECT date, sender, subject FROM v_messages LIMIT 5"
+```
+
+Use `db create --mailbox NAME` for archives that predate the location record,
+where nothing says which mailbox a message came from; every message is then
+attributed to that one name.
 
 ### Migrating an older archive
 
@@ -587,7 +620,7 @@ reads one small file and stops.
 Every backup writes a small file into `meta/` for each folder that received mail,
 and because incremental runs overlap, the same messages are recorded again in
 each run's file. Over months these add up, and everything that reads the log --
-`create-db`, `verify`, `--index-db` -- reads all of them. `compact` folds them
+`db create`, `db update`, `verify` -- reads all of them. `compact` folds them
 back down:
 
 ```console
@@ -694,7 +727,7 @@ command, everything else after it.
 | `ib-mailbox --config c.toml backup <dest>` | `mailvault --archive <dest> backup` |
 | `ib-mailbox --config c.toml verify [--repair] <dest>` | `mailvault --archive <dest> verify [--repair]` |
 | `ib-archive stats\|import\|compress\|decompress <dir>` | `mailvault --archive <dir> archive stats\|import\|compress\|decompress` |
-| `ib-archive db-from-archive --mailbox NAME <dir>` | `mailvault --archive <dir> archive create-db <database>` |
+| `ib-archive db-from-archive --mailbox NAME <dir>` | `mailvault --archive <dir> db create --mailbox NAME` |
 | `ib-copy --config c.toml copy [--idle]` | — removed, see below |
 
 The third tool, `ib-copy`, has no successor. It transferred mail between two IMAP
@@ -1002,8 +1035,8 @@ they are what makes an incremental backup and `verify` possible at all. The
 option that used to switch them off (`with_db`, later `with_metadata`) existed
 because of the SQLite database, and went with it.
 
-To query an archive with SQL, build a database from it when you need one: see
-[Querying an archive with SQL](#querying-an-archive-with-sql).
+To search an archive, or to query it with SQL, build its query database when you
+need one: see [Searching the archive](#searching-the-archive).
 
 
 ## MS Windows

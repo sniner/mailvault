@@ -268,29 +268,6 @@ def build_parser() -> argparse.ArgumentParser:
         description="Decompress compressed files in the archive.",
     )
 
-    a_create = asub.add_parser(
-        "create-db",
-        help="Build a queryable database from the archive",
-        description=(
-            "Build an SQLite database of everything the archive knows about its"
-            " mail -- sender, recipients, subject, date, and which mailbox and"
-            " folder each message was seen in -- for querying with SQL. The archive"
-            " itself holds no database: what this writes is a snapshot, accurate for"
-            " the moment it was built and stale from the next backup onwards."
-        ),
-    )
-    a_create.add_argument(
-        "--mailbox",
-        type=str,
-        help="Mailbox to file messages under whose mailbox the archive does not record",
-    )
-    a_create.add_argument(
-        "--force",
-        action="store_true",
-        help="Replace the database file if it already exists",
-    )
-    a_create.add_argument("database", type=pathlib.Path, help="Database file to write")
-
     asub.add_parser(
         "migrate",
         help="Bring an archive written by an earlier version up to date",
@@ -339,7 +316,119 @@ def build_parser() -> argparse.ArgumentParser:
         help="Set damaged messages aside, so they count as missing and can be fetched again",
     )
 
+    build_db_parser(sub)
     return parser
+
+
+def build_db_parser(sub: argparse._SubParsersAction) -> None:
+    """The `db` command group: the archive's optional, throwaway query database.
+
+    Its own group and not a corner of `archive`, because the database is not part
+    of the archive in the way the mail and the log are. It holds nothing that is
+    not already in there, it is built on demand, and every command here is free
+    to say "that does not fit, build it again" -- which is exactly what no
+    command touching the archive itself may ever say.
+    """
+    p_db = sub.add_parser(
+        "db",
+        help="Build, update, search and remove the archive's query database",
+        description=(
+            "The archive's query database: everything it knows about its mail --"
+            " sender, recipients, subject, date, and which folder of which mailbox"
+            " each message was seen in -- in a form that can be searched. It is"
+            " optional and it is a copy, built from the archive and thrown away"
+            " without loss; the archive itself never depends on it. It lives in the"
+            f" archive as {commands.DEFAULT_DB_NAME}, and a backup keeps it in step"
+            " when the configuration or --index-db asks for it."
+        ),
+    )
+    dsub = p_db.add_subparsers(dest="db_command", metavar="<subcommand>", required=True)
+
+    d_create = dsub.add_parser(
+        "create",
+        help="Build the query database from the archive",
+        description=(
+            "Read every message in the archive and build the query database from"
+            " what they say plus what the metadata log records about where they"
+            " were seen. This is the expensive one -- every message is opened --"
+            " so it says how far it has got as it goes. An existing database is"
+            " refused: `db update` brings one up to date at a fraction of the cost."
+        ),
+    )
+    d_create.add_argument(
+        "--mailbox",
+        type=str,
+        metavar="NAME",
+        help="File messages the archive records no place for under this mailbox",
+    )
+    d_create.add_argument(
+        "--force",
+        action="store_true",
+        help="Build it again from scratch even if there is one, replacing it",
+    )
+
+    dsub.add_parser(
+        "update",
+        help="Bring the query database up to date with the archive",
+        description=(
+            "Take in what the archive has recorded since the database was last"
+            " brought up to date, which costs a few small reads rather than a pass"
+            " over every message. Builds one if there is none. A database written"
+            " by another version of mailvault is left alone and reported, because"
+            " it cannot be read -- build that one again."
+        ),
+    )
+
+    dsub.add_parser(
+        "drop",
+        help="Delete the query database",
+        description=(
+            "Remove the query database from the archive. Nothing is lost that"
+            " `db create` cannot produce again -- it holds no fact the archive"
+            " does not -- which is why this asks nothing and takes no --force."
+        ),
+    )
+
+    d_search = dsub.add_parser(
+        "search",
+        help="Find messages in the query database",
+        description=(
+            "Find archived messages by who sent them, who received them, what they"
+            " are about, when they were sent, or where they were kept. Every filter"
+            " given has to match; text matches anywhere in the value and ignores"
+            " case. Prints the message ids `archive export` takes, so a search and"
+            " an export make a pipeline."
+        ),
+    )
+    d_search.add_argument("--from", dest="sender", metavar="TEXT", help="Sender address")
+    d_search.add_argument("--to", dest="recipient", metavar="TEXT", help="Recipient address")
+    d_search.add_argument("--subject", metavar="TEXT", help="Subject")
+    d_search.add_argument("--mailbox", metavar="TEXT", help="Mailbox it was seen in")
+    d_search.add_argument("--folder", metavar="TEXT", help="Folder it was seen in")
+    d_search.add_argument(
+        "--since",
+        metavar="YYYY-MM-DD",
+        help="Sent on this day or later; a message with no readable date matches neither",
+    )
+    d_search.add_argument(
+        "--until",
+        metavar="YYYY-MM-DD",
+        help="Sent on this day or earlier",
+    )
+    d_search.add_argument(
+        "--limit",
+        type=int,
+        metavar="N",
+        help="Stop after this many, oldest first",
+    )
+    output = d_search.add_mutually_exclusive_group()
+    output.add_argument(
+        "--ids",
+        action="store_true",
+        help="Print message ids alone, one per line, for feeding to another command",
+    )
+    output.add_argument("--csv", action="store_true", help="Print as CSV, with a header row")
+    output.add_argument("--json", action="store_true", help="Print as a JSON array")
 
 
 def main() -> int:
@@ -372,6 +461,8 @@ def main() -> int:
             exit_code = commands.run_mailbox(args)
         elif args.command == "archive":
             exit_code = commands.run_archive(args)
+        elif args.command == "db":
+            exit_code = commands.run_db(args)
     except KeyboardInterrupt:
         log.warning("Interrupted!")
         exit_code = 130

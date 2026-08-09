@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Added
+
+- **`mailvault db` -- the archive can be searched.** `db create` builds the query database,
+  `db update` takes in what has been archived since, `db search` finds messages in it, and
+  `db drop` deletes it. Its own command group rather than a corner of `archive`, because the
+  database is not part of the archive the way the mail and the log are: it holds nothing that is
+  not already in there, it is built on demand, and every command in the group is free to say
+  "that does not fit, build it again" -- which is precisely what no command touching the archive
+  itself may ever say
+
+- **`db search` asks in plain terms**, without SQL: `--from`, `--to`, `--subject`, `--mailbox`,
+  `--folder`, `--since`, `--until`, `--limit`. Every filter given has to match, text matches
+  anywhere in the value and ignores case, and a `%` you type is a per cent sign rather than a
+  wildcard. A message whose Date header could not be read matches neither `--since` nor `--until`:
+  its date is unknown, not old. One row per message however many recipients or folders it has
+
+- **A search and an export make a pipeline.** The table shortens the message id to be read rather
+  than typed; `--ids` prints them in full and prints nothing else, so
+  `db search --from ruhl --ids | xargs mailvault archive export -o ./out/` is the whole story.
+  `--csv` and `--json` print the full result, ids in full, for everything else
+
 ### Changed
 
 - **`index.db` records a place as one fact.** Which folder of which mailbox a message was seen in
@@ -41,6 +62,11 @@
   they base something on it rather than after
 
 ### Removed
+
+- **`archive create-db` is gone; it is `db create`.** With it goes its second argument: the
+  database is a feature of an archive and lives in it, so there is nothing left to name. A second
+  `db create` is refused and points at `db update`, which costs a few small reads where building
+  again reads every message in the archive; `--force` builds it again anyway
 
 - **The dead `snapshot` table is gone from `index.db`.** It held the resume timestamps of an
   archive that kept its truth in SQLite; since 0.8.0 those live in `heads/`, and nothing has

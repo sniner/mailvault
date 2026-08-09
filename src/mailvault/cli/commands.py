@@ -8,6 +8,9 @@ Each `run_*` function is the dispatch target for one command group in
 from __future__ import annotations
 
 import argparse
+import csv
+import dataclasses
+import json
 import logging
 import pathlib
 import sys
@@ -37,6 +40,11 @@ ARCHIVE_COMMANDS = {"backup", "verify"}
 # name space: a `config.toml` there belongs to whatever else lives in that
 # directory, and reading one by accident is not a theoretical worry.
 DEFAULT_CONFIG_NAME = "mailvault.toml"
+
+# The query database, inside the archive. Named here as well as in `jobs.db`
+# because the help texts talk about it and a help text that names a different
+# file than the code writes is worse than one that names none.
+DEFAULT_DB_NAME = jobs.DEFAULT_QUERY_DB_NAME
 
 
 def archive_path(args: argparse.Namespace) -> pathlib.Path:
@@ -353,11 +361,7 @@ def _report_generation(source: pathlib.Path, result: jobs.MigrationResult) -> in
     return 1
 
 
-def report_create_db(
-    source: pathlib.Path,
-    target: pathlib.Path,
-    result: jobs.RebuildResult,
-) -> None:
+def report_create_db(target: pathlib.Path, result: jobs.RebuildResult) -> int:
     """Say what went into the database, and name what could not."""
     replay = result.replay
     print(f"{result.messages:,} message(s) read from the archive")
@@ -372,8 +376,38 @@ def report_create_db(
                 f"not in the archive, ignored"
             )
     else:
-        print("no metadata log found, mailbox and folder are NOT in the database")
-    print(f"{target}: written -- a snapshot, stale from the next backup onwards")
+        # Not a failure, and the reason matters: mail brought in with `archive
+        # import` writes no log, so an archive built that way has nothing here.
+        print("no metadata log found -- no message has a mailbox or folder in it")
+    print(f"{target.name}: written")
+    return 0
+
+
+def report_update_db(target: pathlib.Path, result: jobs.RefreshResult) -> int:
+    """Say what the update took in, and stay quiet when there was nothing.
+
+    Non-zero for a database this version cannot read: it was not updated, and a
+    caller that only reads the exit code must not file that as a success.
+    """
+    if result.outdated:
+        # `refresh_db` has already said what it is and what to do about it.
+        return 1
+    if result.rebuilt:
+        print(f"{target.name}: built from the whole archive, {result.messages:,} message(s)")
+        return 0
+    if not result.files:
+        print(f"{target.name}: already up to date")
+        return 0
+    print(
+        f"{target.name}: {result.files:,} log file(s) taken in,"
+        f" {result.messages:,} message(s) added"
+    )
+    if result.unknown:
+        print(
+            f"{result.unknown:,} log entry/entries name messages that are "
+            f"not in the archive, ignored"
+        )
+    return 0
 
 
 def report_compact(source: pathlib.Path, result: metalog.CompactResult) -> int:
@@ -668,6 +702,147 @@ def _refuse_importing_the_archive(archive: pathlib.Path, source: pathlib.Path) -
         )
 
 
+# How much of a message id a table shows. The full value is 96 characters and
+# would be three lines of terminal for a column nobody reads across -- it is
+# there to be recognised, not typed. Every machine-readable format prints it
+# whole, and `--ids` exists precisely so nothing has to be copied off a table.
+ID_PREVIEW = 12
+
+# How much of a subject a table shows before it costs the line its shape.
+SUBJECT_WIDTH = 60
+
+
+def _cut(value: str | None, width: int) -> str:
+    if not value:
+        return ""
+    collapsed = " ".join(value.split())
+    if len(collapsed) <= width:
+        return collapsed
+    return collapsed[: width - 1] + "…"
+
+
+def report_search(hits: list[jobs.SearchHit], query: jobs.SearchQuery) -> int:
+    """Print what was found, in the shape a person reads.
+
+    The count at the end is not decoration: a search that filtered nothing out
+    prints the whole archive, and a reader who has scrolled past two hundred
+    lines has lost track of whether that was all of them.
+    """
+    for hit in hits:
+        day = (hit.date or "")[:10] or "??????????"
+        print(
+            f"{day}  {hit.store_id[:ID_PREVIEW]}…  "
+            f"{_cut(hit.sender, 32):32}  {_cut(hit.subject, SUBJECT_WIDTH)}"
+        )
+    if not hits:
+        print("no message matches" if not query.is_empty() else "the database is empty")
+        return 0
+    print(f"{len(hits):,} message(s)")
+    if query.limit is not None and len(hits) == query.limit:
+        # Said out loud, because a limit that happens to be reached looks exactly
+        # like a search that found that many.
+        print(f"stopped at --limit {query.limit:,}; there may be more")
+    return 0
+
+
+def report_search_csv(hits: list[jobs.SearchHit]) -> int:
+    writer = csv.writer(sys.stdout)
+    writer.writerow(["store_id", "date", "sender", "subject", "places"])
+    for hit in hits:
+        writer.writerow(
+            [
+                hit.store_id,
+                hit.date or "",
+                hit.sender or "",
+                hit.subject or "",
+                " ".join(hit.places),
+            ]
+        )
+    return 0
+
+
+def report_search_json(hits: list[jobs.SearchHit]) -> int:
+    json.dump(
+        [dataclasses.asdict(hit) for hit in hits],
+        sys.stdout,
+        ensure_ascii=False,
+        indent=2,
+    )
+    print()
+    return 0
+
+
+def _search_query(args: argparse.Namespace) -> jobs.SearchQuery:
+    return jobs.SearchQuery(
+        sender=args.sender,
+        recipient=args.recipient,
+        subject=args.subject,
+        mailbox=args.mailbox,
+        folder=args.folder,
+        since=args.since,
+        until=args.until,
+        limit=args.limit,
+    )
+
+
+def run_db(args: argparse.Namespace) -> int:
+    """Run a `db` subcommand against the archive's query database.
+
+    Every one of them works on the `index.db` of the archive `--archive` names,
+    or of the one being stood in. There is no second database and no way to name
+    one: it is a feature of an archive, kept where the mail it describes is.
+    """
+    archive = archive_path(args)
+    require_archive(archive)
+    db_path = archive / DEFAULT_DB_NAME
+    cmd = args.db_command
+
+    if cmd == "create":
+        if db_path.exists() and not args.force:
+            raise jobs.JobError(
+                f"{db_path.name}: already here. `db update` brings it up to date"
+                f" for a fraction of what building it again costs; --force builds"
+                f" it again anyway"
+            )
+        return report_create_db(
+            db_path,
+            jobs.create_db(archive, db_path, mailbox=args.mailbox, force=True),
+        )
+    elif cmd == "update":
+        return report_update_db(db_path, jobs.refresh_db(archive, db_path))
+    elif cmd == "drop":
+        if jobs.drop_db(db_path):
+            print(f"{db_path.name}: deleted -- `db create` builds it again")
+        else:
+            print(f"{db_path.name}: not here, nothing to delete")
+        return 0
+    elif cmd == "search":
+        if not db_path.exists():
+            raise jobs.JobError(
+                f"{db_path.name}: no query database in this archive -- build one"
+                f" with `mailvault db create`"
+            )
+        # Asked before the results are printed, so the warning is not scrolled
+        # away by them: what follows is true and may be incomplete.
+        state = jobs.freshness(archive, db_path)
+        complaint = state.complaint(db_path.name)
+        if complaint:
+            log.warning("%s", complaint)
+        query = _search_query(args)
+        hits = jobs.search(db_path, query)
+        if args.ids:
+            for hit in hits:
+                print(hit.store_id)
+            return 0
+        if args.csv:
+            return report_search_csv(hits)
+        if args.json:
+            return report_search_json(hits)
+        return report_search(hits, query)
+
+    return 0
+
+
 def run_archive(args: argparse.Namespace) -> int:
     """Run an `archive` subcommand (stats/import/compress/create-db/...).
 
@@ -709,14 +884,6 @@ def run_archive(args: argparse.Namespace) -> int:
         return report_conversion(
             archive, store.decompress_all(), "decompressed", "already plain"
         )
-    elif cmd == "create-db":
-        result = jobs.create_db(
-            archive,
-            args.database,
-            mailbox=args.mailbox,
-            force=args.force,
-        )
-        report_create_db(archive, args.database, result)
     elif cmd == "migrate":
         return report_migration(archive, jobs.migrate_archive(archive))
     elif cmd == "compact":
