@@ -1,58 +1,50 @@
-"""The queryable SQLite database built from the archive.
+"""The queryable projection of an archive: `index.db`.
 
-The archive itself no longer holds a database -- its metadata lives in the
-append-only log under `meta/`. This module turns that log plus the messages into
-a database you can run SQL against: the legacy `store.db` a migration reads out
-of, and the `index.db` projection built beside a current archive. It owns the
-schema (`setup()`), a reentrant transaction discipline, and the lookup-table
-interning; `jobs.storedb` drives it.
+The archive holds no database. Its metadata lives in the append-only log under
+`meta/`, and this turns that log plus the messages into something SQL can be run
+against -- sender, recipients, subject, date, and which mailbox and folder each
+message was seen in.
+
+What this is, and the whole reason it may be shaped freely: **a projection, not
+a source of truth.** Everything in it can be rebuilt from the archive, so a
+change to the schema costs a rebuild rather than a migration path. That is the
+right answer for a projection and must never be the answer for the archive.
+
+Not to be confused with `mailvault.legacy.store_db`, which reads the `store.db`
+that *was* the truth in archives written before 0.8.0. The two were one class
+until they were told apart: one `setup()` created the union of both schemas,
+which is how a table nothing reads ended up in every projection built since.
+They share the plumbing in `mailvault.store.sqlite` and nothing else.
 """
 
 from __future__ import annotations
 
 import collections.abc
-import logging
 import pathlib
 import sqlite3
-import threading
-from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
-log = logging.getLogger(__name__)
-
-# The legacy database filename. Archives no longer keep a database inside them;
-# this is the name the migration looks for and renames to `store.db.migrated`.
-DEFAULT_DB_NAME = "store.db"
+from mailvault.store.sqlite import DatabaseConnection, connect
 
 
-class RollbackException(Exception):
-    pass
+class IndexDatabase:
+    """Open the projection as a context manager, creating its schema on entry.
 
-
-class MetaDatabase:
-    """Open a database as a context manager, running `setup()` on entry.
-
-    `with MetaDatabase(path) as db:` yields a `MetaDatabaseConnection` and closes
-    the connection on exit.
+    `with IndexDatabase(path) as db:` yields an `IndexDatabaseConnection` and
+    closes the connection on exit. The schema is always created -- a projection
+    that is not there yet is one to be built, which is the ordinary case.
     """
 
-    def __init__(self, path: pathlib.Path | str, setup: bool = True):
-        self.dbconn = None
-        self.client = None
-        self.path = path or DEFAULT_DB_NAME
-        # Run setup() on entry to create the schema. Turned off when a legacy
-        # store.db is opened purely to read it during migration: setup() writes
-        # DDL, and a database that is only being read -- and is about to be
-        # renamed aside -- should not be written to, nor require write access.
-        self._setup = setup
+    def __init__(self, path: pathlib.Path | str):
+        self.dbconn: sqlite3.Connection | None = None
+        self.client: IndexDatabaseConnection | None = None
+        self.path = path
 
-    def __enter__(self) -> MetaDatabaseConnection:
-        self.dbconn = sqlite3.connect(self.path, check_same_thread=False)
-        self.dbconn.row_factory = sqlite3.Row
-        self.client = MetaDatabaseConnection(self.dbconn)
-        if self._setup:
-            self.client.setup()
+    def __enter__(self) -> IndexDatabaseConnection:
+        self.dbconn = connect(self.path)
+        self.client = IndexDatabaseConnection(self.dbconn)
+        self.client.setup()
         return self.client
 
     def __exit__(
@@ -67,61 +59,8 @@ class MetaDatabase:
             self.client = None
 
 
-class DatabaseConnection:
-    """A SQLite connection with a reentrant `transaction()` block.
-
-    Nested `transaction()` calls share one outermost commit, so each write helper
-    can wrap itself in a transaction and still batch when a caller wraps a whole
-    run in one. `rollback()` aborts the enclosing block by raising.
-    """
-
-    def __init__(self, dbconn: sqlite3.Connection):
-        self.dbconn = dbconn
-        self.lock = threading.RLock()
-        self._transaction = 0
-
-    @contextmanager
-    def transaction(self) -> collections.abc.Generator[DatabaseConnection, None, None]:
-        with self.lock:
-            outer = self._transaction == 0
-            self._transaction += 1
-            try:
-                yield self
-                if outer:
-                    self.dbconn.commit()
-            except Exception as exc:
-                log.error("Transaction failed: %s", exc)
-                if outer:
-                    self.dbconn.rollback()
-                raise
-            finally:
-                self._transaction -= 1
-
-    def execute(self, statement: str, *args: Any) -> sqlite3.Cursor:
-        with self.lock:
-            return self.dbconn.execute(statement, *args)
-
-    def commit(self) -> None:
-        with self.lock:
-            if self._transaction == 0:
-                self.dbconn.commit()
-
-    def rollback(self) -> None:
-        """Abort the enclosing ``transaction()`` block.
-
-        This does not roll back directly; it raises ``RollbackException``, which
-        propagates out of the ``with transaction()`` block and makes it issue the
-        actual ``dbconn.rollback()``. Only meaningful inside such a block --
-        called on its own it simply raises.
-        """
-        raise RollbackException()
-
-    def setup(self) -> None:
-        pass
-
-
-class MetaDatabaseConnection(DatabaseConnection):
-    """The archive's schema and the operations that fill and query it.
+class IndexDatabaseConnection(DatabaseConnection):
+    """The projection's schema and the operations that fill and query it.
 
     `setup()` creates the tables and the `v_messages` / `v_duplicates` views; the
     rest insert messages, addresses, subjects and locations, interning the
@@ -384,26 +323,6 @@ class MetaDatabaseConnection(DatabaseConnection):
         """
         return {store_id: message_id for message_id, store_id in self.iter_messages()}
 
-    def message_mailboxes(self) -> dict[int, list[str]]:
-        """Map message_id to the mailboxes it was seen in."""
-        return self._attribution(
-            "SELECT mm.message_id, mb.name FROM message_mailbox mm "
-            "JOIN mailbox mb USING (mailbox_id)"
-        )
-
-    def message_labels(self) -> dict[int, list[str]]:
-        """Map message_id to the labels it carries."""
-        return self._attribution(
-            "SELECT ml.message_id, l.name FROM message_label ml JOIN label l USING (label_id)"
-        )
-
-    def _attribution(self, statement: str) -> dict[int, list[str]]:
-        """Collect a (message_id, name) query into a mapping of lists."""
-        result: dict[int, list[str]] = {}
-        for message_id, name in self.execute(statement):
-            result.setdefault(message_id, []).append(name)
-        return result
-
     def add_message_labels(self, message_id: int, *label_names: str) -> None:
         # The transaction is what commits these rows. Without it the inserts sat
         # in the connection until some later call happened to commit them, and
@@ -436,38 +355,3 @@ class MetaDatabaseConnection(DatabaseConnection):
                     "VALUES (?, ?)",
                     (message_id, addr_id),
                 )
-
-    def all_snapshots(self) -> list[tuple[str, str, str]]:
-        """Return (mailbox, folder, timestamp) for every snapshot in the database.
-
-        Used once per archive to carry the timestamps of a legacy archive over
-        into the state file. `setup()` always creates the table, but a database
-        built by a current version never fills it -- resume timestamps live in
-        `state.json` now -- so here it simply returns nothing. The guard against a
-        missing table is defensive, for a database old enough to predate it.
-        """
-        try:
-            rows = self.execute(
-                "SELECT mb.name, l.name, s.date FROM snapshot s "
-                "JOIN mailbox mb USING (mailbox_id) JOIN label l USING (label_id)"
-            ).fetchall()
-        except sqlite3.OperationalError as exc:
-            log.debug("No snapshot table to read: %s", exc)
-            return []
-        return [(row[0], row[1], row[2]) for row in rows]
-
-    def set_snapshot(
-        self,
-        mailbox_id: int,
-        label_id: int,
-        date: datetime | None = None,
-    ) -> None:
-        if date is None:
-            date = datetime.now(UTC)
-        isodate = date.isoformat()
-        # NB: does work because of ON CONFLICT REPLACE
-        with self.transaction():
-            self.execute(
-                "INSERT INTO snapshot(mailbox_id, label_id, date) VALUES (?, ?, ?)",
-                (mailbox_id, label_id, isodate),
-            )

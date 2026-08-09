@@ -20,7 +20,8 @@ import pathlib
 import re
 from datetime import UTC, datetime
 
-from mailvault.store import cas, heads, marker, metadb, metalog, state
+from mailvault.legacy import state_json, store_db
+from mailvault.store import cas, heads, marker, metalog
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ def _learn_by_elimination(
     return learnt
 
 
-def _folder_owners(db: metadb.MetaDatabaseConnection) -> dict[str, set[str]]:
+def _folder_owners(db: store_db.StoreDatabaseConnection) -> dict[str, set[str]]:
     """Work out which mailbox each folder name can have come from.
 
     Three sources, in order of how much they assume. The snapshot table pairs
@@ -117,7 +118,7 @@ def _folder_owners(db: metadb.MetaDatabaseConnection) -> dict[str, set[str]]:
 
 
 def _export_metalog(
-    db: metadb.MetaDatabaseConnection,
+    db: store_db.StoreDatabaseConnection,
     log_root: pathlib.Path,
     heads_root: pathlib.Path,
     date: datetime,
@@ -166,7 +167,7 @@ def _export_metalog(
 
 def _adopt_database_snapshots(
     heads_root: pathlib.Path,
-    db: metadb.MetaDatabaseConnection,
+    db: store_db.StoreDatabaseConnection,
 ) -> int:
     """Copy the snapshot table of a legacy archive into `heads/`.
 
@@ -218,7 +219,7 @@ def import_state_file(store_path: pathlib.Path) -> int:
     An archive that already has heads keeps them: they are the newer truth. The
     file is still removed, so the question does not come up a second time.
     """
-    path = store_path / state.DEFAULT_STATE_NAME
+    path = store_path / state_json.DEFAULT_STATE_NAME
     if not path.exists():
         return 0
     heads_root = store_path / heads.DEFAULT_HEADS_DIR
@@ -227,7 +228,7 @@ def import_state_file(store_path: pathlib.Path) -> int:
     if heads.head_files(heads_root):
         log.info("%s: heads are already there, the state file is only removed", path.name)
     else:
-        for mailbox, folder, entry in state.SnapshotState.load(path).entries():
+        for mailbox, folder, entry in state_json.SnapshotState.load(path).entries():
             heads.write(
                 heads_root,
                 heads.Head(
@@ -332,7 +333,7 @@ def _migrate_database(store_path: pathlib.Path) -> MigrationResult:
     because replaying them is idempotent. Called on an archive with no `store.db`
     it does nothing at all.
     """
-    legacy = store_path / metadb.DEFAULT_DB_NAME
+    legacy = store_path / store_db.DEFAULT_DB_NAME
     result = MigrationResult()
     if not legacy.exists():
         return result
@@ -351,7 +352,7 @@ def _migrate_database(store_path: pathlib.Path) -> MigrationResult:
     date = datetime.now(UTC)
     # Read-only: the legacy database is only queried here and then renamed aside,
     # so setup() must not write DDL into it (nor demand write access to read it).
-    with metadb.MetaDatabase(path=legacy, setup=False) as db:
+    with store_db.StoreDatabase(legacy) as db:
         result.snapshots = _adopt_database_snapshots(heads_root, db)
         written = _export_metalog(db, log_root, heads_root, date, result)
 

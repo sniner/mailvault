@@ -18,9 +18,9 @@ from datetime import UTC, datetime
 from mailvault import conf, mailutils, utils
 from mailvault.backend import base, session
 from mailvault.jobs.common import _seal_log
+from mailvault.jobs.db import DEFAULT_QUERY_DB_NAME, refresh_db
 from mailvault.jobs.migration import migrate_archive
 from mailvault.jobs.reconcile import places_from_log, reconcile_folder
-from mailvault.jobs.storedb import DEFAULT_QUERY_DB_NAME, refresh_db
 from mailvault.store import cas, heads, metalog
 
 log = logging.getLogger(__name__)

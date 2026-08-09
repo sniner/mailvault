@@ -1,4 +1,4 @@
-"""Tests for `mailvault.store.state`, which is now only the reader for the import.
+"""Tests for `mailvault.legacy.state_json`, the reader the migration uses.
 
 Nothing writes this format any more. What has to keep working is reading both
 versions out of an archive that predates `heads/`, once, and degrading into
@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from mailvault.store import state
+from mailvault.legacy import state_json
 
 LAST_RUN = datetime(2026, 2, 1, 12, 30, tzinfo=UTC)
 UID_TOKEN = {"kind": "imap-uid", "uidvalidity": 1239278212, "uid": 48127}
@@ -25,15 +25,15 @@ def _write(path, payload) -> None:
 
 
 def _v2(snapshots) -> dict:
-    return {"version": state.STATE_VERSION, "snapshots": snapshots}
+    return {"version": state_json.STATE_VERSION, "snapshots": snapshots}
 
 
 def _v1(snapshots) -> dict:
-    return {"version": state.LEGACY_STATE_VERSION, "snapshots": snapshots}
+    return {"version": state_json.LEGACY_STATE_VERSION, "snapshots": snapshots}
 
 
-def _places(path) -> dict[tuple[str, str], state.FolderState]:
-    return {(mb, f): entry for mb, f, entry in state.SnapshotState.load(path).entries()}
+def _places(path) -> dict[tuple[str, str], state_json.FolderState]:
+    return {(mb, f): entry for mb, f, entry in state_json.SnapshotState.load(path).entries()}
 
 
 class TestVersion2:
@@ -122,7 +122,7 @@ class TestWhatCannotBeTrusted:
     """Everything here degrades to "nothing known", which costs a pass, not mail."""
 
     def test_a_missing_file(self, tmp_path):
-        assert list(state.SnapshotState.load(tmp_path / "state.json").entries()) == []
+        assert list(state_json.SnapshotState.load(tmp_path / "state.json").entries()) == []
 
     def test_broken_json(self, tmp_path, caplog):
         path = tmp_path / "state.json"
@@ -147,7 +147,7 @@ class TestWhatCannotBeTrusted:
 
     def test_snapshots_that_are_not_an_object(self, tmp_path, caplog):
         path = tmp_path / "state.json"
-        _write(path, {"version": state.STATE_VERSION, "snapshots": []})
+        _write(path, {"version": state_json.STATE_VERSION, "snapshots": []})
 
         assert _places(path) == {}
         assert "'snapshots' is not an object" in caplog.text
@@ -184,14 +184,14 @@ def test_entries_come_out_sorted(tmp_path):
         ),
     )
 
-    assert [(mb, f) for mb, f, _ in state.SnapshotState.load(path).entries()] == [
+    assert [(mb, f) for mb, f, _ in state_json.SnapshotState.load(path).entries()] == [
         ("alpha", "INBOX"),
         ("alpha", "Sent"),
         ("zeta", "Sent"),
     ]
 
 
-@pytest.mark.parametrize("payload", [{}, {"version": state.STATE_VERSION}, 42])
+@pytest.mark.parametrize("payload", [{}, {"version": state_json.STATE_VERSION}, 42])
 def test_anything_unusable_yields_no_places(tmp_path, payload):
     path = tmp_path / "state.json"
     _write(path, payload)

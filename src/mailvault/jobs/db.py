@@ -1,9 +1,15 @@
-"""Build and maintain a queryable SQLite database from the archive and its log.
+"""Build and maintain `index.db`, the archive's queryable projection.
 
 The archive itself holds no database. This makes one on demand out of the two
 things that do live there -- the messages, for everything they carry in
 themselves, and the log, for which mailbox and folder each was seen in. What
 comes out is a snapshot, accurate when built and stale from the next backup on.
+
+Named for the command it serves, like every other module here. It used to be
+`storedb`, from the days when the projection *was* `store.db` and the archive
+kept its truth in SQLite -- which stopped being true in 0.8.0, leaving a module
+whose name pointed at a file it has nothing to do with, right next to
+`mailvault.legacy.store_db`, which does.
 
 It can also be kept up to date incrementally (`refresh_db`): a convenience
 projection beside the archive, refreshed after a backup, never a source of truth.
@@ -21,7 +27,7 @@ import sqlite3
 
 from mailvault import mailutils, utils
 from mailvault.jobs.common import JobError
-from mailvault.store import cas, metadb, metalog
+from mailvault.store import cas, index_db, metalog
 
 log = logging.getLogger(__name__)
 
@@ -75,12 +81,12 @@ def _log_hash(path: pathlib.Path) -> str:
     return path.name.removesuffix(".jsonl")
 
 
-def _ensure_applied_log(db: metadb.MetaDatabaseConnection) -> None:
+def _ensure_applied_log(db: index_db.IndexDatabaseConnection) -> None:
     with db.transaction():
         db.execute(_APPLIED_LOG_DDL)
 
 
-def _mark_logs_applied(db: metadb.MetaDatabaseConnection, paths: list[pathlib.Path]) -> None:
+def _mark_logs_applied(db: index_db.IndexDatabaseConnection, paths: list[pathlib.Path]) -> None:
     with db.transaction():
         for path in paths:
             db.execute(
@@ -90,7 +96,7 @@ def _mark_logs_applied(db: metadb.MetaDatabaseConnection, paths: list[pathlib.Pa
 
 
 def _insert_message_from_path(
-    db: metadb.MetaDatabaseConnection,
+    db: index_db.IndexDatabaseConnection,
     store: cas.ContentAddressedStorage,
     path: pathlib.Path,
 ) -> int:
@@ -115,7 +121,10 @@ def _insert_message_from_path(
     return msg_id
 
 
-def _replay_metalog(db: metadb.MetaDatabaseConnection, log_root: pathlib.Path) -> ReplayResult:
+def _replay_metalog(
+    db: index_db.IndexDatabaseConnection,
+    log_root: pathlib.Path,
+) -> ReplayResult:
     """Apply every log file to the database, in order.
 
     Uses the same idempotent methods a backup used to, so replaying is nothing
@@ -201,7 +210,7 @@ def _build_db(
 ) -> None:
     """Fill a fresh database from the archive and its log."""
     log_root = store_path / metalog.DEFAULT_LOG_DIR
-    with metadb.MetaDatabase(path=db_path) as db:
+    with index_db.IndexDatabase(path=db_path) as db:
         _ensure_applied_log(db)
         mb_id = db.add_mailbox(mailbox) if mailbox else None
         # One transaction per batch, not per message. Every write method commits
@@ -255,7 +264,7 @@ def refresh_db(store_path: pathlib.Path, db_path: pathlib.Path) -> RefreshResult
     store = cas.mail_store(store_path)
     log_root = store_path / metalog.DEFAULT_LOG_DIR
     try:
-        with metadb.MetaDatabase(path=db_path) as db:
+        with index_db.IndexDatabase(path=db_path) as db:
             _apply_new_logs(db, store, log_root, result)
     except sqlite3.DatabaseError as exc:
         log.warning(
@@ -270,7 +279,7 @@ def refresh_db(store_path: pathlib.Path, db_path: pathlib.Path) -> RefreshResult
 
 
 def _apply_new_logs(
-    db: metadb.MetaDatabaseConnection,
+    db: index_db.IndexDatabaseConnection,
     store: cas.ContentAddressedStorage,
     log_root: pathlib.Path,
     result: RefreshResult,
@@ -317,7 +326,7 @@ def _apply_new_logs(
 
 
 def _insert_message(
-    db: metadb.MetaDatabaseConnection,
+    db: index_db.IndexDatabaseConnection,
     store: cas.ContentAddressedStorage,
     store_id: str,
 ) -> int | None:

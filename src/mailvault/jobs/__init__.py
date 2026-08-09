@@ -9,10 +9,10 @@ from __future__ import annotations
 from mailvault.jobs.backup import backup
 from mailvault.jobs.check import CheckResult, check
 from mailvault.jobs.common import JobError
+from mailvault.jobs.db import RebuildResult, ReplayResult, create_db
 from mailvault.jobs.folders import folder_list
 from mailvault.jobs.init import InitResult, init_archive
 from mailvault.jobs.migration import MigrationResult, migrate_archive
-from mailvault.jobs.storedb import RebuildResult, ReplayResult, create_db
 from mailvault.jobs.verification import VerifyResult, verify
 
 __all__ = [

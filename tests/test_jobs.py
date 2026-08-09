@@ -13,9 +13,12 @@ import pytest
 from mailvault import conf, jobs, mailutils
 from mailvault.backend import base
 from mailvault.jobs import migration
+from mailvault.jobs.db import DEFAULT_QUERY_DB_NAME, refresh_db
 from mailvault.jobs.reconcile import archived_message_counts, places_from_log
-from mailvault.jobs.storedb import DEFAULT_QUERY_DB_NAME, refresh_db
-from mailvault.store import cas, heads, marker, metadb, metalog, state
+from mailvault.legacy import state_json as state
+from mailvault.legacy import store_db
+from mailvault.store import cas, heads, index_db, marker, metalog
+from tests.legacy_store_db import legacy_store_db
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -102,6 +105,36 @@ def _make_mock_client():
     client.job_name = "test-job"
     client.folders.return_value = iter(["INBOX"])
     return client
+
+
+def _mailboxes_of(db, message_id: int) -> list[str]:
+    """The mailboxes a projection records for a message, straight from the tables.
+
+    Read with SQL rather than through an accessor: the projection has no reader
+    for this in production -- the log answers it during a run -- and a method
+    that exists only so a test can call it is the kind of thing that outlives its
+    reason. `mailvault.legacy.store_db` has one because the migration needs it.
+    """
+    return sorted(
+        row[0]
+        for row in db.execute(
+            "SELECT mb.name FROM message_mailbox mm JOIN mailbox mb USING (mailbox_id) "
+            "WHERE mm.message_id=?",
+            (message_id,),
+        ).fetchall()
+    )
+
+
+def _labels_of(db, message_id: int) -> list[str]:
+    """The labels a projection records for a message, straight from the tables."""
+    return sorted(
+        row[0]
+        for row in db.execute(
+            "SELECT l.name FROM message_label ml JOIN label l USING (label_id) "
+            "WHERE ml.message_id=?",
+            (message_id,),
+        ).fetchall()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -630,7 +663,7 @@ class TestSnapshotStateFile:
 
         stale = datetime(2026, 1, 1, tzinfo=UTC)
         current = datetime(2026, 6, 1, tzinfo=UTC)
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with legacy_store_db(tmp_path / "store.db") as db:
             db.set_snapshot(db.add_mailbox("test-job"), db.add_label("INBOX"), date=stale)
         _seed_resume(tmp_path, current, folder="INBOX")
 
@@ -649,7 +682,7 @@ class TestSnapshotStateFile:
         mock_client.folder_backup.return_value = base.BackupResult()
 
         existing = datetime(2026, 2, 1, tzinfo=UTC)
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with legacy_store_db(tmp_path / "store.db") as db:
             db.set_snapshot(db.add_mailbox("test-job"), db.add_label("INBOX"), date=existing)
 
         self._run(job, mock_client, tmp_path)
@@ -674,7 +707,7 @@ class TestSnapshotStateFile:
         )
 
         untouched = datetime(2026, 2, 1, tzinfo=UTC)
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with legacy_store_db(tmp_path / "store.db") as db:
             mb_id = db.add_mailbox("test-job")
             for folder in ("INBOX", "Sent", "Archiv/2016"):
                 db.set_snapshot(mb_id, db.add_label(folder), date=untouched)
@@ -698,7 +731,7 @@ class TestSnapshotStateFile:
 
         current = datetime(2026, 6, 1, tzinfo=UTC)
         stale = datetime(2026, 1, 1, tzinfo=UTC)
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with legacy_store_db(tmp_path / "store.db") as db:
             db.set_snapshot(db.add_mailbox("test-job"), db.add_label("Sent"), date=stale)
         _seed_resume(tmp_path, current, folder="Sent")
 
@@ -958,7 +991,7 @@ class TestMetadataLog:
 
     def test_existing_archive_is_bootstrapped_on_first_run(self, tmp_path):
         """An archive filled by an earlier version is protected straight away."""
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with legacy_store_db(tmp_path / "store.db") as db:
             mb_id = db.add_mailbox("old-job")
             # Store ids are hashes wherever they are real, and the log skips a
             # line whose store id is not one -- so the stand-ins here are hex.
@@ -1218,7 +1251,7 @@ class TestLiftingAnOldArchive:
 
 class TestMigration:
     def test_moves_locations_out_of_an_existing_database(self, tmp_path):
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with legacy_store_db(tmp_path / "store.db") as db:
             msg_id = db.add_message("aaa", "<a@example.com>", None, "Subject")
             for mailbox in ("job-a", "job-b"):
                 db.assign_message_to_mailbox(msg_id, db.add_mailbox(mailbox))
@@ -1237,7 +1270,7 @@ class TestMigration:
 
     def test_the_legacy_database_is_not_written_to(self, tmp_path):
         """Migration only reads store.db, so the renamed file is byte-identical."""
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with legacy_store_db(tmp_path / "store.db") as db:
             msg_id = db.add_message("aaa", "<a@example.com>", None, "Subject")
             db.assign_message_to_mailbox(msg_id, db.add_mailbox("job-a"))
             db.add_message_labels(msg_id, "INBOX")
@@ -1251,7 +1284,7 @@ class TestMigration:
 
     def test_a_second_run_has_nothing_to_do(self, tmp_path):
         """The absence of store.db is what says "already migrated"."""
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with legacy_store_db(tmp_path / "store.db") as db:
             msg_id = db.add_message("aaa", "<a@example.com>", None, "Subject")
             db.assign_message_to_mailbox(msg_id, db.add_mailbox("job-a"))
         jobs.migrate_archive(tmp_path)
@@ -1263,7 +1296,7 @@ class TestMigration:
 
     def test_it_announces_the_migration_before_doing_it(self, tmp_path, caplog):
         """The slow work must not look like a hang: say it is happening first."""
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with legacy_store_db(tmp_path / "store.db") as db:
             msg_id = db.add_message("aaa", "<a@example.com>", None, "Subject")
             db.assign_message_to_mailbox(msg_id, db.add_mailbox("job-a"))
 
@@ -1287,7 +1320,7 @@ class TestMigration:
         idempotent, so repeating costs nothing, and a mark written first would
         claim a layout that only half exists.
         """
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with legacy_store_db(tmp_path / "store.db") as db:
             msg_id = db.add_message("aaa", "<a@example.com>", None, "Subject")
             db.assign_message_to_mailbox(msg_id, db.add_mailbox("job-a"))
         jobs.migrate_archive(tmp_path)
@@ -1314,7 +1347,7 @@ class TestMigration:
         the other mailbox, which leaves exactly one mailbox unexplained, and the
         pairing learnt there settles every remaining message.
         """
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with legacy_store_db(tmp_path / "store.db") as db:
             gmail = db.add_mailbox("mail.example.org")
             imapbox = db.add_mailbox("other.example.org")
             db.set_snapshot(imapbox, db.add_label("Archiv/Chat"), date=datetime.now(UTC))
@@ -1339,7 +1372,7 @@ class TestMigration:
 
     def test_undecidable_folder_is_left_out_rather_than_guessed(self, tmp_path):
         """Two mailboxes with the same folder name and no way to tell them apart."""
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with legacy_store_db(tmp_path / "store.db") as db:
             first = db.add_mailbox("a.example.org")
             second = db.add_mailbox("b.example.org")
             inbox = db.add_label("INBOX")
@@ -1386,18 +1419,10 @@ class TestRebuildWithLog:
         assert result.replay.files == 2
         assert result.replay.applied == 2
         assert result.replay.unknown == 0
-        with metadb.MetaDatabase(tmp_path / "out.db") as db:
+        with index_db.IndexDatabase(tmp_path / "out.db") as db:
             msg_id = db.store_id_map()[store_id]
-            assert db.message_mailboxes()[msg_id] == ["mail.example.org"]
-            labels = [
-                row[0]
-                for row in db.execute(
-                    "SELECT l.name FROM message_label ml JOIN label l USING (label_id) "
-                    "WHERE message_id=?",
-                    (msg_id,),
-                ).fetchall()
-            ]
-            assert sorted(labels) == ["INBOX", "\\Sent"]
+            assert _mailboxes_of(db, msg_id) == ["mail.example.org"]
+            assert _labels_of(db, msg_id) == ["INBOX", "\\Sent"]
 
     def test_replay_restores_a_message_held_in_several_mailboxes(self, tmp_path):
         store_id = self._archive_with_log(
@@ -1407,12 +1432,9 @@ class TestRebuildWithLog:
 
         jobs.create_db(tmp_path, tmp_path / "out.db")
 
-        with metadb.MetaDatabase(tmp_path / "out.db") as db:
+        with index_db.IndexDatabase(tmp_path / "out.db") as db:
             msg_id = db.store_id_map()[store_id]
-            assert sorted(db.message_mailboxes()[msg_id]) == [
-                "mail.example.org",
-                "other.example.org",
-            ]
+            assert _mailboxes_of(db, msg_id) == ["mail.example.org", "other.example.org"]
 
     def test_log_entries_for_absent_messages_are_counted_not_invented(self, tmp_path):
         """A blob removed from the archive must not reappear as a database row."""
@@ -1424,7 +1446,7 @@ class TestRebuildWithLog:
 
         assert result.replay.unknown == 1
         assert result.replay.applied == 0
-        with metadb.MetaDatabase(tmp_path / "out.db") as db:
+        with index_db.IndexDatabase(tmp_path / "out.db") as db:
             assert db.store_id_map() == {}
 
     def test_an_existing_database_is_refused(self, tmp_path):
@@ -1442,12 +1464,12 @@ class TestRebuildWithLog:
         store.add(DUMMY_EML)
         target = tmp_path / "out.db"
         jobs.create_db(tmp_path, target)
-        with metadb.MetaDatabase(target) as db:
+        with index_db.IndexDatabase(target) as db:
             db.add_message("stale", "<stale@example.com>", None, "Gone from the archive")
 
         jobs.create_db(tmp_path, target, force=True)
 
-        with metadb.MetaDatabase(target) as db:
+        with index_db.IndexDatabase(target) as db:
             assert "stale" not in db.store_id_map()
 
     def test_an_interrupted_build_leaves_the_previous_database_alone(self, tmp_path):
@@ -1457,7 +1479,7 @@ class TestRebuildWithLog:
         jobs.create_db(tmp_path, target)
         before = target.read_bytes()
 
-        with patch("mailvault.jobs.storedb._replay_metalog", side_effect=KeyboardInterrupt):
+        with patch("mailvault.jobs.db._replay_metalog", side_effect=KeyboardInterrupt):
             with pytest.raises(KeyboardInterrupt):
                 jobs.create_db(tmp_path, target, force=True)
 
@@ -1708,7 +1730,7 @@ class TestVerify:
     def test_verify_leaves_snapshot_untouched(self, tmp_path):
         job = _make_job(folders=["INBOX"])
         old_snapshot = datetime(2026, 2, 1, tzinfo=UTC)
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with legacy_store_db(tmp_path / "store.db") as db:
             db.set_snapshot(
                 db.add_mailbox("test-job"),
                 db.add_label("INBOX"),
@@ -1722,7 +1744,7 @@ class TestVerify:
 
             jobs.verify(job, tmp_path)
 
-        with metadb.MetaDatabase(tmp_path / "store.db") as db:
+        with store_db.StoreDatabase(tmp_path / "store.db") as db:
             assert db.all_snapshots() == [("test-job", "INBOX", old_snapshot.isoformat())]
 
     def test_rejects_exchange_journal(self, tmp_path):
@@ -1787,7 +1809,7 @@ class TestUpdateDbFromArchive:
 
         jobs.create_db(tmp_path, tmp_path / "out.db", mailbox="test")
 
-        with metadb.MetaDatabase(tmp_path / "out.db") as db:
+        with index_db.IndexDatabase(tmp_path / "out.db") as db:
             rows = db.execute("SELECT * FROM message").fetchall()
             assert len(rows) == 1
 
@@ -1797,7 +1819,7 @@ class TestUpdateDbFromArchive:
 
         jobs.create_db(tmp_path, tmp_path / "out.db")
 
-        with metadb.MetaDatabase(tmp_path / "out.db") as db:
+        with index_db.IndexDatabase(tmp_path / "out.db") as db:
             rows = db.execute("SELECT * FROM message").fetchall()
             assert len(rows) == 1
             # No mailbox assignment
@@ -1834,7 +1856,7 @@ class TestRefreshDb:
         assert result.rebuilt is False
         assert result.files == 1  # only the new log file was read
         assert result.messages == 1  # only the new message was inserted
-        with metadb.MetaDatabase(db_path) as db:
+        with index_db.IndexDatabase(db_path) as db:
             assert len(db.store_id_map()) == 2
 
     def test_an_up_to_date_database_is_left_untouched(self, tmp_path):
@@ -1857,7 +1879,7 @@ class TestRefreshDb:
 
         assert result.rebuilt is True
         assert result.messages == 1
-        with metadb.MetaDatabase(db_path) as db:
+        with index_db.IndexDatabase(db_path) as db:
             assert len(db.store_id_map()) == 1
 
     def test_a_full_build_says_why_before_it_starts(self, tmp_path, caplog):
@@ -1911,7 +1933,7 @@ class TestBackupIndexDb:
 
         db_path = tmp_path / DEFAULT_QUERY_DB_NAME
         assert db_path.exists()
-        with metadb.MetaDatabase(db_path) as db:
+        with index_db.IndexDatabase(db_path) as db:
             assert len(db.store_id_map()) == 1
 
     def test_backup_writes_no_projection_by_default(self, tmp_path):
