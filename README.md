@@ -67,7 +67,7 @@ To pin a specific release, or to install the current development state straight
 from the repository:
 
 ```console
-$ uv tool install mailvault==0.10.0
+$ uv tool install mailvault==0.11.0
 $ uv tool install git+https://github.com/sniner/mailvault
 ```
 
