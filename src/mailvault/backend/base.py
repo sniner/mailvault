@@ -35,8 +35,8 @@ class BackupResult:
 
     `failed` counts messages that were seen on the server but could not be
     stored locally. A run with failures is incomplete, so the caller must not
-    advance the incremental snapshot — otherwise those messages would fall
-    outside the date filter of every future run and stay lost for good.
+    advance the incremental snapshot — otherwise those messages would sit below
+    the resume point of every future run and stay lost for good.
 
     `resume` is where the next pass over this folder may carry on, in whatever
     shape the backend that produced it uses. It is built from what this pass

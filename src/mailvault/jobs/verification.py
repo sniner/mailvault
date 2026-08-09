@@ -2,9 +2,11 @@
 
 A last resort, not part of the routine: a folder whose downloads partly failed
 does not advance its resume point, so the next backup fetches it again. What is
-left for verify are archives from older versions and mail moved into a folder
-with an internal date older than the point -- the latter is what the move to
-UID and delta resume points removes.
+left for verify is the message that leaves the archive after it was stored --
+quarantined by `archive check`, or lost in a copy or a restore -- which no
+resume point can notice, since that folder is done as far as it is concerned.
+Mail moved into a folder with an older internal date used to belong here too;
+UID and delta resume points closed that one.
 
 The comparison itself is `reconcile`, which the backup runner also uses when it
 has to read a folder in full.

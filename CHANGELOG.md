@@ -20,7 +20,8 @@
 
 - **A search and an export make a pipeline.** The table shortens the message id to be read rather
   than typed; `--ids` prints them in full and prints nothing else, so
-  `db search --from ruhl --ids | xargs mailvault archive export -o ./out/` is the whole story.
+  `db search --from example.com --ids | xargs mailvault archive export -o ./out/` is the
+  whole story.
   `--csv` and `--json` print the full result, ids in full, for everything else
 
 ### Changed
@@ -61,6 +62,13 @@
   are true, they are just not complete -- so the only way anybody finds out is being told, before
   they base something on it rather than after
 
+- **The README is a README again, and the details moved to `docs/deep-dive.md`.** It had grown to
+  a thousand lines in which the answer to "what is this and how do I start" lay somewhere between
+  the SMB write semantics and the parameter tables. What is left is the short way through: what
+  mailvault is for, how to install it, how to make an archive, what goes into `mailvault.toml`,
+  how to back up and keep it current, the query database, and the `archive` commands. Everything
+  that explains *why* -- and the full configuration reference -- is in the deep dive, one link away
+
 ### Removed
 
 - **`archive create-db` is gone; it is `db create`.** With it goes its second argument: the
@@ -74,6 +82,18 @@
   to where it belongs, alongside the rest of the code for archives written by older versions
 
 ### Fixed
+
+- **`archive migrate --help` no longer says a backup will do it for you.** It has not been true
+  since 0.10.0, where every command but `init` and `migrate` began refusing an archive that has
+  not been lifted -- so the one reader who most needed the text, somebody working out whether they
+  have to run it, was told they could skip it and then met a refusal from whatever they ran next.
+  It now says what the refusal says: this is the first thing to do after upgrading
+
+- **`archive check` no longer sends its reader to a command that is gone.** Where it reports
+  messages belonging to no known place, it offered `archive create-db` as the way to find them
+  again -- renamed to `db create` in this release, so the advice ended in "invalid choice". A hint
+  that leads nowhere costs more than no hint: the reader spends the time *and* stops believing the
+  next one
 
 - **The metadata log is read once per run, not once per job.** An archive has one log and it names
   every place in it, so each job was reading all of it to keep the part that is theirs. On a
