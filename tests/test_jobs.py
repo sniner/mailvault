@@ -2221,3 +2221,108 @@ class TestTheArchiveIsNamedOnce:
         assert any(
             "1 message(s) recorded in 1 place(s)" in r.getMessage() for r in caplog.records
         )
+
+
+class TestAResumePointTheSourceRejected:
+    """#6: `head.resume` was only ever set, never emptied.
+
+    A source that declares a point void gets it offered again on the next run,
+    rejects it again, and the whole folder is reconciled from scratch -- every
+    night, indefinitely. It costs time and never data, which is exactly why it
+    could sit there unnoticed.
+    """
+
+    @staticmethod
+    def _client(resume_lost: bool, then: base.BackupResult | None = None):
+        client = _make_mock_client()
+        first = base.BackupResult(total=0, failed=0, resume_lost=resume_lost)
+        client.folder_backup.side_effect = [first, then or base.BackupResult(total=0, failed=0)]
+        return client
+
+    def _run(self, client, tmp_path):
+        job = _make_job(folders=["INBOX"])
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+            jobs.backup(job, tmp_path)
+        return heads.read(tmp_path / heads.DEFAULT_HEADS_DIR, "test-job", "INBOX")
+
+    def _with_point(self, tmp_path):
+        marker.write(tmp_path)
+        heads.write(
+            tmp_path / heads.DEFAULT_HEADS_DIR,
+            heads.Head(
+                job="test-job",
+                folder="INBOX",
+                last_run=datetime(2026, 8, 1, tzinfo=UTC).isoformat(),
+                resume={"kind": "imap-uid", "uidvalidity": 1, "uid": 42},
+            ),
+        )
+
+    def test_a_void_point_is_forgotten(self, tmp_path):
+        self._with_point(tmp_path)
+
+        head = self._run(self._client(resume_lost=True), tmp_path)
+
+        assert head is not None
+        assert head.resume is None, "the source refused it; offering it again is a loop"
+
+    def test_a_point_the_source_still_honours_survives_a_quiet_pass(self, tmp_path):
+        """The rule this must not break: no news is not a reason to forget."""
+        self._with_point(tmp_path)
+
+        head = self._run(self._client(resume_lost=False), tmp_path)
+
+        assert head is not None
+        assert head.resume == {"kind": "imap-uid", "uidvalidity": 1, "uid": 42}
+
+    def test_a_new_point_replaces_the_void_one(self, tmp_path):
+        self._with_point(tmp_path)
+        fresh = {"kind": "imap-uid", "uidvalidity": 2, "uid": 1}
+
+        head = self._run(
+            self._client(True, base.BackupResult(total=0, failed=0, resume=fresh)), tmp_path
+        )
+
+        assert head is not None
+        assert head.resume == fresh
+
+
+class TestAnEmptyFolderDoesNotCostTheWholeLog:
+    """#7, measured: four empty Sent folders, 2.6 s of a 12.5 s run, every run."""
+
+    def _run(self, tmp_path, caplog):
+        marker.write(tmp_path)
+        job = _make_job(folders=["Sent"])
+        client = _make_mock_client()
+        client.folder_backup.return_value = base.BackupResult(total=0, failed=0)
+        with caplog.at_level(logging.INFO):
+            with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+                mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+                mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+                jobs.backup(job, tmp_path)
+        return [r.getMessage() for r in caplog.records]
+
+    def test_a_place_this_program_recorded_nothing_for_is_not_looked_up(self, tmp_path, caplog):
+        """Two runs: the first writes the head, the second must not read the log."""
+        self._run(tmp_path, caplog)
+        caplog.clear()
+
+        messages = self._run(tmp_path, caplog)
+
+        assert not any("reading the metadata log" in m for m in messages), messages
+
+    def test_an_archive_without_heads_still_asks_the_log(self, tmp_path, caplog):
+        """The case the catch-up exists for must keep working.
+
+        No head at all means the question is open -- an archive whose `heads/`
+        was lost holds plenty and says nothing about it.
+        """
+        marker.write(tmp_path)
+        _archive_message(tmp_path, "test-job", "Sent", _eml("<a@example.com>"))
+        for head_file in heads.head_files(tmp_path / heads.DEFAULT_HEADS_DIR):
+            head_file.unlink()
+
+        messages = self._run(tmp_path, caplog)
+
+        assert any("reading the metadata log" in m for m in messages), messages

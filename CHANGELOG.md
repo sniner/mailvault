@@ -75,6 +75,22 @@
 
 ### Fixed
 
+- **A resume point the source rejects is forgotten instead of offered again.** It was only ever
+  set, never cleared, so a folder whose point went void -- a UIDVALIDITY change, a `410 Gone` --
+  kept it, offered it on the next run, had it refused again, and reconciled itself from scratch
+  every night from then on. Nothing was ever lost by it and nothing ever got better either. A
+  point the source refuses buys no coverage, so it goes; a quiet pass that simply had no new
+  point to offer still leaves the old one standing, which is the case this must not break
+
+- **An empty folder no longer costs a reading of the whole metadata log.** A folder with nothing on
+  the server earns no resume point, and without one the next run considers catching it up by
+  listing -- which meant reading every file of the log, once per job, to find out that the place
+  holds nothing. On a real archive four empty `Sent` folders spent 2.6 seconds of a 12.5-second
+  backup on it, on every run, and the log grows between compactions while they stay empty. The
+  archive's own record of the place answers it for the price of one small file. Where there is no
+  such record the log is read as before: an archive whose resume points were lost is exactly what
+  the catch-up is for
+
 - **A `verify --repair` that recovers nothing no longer changes the archive.** Every message it
   fetched had its place written to the metadata log, including the copies that turned out to be
   duplicates of something already recorded there -- an observation the log already held, which the

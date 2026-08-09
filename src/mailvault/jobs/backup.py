@@ -64,6 +64,7 @@ def _record_pass(
     folder: str,
     last_run: datetime,
     resume: dict | None,
+    void_previous: bool = False,
 ) -> None:
     """Note that a pass read this folder, and where the next one may carry on.
 
@@ -76,15 +77,29 @@ def _record_pass(
     also keeps the chain head of the metadata log, which belongs to `compact`
     and not to this pass.
 
+    `void_previous` is the one case where the old point must go: the source
+    itself declared it dead. Keeping it then is not caution but a loop -- the
+    next run offers the same dead point, the source rejects it again, and the
+    whole folder is reconciled from scratch every night, for good. Nothing is
+    lost by forgetting it, because a point the source refuses buys no coverage.
+
     A head that cannot be written is logged and otherwise tolerated. The folder
-    is simply fetched again next time, which the content-addressed storage
-    absorbs; aborting here would instead cost the remaining folders of the run
-    for a failure that has no effect on the archived mail.
+    is simply fetched again next time, which the storage absorbs; aborting here
+    would instead cost the remaining folders of the run for a failure that has
+    no effect on the archived mail.
     """
     head = heads.read(heads_root, job_name, folder) or heads.Head(job=job_name, folder=folder)
     head.last_run = last_run.isoformat()
     if resume is not None:
         head.resume = resume
+    elif void_previous and head.resume is not None:
+        log.info(
+            "%s::%s: the resume point the source rejected is forgotten,"
+            " so the next run does not offer it again",
+            job_name,
+            folder,
+        )
+        head.resume = None
     try:
         heads.write(heads_root, head)
     except OSError as exc:
@@ -179,6 +194,7 @@ def _backup_folder(
             return caught_up
 
     observed_at = datetime.now(UTC)
+    void = False
     log_writer = metalog.LogWriter(log_root, heads_root)
     result = mb.folder_backup(
         folder,
@@ -192,7 +208,12 @@ def _backup_folder(
         # than deciding for us. Listing beats downloading the folder again, and
         # where that is not on offer the full read is at least an explicit one.
         log.info("%s::%s: the resume point is void", job.name, folder)
-        caught_up = _catch_up_if_possible(mb, store, job, folder, heads_root, log_root, places)
+        # From here on the stored point is dead whatever happens next: every
+        # path below either earns a new one or must forget this one.
+        void = True
+        caught_up = _catch_up_if_possible(
+            mb, store, job, folder, heads_root, log_root, places, void_previous=True
+        )
         if caught_up is not None:
             return caught_up
         log.info("%s::%s: reading the folder in full", job.name, folder)
@@ -239,7 +260,7 @@ def _backup_folder(
         )
     # Written whatever the outcome: the folder *was* read, and that is all
     # `last_run` claims. Only `resume` is held back when the pass fell short.
-    _record_pass(heads_root, job.name, folder, observed_at, resume)
+    _record_pass(heads_root, job.name, folder, observed_at, resume, void_previous=void)
     _purge_after_seal(mb, job, folder, result, sealed)
     return recorded
 
@@ -271,6 +292,7 @@ def _catch_up_if_possible(
     heads_root: pathlib.Path,
     log_root: pathlib.Path,
     places: _ArchivedPlaces,
+    void_previous: bool = False,
 ) -> bool | None:
     """Bring the folder back in step by listing it, and say whether it wrote.
 
@@ -284,13 +306,32 @@ def _catch_up_if_possible(
     answers and not two, because "did not run" and "ran and found nothing new"
     lead in opposite directions: the first means carry on, the second means this
     folder is done and had nothing to add.
+
+    The head is asked before the log is, and that is the whole point of asking
+    it. Finding out whether a place holds anything used to mean reading the
+    metadata log entire -- every file of it, once per job, as soon as a single
+    folder turned up without a resume point. A folder that is empty on the
+    server never earns one, so this happened on every run, for good: four such
+    folders in one measured run cost 2.6 of its 12.5 seconds, and the log grows
+    between compactions while they stay empty.
+
+    A head with no chain pointer is the cheap answer. This program wrote that
+    head, so it has passed over the place before and recorded nothing in the log
+    for it -- there is nothing here to compare a listing against. Where there is
+    no head at all the question stays open, and the log is read as before: an
+    archive whose `heads/` was lost is exactly what the catch-up exists for.
     """
     if not _can_catch_up(job):
+        return None
+    head = heads.read(heads_root, job.name, folder)
+    if head is not None and head.log is None:
         return None
     archived = places.of(folder)
     if not archived:
         return None
-    return _catch_up_folder(mb, store, job, folder, heads_root, log_root, archived)
+    return _catch_up_folder(
+        mb, store, job, folder, heads_root, log_root, archived, void_previous=void_previous
+    )
 
 
 def _catch_up_folder(
@@ -301,6 +342,7 @@ def _catch_up_folder(
     heads_root: pathlib.Path,
     log_root: pathlib.Path,
     archived: set[str],
+    void_previous: bool = False,
 ) -> bool:
     """Read a folder in full, downloading only what the archive does not have.
 
@@ -350,7 +392,7 @@ def _catch_up_folder(
             folder,
         )
         resume = None
-    _record_pass(heads_root, job.name, folder, observed_at, resume)
+    _record_pass(heads_root, job.name, folder, observed_at, resume, void_previous=void_previous)
     return result.restored + result.recovered_copies > 0
 
 
