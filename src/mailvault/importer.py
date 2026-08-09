@@ -15,7 +15,6 @@ import logging
 import os
 import pathlib
 
-from mailvault import mailutils
 from mailvault.store import cas, zstd
 
 log = logging.getLogger(__name__)
@@ -100,22 +99,6 @@ class ExternalMailArchive:
                 eml.unlink()
                 log.debug("%s: file deleted", eml)
         return result
-
-    def addresses(self) -> collections.abc.Generator[tuple[str, str], None, None]:
-        """Yield unique addresses from all emails, tagged "from" or "to"."""
-        addrs = set()
-        for eml in self.walk():
-            from_addr, to_addr = mailutils.addresses(
-                mailutils.decode_email_header(_read_eml(eml))
-            )
-            for addr in from_addr:
-                if addr not in addrs:
-                    addrs.add(addr)
-                    yield "from", addr
-            for addr in to_addr:
-                if addr not in addrs:
-                    addrs.add(addr)
-                    yield "to", addr
 
     def stats(self) -> tuple[int, int]:
         """Return (count, total_size_in_bytes) for all emails in the archive."""

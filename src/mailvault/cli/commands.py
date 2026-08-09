@@ -633,7 +633,7 @@ def _refuse_importing_the_archive(archive: pathlib.Path, source: pathlib.Path) -
 
 
 def run_archive(args: argparse.Namespace) -> int:
-    """Run an `archive` subcommand (stats/import/addresses/compress/create-db/...).
+    """Run an `archive` subcommand (stats/import/compress/create-db/...).
 
     Every one of these works on the archive `--archive` names, or on the
     directory one is standing in. `import` is the only one with a directory of
@@ -654,9 +654,6 @@ def run_archive(args: argparse.Namespace) -> int:
     elif cmd == "stats":
         count, size = _external(archive, args.docuware).stats()
         print(f"{count:,} emails, {_human_size(size)} total")
-    elif cmd == "addresses":
-        for where, addr in _external(archive, args.docuware).addresses():
-            print(where, addr)
     elif cmd == "import":
         _refuse_importing_the_archive(archive, args.source)
         source = _external(args.source, args.docuware)

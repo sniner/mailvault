@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+
+- **`archive addresses` is gone.** It read and parsed every message in the archive and printed the
+  sender and recipient addresses it had not printed yet, each tagged `from` or `to`: no counts, no
+  order, no way to ask for a subset, and no way back from an address to a message. It comes from
+  the `ib-archive` days, when a heap of `.eml` files was all there was and there was nothing to
+  query -- its `--docuware` switch says as much, and since 0.10.0 that switch could not even be
+  used, because every `archive` subcommand refuses a directory that is not a marked archive. What
+  it did is a query, and queries belong in the query database: build one with `archive create-db`
+  (or keep it in step with `--index-db`) and ask it for `SELECT address FROM address`, where the
+  answer can be counted, sorted, narrowed and joined back to the messages it came from
+
 ## 0.10.0 (2026-08-09)
 
 ### Added

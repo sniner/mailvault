@@ -30,8 +30,8 @@ def test_mail_archive_stats(tmp_path, dummy_eml_bytes):
 
 
 def test_mail_archive_sees_compressed(tmp_path, dummy_eml_bytes):
-    # Regression: stats/addresses/import must not be blind to zstd-compressed
-    # archives written with --compress (files end in .eml.zst).
+    # Regression: stats/import must not be blind to zstd-compressed archives
+    # written with --compress (files end in .eml.zst).
     store = cas.ContentAddressedStorage(root_dir=tmp_path, suffix=".eml", compress=True)
     store.add(dummy_eml_bytes)
 
@@ -42,10 +42,6 @@ def test_mail_archive_sees_compressed(tmp_path, dummy_eml_bytes):
 
     count, _ = arch.stats()
     assert count == 1
-
-    # addresses() must transparently decompress rather than parse zstd bytes.
-    addrs = {addr for _, addr in arch.addresses()}
-    assert "test@example.com" in addrs
 
 
 def test_mail_archive_import_compressed_roundtrip(tmp_path, dummy_eml_bytes):

@@ -501,14 +501,6 @@ file should not cost you the conversion of a whole archive. Those files are
 named, left exactly as they are, and the command exits non-zero, so a script
 finds out about a conversion that only partly happened.
 
-### Email addresses
-
-List all sender and recipient addresses found in the archive:
-
-```console
-$ mailvault --archive ./backup archive addresses
-```
-
 ### Querying an archive with SQL
 
 The archive itself holds no database. To run SQL against it, build one:
@@ -701,7 +693,7 @@ command, everything else after it.
 | `ib-mailbox --config c.toml folders` | `mailvault folders`, from inside the archive |
 | `ib-mailbox --config c.toml backup <dest>` | `mailvault --archive <dest> backup` |
 | `ib-mailbox --config c.toml verify [--repair] <dest>` | `mailvault --archive <dest> verify [--repair]` |
-| `ib-archive stats\|import\|addresses\|compress\|decompress <dir>` | `mailvault --archive <dir> archive stats\|import\|addresses\|compress\|decompress` |
+| `ib-archive stats\|import\|compress\|decompress <dir>` | `mailvault --archive <dir> archive stats\|import\|compress\|decompress` |
 | `ib-archive db-from-archive --mailbox NAME <dir>` | `mailvault --archive <dir> archive create-db <database>` |
 | `ib-copy --config c.toml copy [--idle]` | — removed, see below |
 

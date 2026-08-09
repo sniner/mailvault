@@ -256,17 +256,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Message id, as the reports print it",
     )
 
-    a_addr = asub.add_parser(
-        "addresses",
-        help="List all email addresses in the archive",
-        description="Show mail addresses of all emails in the archive.",
-    )
-    a_addr.add_argument(
-        "--docuware",
-        action="store_true",
-        help="Directory is a Docuware archive",
-    )
-
     asub.add_parser(
         "compress",
         help="Compress uncompressed archive files",
