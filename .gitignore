@@ -7,6 +7,7 @@
 *.egg-info/
 __pycache__/
 *.log
+.DS_Store
 
 # Job configurations carry credentials and must never reach this public repo.
 # Since 0.7.0 the filename no longer matters -- any file is parsed as TOML, so a
