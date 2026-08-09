@@ -908,6 +908,7 @@ class TestTheLogIsReadOncePerRun:
         marker.write(tmp_path)
         _archive_with_a_log(tmp_path)
         monkeypatch.setattr(conf, "load", lambda *a, **kw: self._config("one", "two", "three"))
+
         # Each job asks for a folder with nothing archived, which is what makes
         # the question get asked at all.
         def _ask(job, args, config, destination=None, places=None):
