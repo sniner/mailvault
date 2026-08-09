@@ -1696,6 +1696,83 @@ class TestVerify:
         assert results[0].restored == 0
         assert len(list(cas.mail_store(tmp_path).walk())) == 1
 
+    def test_a_repair_that_recovers_nothing_leaves_the_log_alone(self, tmp_path):
+        """Measured on `archive-ruhl`: 1,729 duplicates, 1,729 needless entries.
+
+        The log records observations, and an observation already recorded says no
+        more than the first one did -- `compact` exists to take such repeats back
+        out. Writing them and undoing them later is work in both directions, and
+        it meant a repair that found nothing still added a log file and a link to
+        the chain, every single time it ran.
+        """
+        job = _make_job(folders=["INBOX"])
+        same = _eml("<a@example.com>", "Twice")
+        _archive_message(tmp_path, "test-job", "INBOX", same)
+        before = sorted(p.name for p in metalog.log_files(tmp_path / metalog.DEFAULT_LOG_DIR))
+
+        client = _verify_client(
+            [
+                base.MessageRef(msg_id="id-a1", message_id="<a@example.com>"),
+                base.MessageRef(msg_id="id-a2", message_id="<a@example.com>"),
+            ],
+            {"id-a2": same},
+        )
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            jobs.verify(job, tmp_path, repair=True)
+
+        after = sorted(p.name for p in metalog.log_files(tmp_path / metalog.DEFAULT_LOG_DIR))
+        assert after == before, "a fruitless repair must not touch the archive"
+
+    def test_a_gap_closed_by_bytes_already_stored_is_still_recorded(self, tmp_path):
+        """The case the rule must not swallow.
+
+        The same message archived under another folder: the store has the bytes,
+        so `add` says EXISTS -- but *this* place has no record of it, and that
+        record is exactly what was missing.
+        """
+        job = _make_job(folders=["INBOX"])
+        elsewhere = _eml("<a@example.com>", "Filed under Sent")
+        _archive_message(tmp_path, "test-job", "Sent", elsewhere)
+
+        client = _verify_client(
+            [base.MessageRef(msg_id="id-a", message_id="<a@example.com>")],
+            {"id-a": elsewhere},
+        )
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            results = jobs.verify(job, tmp_path, repair=True)
+
+        assert results[0].restored == 1
+        places = places_from_log(tmp_path / metalog.DEFAULT_LOG_DIR)
+        assert ("test-job", "INBOX") in places, "the place had to be written down"
+
+    def test_a_fruitless_repair_says_nothing_per_message(self, tmp_path, caplog):
+        """It used to say "restored ... EXISTS" -- for a message it did not restore."""
+        job = _make_job(folders=["INBOX"])
+        same = _eml("<a@example.com>", "Twice")
+        _archive_message(tmp_path, "test-job", "INBOX", same)
+
+        client = _verify_client(
+            [
+                base.MessageRef(msg_id="id-a1", message_id="<a@example.com>"),
+                base.MessageRef(msg_id="id-a2", message_id="<a@example.com>"),
+            ],
+            {"id-a2": same},
+        )
+        with caplog.at_level(logging.INFO):
+            with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+                mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+                mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+                jobs.verify(job, tmp_path, repair=True)
+
+        assert not any("restored" in r.getMessage() for r in caplog.records)
+
     def test_message_id_matching_ignores_brackets_and_case(self, tmp_path):
         job = _make_job(folders=["INBOX"])
         _archive_message(tmp_path, "test-job", "INBOX", _eml("<Mixed@Example.COM>"))

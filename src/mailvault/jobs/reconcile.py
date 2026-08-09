@@ -64,6 +64,10 @@ log = logging.getLogger(__name__)
 # is mounted on.
 ARCHIVE_PROGRESS_EVERY = 10_000
 SERVER_PROGRESS_EVERY = 5_000
+# Downloading is the slowest of the three by an order of magnitude -- a round
+# trip per message, measured at 131 ms over a real mailbox -- so it says where it
+# is far more often than the passes that only read.
+FETCH_PROGRESS_EVERY = 250
 
 
 @dataclasses.dataclass
@@ -220,10 +224,21 @@ def reconcile_folder(
     if not repair or not wanted:
         return result
 
-    # A fetched message is new archive content, so its location has to reach the
-    # log as well -- otherwise nothing records where it belongs.
+    # A fetched message whose place is not yet recorded needs its location in the
+    # log -- otherwise nothing says it belongs here. One that *is* recorded needs
+    # nothing: the log holds observations, a repeated observation says no more
+    # than the first, and `compact` exists to take such repeats back out. Writing
+    # them and undoing them later is work in both directions.
+    #
+    # It is what made a repair that recovered nothing still change the archive:
+    # 1,729 duplicates fetched, 1,729 entries written, a new log file and a new
+    # link in the chain, every time it ran.
     log_writer = metalog.LogWriter(log_root, heads_root)
-    for ref, claim in wanted:
+    recorded = set(archived)
+    log.info("%s: fetching %s message(s)", ctx, f"{len(wanted):,}")
+    for fetched, (ref, claim) in enumerate(wanted, start=1):
+        if fetched % FETCH_PROGRESS_EVERY == 0:
+            log.info("%s: %s of %s fetched", ctx, f"{fetched:,}", f"{len(wanted):,}")
         label = ref.message_id or ref.msg_id
         try:
             msg = mb.fetch_message(ref.msg_id, folder)
@@ -233,21 +248,35 @@ def reconcile_folder(
             continue
         try:
             status, store_id, _path = store.add(msg)
-            log_writer.add(job_name, [folder], store_id)
+            if store_id not in recorded:
+                log_writer.add(job_name, [folder], store_id)
+                recorded.add(store_id)
         except Exception as exc:
             log.exception("%s: storing %s failed: %s", ctx, label, exc)
             result.failed += 1
             continue
-        log.info("%s: restored %s: %s id=%s", ctx, label, status, store_id)
         if claim is Claim.ABSENT:
             # A gap closed, whether or not the bytes were new here: the archive
             # may well hold this message under another folder, and what was
             # missing at *this* place is the record that it belongs here too.
             result.restored += 1
+            log.info("%s: restored %s: %s id=%s", ctx, label, status, store_id)
         elif status == "NEW":
             # An extra copy that was not a duplicate after all -- the byte-
             # different second version, and the reason these get fetched.
             result.recovered_copies += 1
+            log.info(
+                "%s: %s: a further copy whose content differs, kept id=%s",
+                ctx,
+                label,
+                store_id,
+            )
+        else:
+            # The ordinary outcome for a further copy, and the reason it is not
+            # said out loud: on a folder that holds thousands of duplicates this
+            # is thousands of lines reporting that nothing happened -- under the
+            # word "restored", which is what it was doing before.
+            log.debug("%s: %s: a further copy, identical to the archived one", ctx, label)
 
     # Whether the locations reached disk is the caller's business: a pass that
     # fetched every message and could not write down where any of them belongs

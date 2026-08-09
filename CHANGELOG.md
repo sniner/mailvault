@@ -75,6 +75,19 @@
 
 ### Fixed
 
+- **A `verify --repair` that recovers nothing no longer changes the archive.** Every message it
+  fetched had its place written to the metadata log, including the copies that turned out to be
+  duplicates of something already recorded there -- an observation the log already held, which the
+  next `compact` would take straight back out. On the reference archive that was 1,729 needless
+  entries, a new log file and a new link in the chain, on every run. A location is now written only
+  where it is not recorded yet; the case that matters is untouched, because a message archived
+  under *another* folder is not recorded under this one and still gets its entry
+
+- **The repair no longer says "restored" about messages it did not restore.** A copy the archive
+  already held was reported as restored, once per message -- 1,729 lines claiming the opposite of
+  what happened. Now only what changed the archive is named, the download says how far it has got
+  every 250 messages, and a folder with nothing to fetch stops reporting "0 restored"
+
 - **A backup only refreshes `index.db` when the job wrote something.** It ran once per job
   regardless, and a job with no new mail has nothing to add -- but finding that out means listing
   the whole metadata log directory, which over a network share is 3.9 seconds of a run that had

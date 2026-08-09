@@ -861,3 +861,32 @@ class TestDbCommands:
             commands.run_db(self._db_args(archive, db_command="search"))
 
         assert any("db update" in r.getMessage() for r in caplog.records)
+
+
+class TestVerifyReportRepairCounts:
+    """A folder with nothing to fetch says nothing about fetching."""
+
+    @staticmethod
+    def _results(**overrides: Any) -> list[jobs.VerifyResult]:
+        defaults: dict[str, Any] = dict(folder="Sent", on_server=0, missing=0)
+        defaults.update(overrides)
+        return [jobs.VerifyResult(**defaults)]
+
+    def test_a_folder_with_nothing_to_do_reports_no_repair_counts(self, capsys):
+        commands.report_verify("job", self._results(), repaired=True)
+
+        line = capsys.readouterr().out.splitlines()[0]
+        assert "restored" not in line, line
+
+    def test_a_folder_that_had_gaps_still_reports_them(self, capsys):
+        commands.report_verify(
+            "job", self._results(on_server=3, missing=2, restored=2), repaired=True
+        )
+
+        assert "2 restored" in capsys.readouterr().out
+
+    def test_further_copies_alone_are_enough_to_report(self, capsys):
+        """Nothing was missing, but something *was* fetched -- say what came of it."""
+        commands.report_verify("job", self._results(on_server=3, extra_copies=1), repaired=True)
+
+        assert "0 restored" in capsys.readouterr().out

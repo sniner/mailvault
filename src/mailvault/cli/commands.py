@@ -123,7 +123,10 @@ def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: boo
         line = f"{job_name}::{r.folder}: {r.on_server:,} on server, {r.missing:,} not archived"
         if r.extra_copies:
             line += f", {r.extra_copies:,} further copies of archived message(s)"
-        if repaired:
+        # Only where the pass had something to fetch. A folder with nothing
+        # missing reporting "0 restored" is a number answering a question nobody
+        # asked, on every line of every repair run.
+        if repaired and (r.missing or r.extra_copies):
             line += f", {r.restored:,} restored"
             if r.recovered_copies:
                 line += f", {r.recovered_copies:,} of the further copies differed and were kept"
