@@ -48,6 +48,14 @@ DEFAULT_QUERY_DB_NAME = "index.db"
 _APPLIED_LOG_DDL = "CREATE TABLE IF NOT EXISTS applied_log (hash TEXT PRIMARY KEY)"
 
 
+class _Outdated(Exception):
+    """The projection on disk was written in a shape this version does not read.
+
+    Raised to leave the `with` block before any work is done, so the rebuild
+    starts from a closed connection and a file that is about to be deleted.
+    """
+
+
 @dataclasses.dataclass
 class ReplayResult:
     """Outcome of applying the metadata log to a database."""
@@ -127,20 +135,25 @@ def _replay_metalog(
 ) -> ReplayResult:
     """Apply every log file to the database, in order.
 
-    Uses the same idempotent methods a backup used to, so replaying is nothing
-    more than calling them again: a message seen in two mailboxes ends up with
-    two rows exactly as the runs that observed it would have written. Entries
-    whose message is not in the archive are counted and skipped -- the blob was
-    removed, and inventing a row for it would describe mail that is not there.
+    Idempotent, so replaying is nothing more than calling it again: a message
+    seen in two places ends up with two rows exactly as the runs that observed it
+    would have written. Entries whose message is not in the archive are counted
+    and skipped -- the blob was removed, and inventing a row for it would
+    describe mail that is not there.
+
+    One log file is one place, and it goes in as one row. A file that names no
+    mailbox is applied all the same: it used to be skipped with a warning, which
+    threw away the only statement it carried. Whether both halves of a place are
+    known is not this reader's business -- the database can hold either as NULL,
+    and a folder without a mailbox is what an import writes.
     """
     result = ReplayResult()
     known = db.store_id_map()
     for logfile in metalog.read_all(log_root):
         result.files += 1
-        if logfile.mailbox is None:
-            log.warning("%s: no mailbox in the header, skipped", metalog.where(logfile.path))
+        if logfile.mailbox is None and logfile.folder is None:
+            log.warning("%s: names no place at all, skipped", metalog.where(logfile.path))
             continue
-        mailbox_id = db.add_mailbox(logfile.mailbox)
         # One transaction per file rather than per entry: the write methods
         # commit individually when called at the top level, which would mean a
         # commit per message and is ruinous over a network share.
@@ -151,9 +164,7 @@ def _replay_metalog(
                 if message_id is None:
                     result.unknown += 1
                     continue
-                db.assign_message_to_mailbox(message_id, mailbox_id)
-                if logfile.folder is not None:
-                    db.add_message_labels(message_id, logfile.folder)
+                db.add_message_location(message_id, logfile.mailbox, logfile.folder)
                 result.applied += 1
     return result
 
@@ -212,7 +223,6 @@ def _build_db(
     log_root = store_path / metalog.DEFAULT_LOG_DIR
     with index_db.IndexDatabase(path=db_path) as db:
         _ensure_applied_log(db)
-        mb_id = db.add_mailbox(mailbox) if mailbox else None
         # One transaction per batch, not per message. Every write method commits
         # on its own when called at the top level, which over a whole archive is
         # half a million commits -- unnoticeable on a RAM disk and hours on a
@@ -221,8 +231,12 @@ def _build_db(
             with db.transaction():
                 for path in batch:
                     msg_id = _insert_message_from_path(db, store, path)
-                    if mb_id:
-                        db.assign_message_to_mailbox(msg_id, mb_id)
+                    if mailbox:
+                        # `--mailbox` files messages the archive records no place
+                        # for. It names a mailbox and no folder, which is exactly
+                        # what it is: an assertion about whose mail this is, and
+                        # none about where in it.
+                        db.add_message_location(msg_id, mailbox, None)
                     result.messages += 1
             # Named for what it is doing, not merely counted. This reads every
             # message in the archive and takes half an hour on a large one, and
@@ -265,7 +279,26 @@ def refresh_db(store_path: pathlib.Path, db_path: pathlib.Path) -> RefreshResult
     log_root = store_path / metalog.DEFAULT_LOG_DIR
     try:
         with index_db.IndexDatabase(path=db_path) as db:
+            found = db.shape_on_open
+            if found != index_db.SCHEMA_VERSION:
+                # Not an error and not a migration: the projection is built from
+                # the archive, so an older shape costs a rebuild and nothing
+                # else. Saying so matters more than it looks -- an incremental
+                # refresh would leave the new tables empty for good, because
+                # `applied_log` reports every log file as already folded in.
+                log.info(
+                    "%s: built by an earlier version (shape %d, this one writes %d),"
+                    " building it again from the whole archive",
+                    utils.under(store_path, db_path),
+                    found,
+                    index_db.SCHEMA_VERSION,
+                )
+                raise _Outdated
             _apply_new_logs(db, store, log_root, result)
+    except _Outdated:
+        db_path.unlink(missing_ok=True)
+        result.rebuilt = True
+        result.messages = create_db(store_path, db_path, force=True).messages
     except sqlite3.DatabaseError as exc:
         log.warning(
             "%s: not a usable database (%s), building one from the whole archive",
@@ -299,12 +332,11 @@ def _apply_new_logs(
         if _log_hash(path) in applied:
             continue
         logfile = metalog.read_log(path)
-        if logfile is None or logfile.mailbox is None:
-            # Unreadable or headerless: leave it unmarked so a later, repaired
-            # file is retried rather than skipped for good.
+        if logfile is None or (logfile.mailbox is None and logfile.folder is None):
+            # Unreadable or naming no place at all: leave it unmarked so a later,
+            # repaired file is retried rather than skipped for good.
             continue
         result.files += 1
-        mailbox_id = db.add_mailbox(logfile.mailbox)
         with db.transaction():
             for store_id in logfile.store_ids:
                 msg_id = known.get(store_id)
@@ -315,9 +347,7 @@ def _apply_new_logs(
                         continue
                     known[store_id] = msg_id
                     result.messages += 1
-                db.assign_message_to_mailbox(msg_id, mailbox_id)
-                if logfile.folder is not None:
-                    db.add_message_labels(msg_id, logfile.folder)
+                db.add_message_location(msg_id, logfile.mailbox, logfile.folder)
                 result.applied += 1
             db.execute(
                 "INSERT OR IGNORE INTO applied_log (hash) VALUES (?)",

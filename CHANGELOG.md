@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Changed
+
+- **`index.db` records a place as one fact.** Which folder of which mailbox a message was seen in
+  used to be split across two independent tables, one naming the mailboxes and one the folders --
+  so a message in two mailboxes came out as two mailboxes and two folders, from which no query can
+  say which folder belonged to which. On the reference archive that is 61.6 % of 130,887 messages.
+  There is now one `message_location` row per place, fed straight from the log, which has held the
+  pairing since 0.9.0. Either half may be missing and neither is ever guessed: a mailbox with no
+  folder is an archive whose history never recorded one, and a folder with no mailbox is a place
+  named by an import. The `label` table is `folder`, finishing a rename the rest of the program
+  did long ago -- Gmail's labels and IMAP's folders differ in how many a message may have, not in
+  what they are
+
+- **`v_messages` holds every message the archive holds.** It inner-joined sender, recipient and
+  subject, so a message it could not complete was simply not in it -- and a message with no
+  readable recipient is not a rarity in mail going back to the nineties, it is the group address
+  and the malformed header. `SELECT count(*)` on the view therefore answered a question nobody
+  asked while looking like an answer to the one they did. Every join is now a left join, and the
+  view gained a `folder` column
+
+- **A projection built by an earlier version is rebuilt, not quietly extended.** `index.db` now
+  records which shape it was written in. Without that marker an older one would gain the new
+  tables, keep the old, and leave the new ones empty for good -- `applied_log` reports every log
+  file as already folded in, so nothing would ever fill them, on a database that answers every
+  query without complaint. There is no upgrade path and there should not be: everything in the
+  projection can be rebuilt from the archive, which is what a mismatch now triggers, with a line
+  saying so
+
+### Removed
+
+- **The dead `snapshot` table is gone from `index.db`.** It held the resume timestamps of an
+  archive that kept its truth in SQLite; since 0.8.0 those live in `heads/`, and nothing has
+  written the table since. Every rebuild created it empty. The reader that still needed it moved
+  to where it belongs, alongside the rest of the code for archives written by older versions
+
 ### Fixed
 
 - **`verify` no longer reports byte-identical duplicates as missing mail.** A server folder can hold

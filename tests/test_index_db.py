@@ -5,16 +5,20 @@ import pytest
 from mailvault.store import index_db, sqlite
 
 
-def _labels(db, message_id):
-    """The label names attached to a message, read straight from the tables."""
-    return [
-        row[0]
+def _places(db, message_id) -> list[tuple[str | None, str | None]]:
+    """The (mailbox, folder) pairs recorded for a message, straight from the tables."""
+    rows = [
+        (row[0], row[1])
         for row in db.execute(
-            "SELECT l.name FROM message_label ml JOIN label l USING (label_id) "
-            "WHERE message_id=?",
+            "SELECT mb.name, f.name FROM message_location loc "
+            "LEFT JOIN mailbox mb USING (mailbox_id) "
+            "LEFT JOIN folder f USING (folder_id) "
+            "WHERE loc.message_id=?",
             (message_id,),
         ).fetchall()
     ]
+    # Sorted on a key that survives the NULLs, which are the interesting rows.
+    return sorted(rows, key=lambda place: (place[0] or "", place[1] or ""))
 
 
 def test_index_db_setup(tmp_path):
@@ -24,14 +28,20 @@ def test_index_db_setup(tmp_path):
         tables = [r[0] for r in res]
         assert "mailbox" in tables
         assert "message" in tables
-        assert "label" in tables
+        assert "folder" in tables
         assert "address" in tables
         assert "subject" in tables
-        assert "snapshot" in tables
-        assert "message_mailbox" in tables
-        assert "message_label" in tables
+        assert "message_location" in tables
         assert "message_sender" in tables
         assert "message_recipient" in tables
+        # What a projection is not: the resume timestamps of an archive that
+        # kept its truth in SQLite. Nothing has written this since 0.8.0, and
+        # creating it in every rebuild made a dead table look like a live one.
+        assert "snapshot" not in tables
+        # And the two relations a place used to be split across.
+        assert "message_mailbox" not in tables
+        assert "message_label" not in tables
+        assert "label" not in tables
 
 
 def test_index_db_setup_views(tmp_path):
@@ -67,7 +77,7 @@ def test_index_db_add_mailbox(tmp_path):
         assert mb_id == mb_id_2
 
 
-def test_index_db_add_message_and_labels(tmp_path):
+def test_index_db_a_place_goes_in_as_one_row(tmp_path):
     db_path = tmp_path / "test.db"
     with index_db.IndexDatabase(db_path) as db:
         msg_id = db.add_message(
@@ -78,50 +88,75 @@ def test_index_db_add_message_and_labels(tmp_path):
         )
         assert msg_id > 0
 
-        db.add_message_labels(msg_id, "Label1", "Label2")
+        db.add_message_location(msg_id, "gmail.com", "INBOX")
+        db.add_message_location(msg_id, "gmail.com", "\\Sent")
 
-        assert set(_labels(db, msg_id)) == {"Label1", "Label2"}
+        assert _places(db, msg_id) == [("gmail.com", "INBOX"), ("gmail.com", "\\Sent")]
 
 
-def test_index_db_add_message_with_mailbox(tmp_path):
+def test_index_db_add_message_with_a_place(tmp_path):
     db_path = tmp_path / "test.db"
     with index_db.IndexDatabase(db_path) as db:
-        mb_id = db.add_mailbox("TestMailbox")
         msg_id = db.add_message(
             store_id="hash_mb",
             email_id="<mb@example.com>",
             date=datetime.now(UTC),
             subject="With Mailbox",
-            mailbox_id=mb_id,
+            mailbox="TestMailbox",
+            folder="INBOX",
         )
-        row = db.execute(
-            "SELECT mailbox_id FROM message_mailbox WHERE message_id=?",
-            (msg_id,),
-        ).fetchone()
-        assert row is not None
-        assert row[0] == mb_id
+
+        assert _places(db, msg_id) == [("TestMailbox", "INBOX")]
 
 
-def test_index_db_assign_message_to_mailbox(tmp_path):
+def test_index_db_the_same_place_twice_is_one_row(tmp_path):
     db_path = tmp_path / "test.db"
     with index_db.IndexDatabase(db_path) as db:
-        mb_id = db.add_mailbox("Box1")
         msg_id = db.add_message(
             store_id="hash_assign",
             email_id="<assign@example.com>",
             date=datetime.now(UTC),
             subject="Assign",
         )
-        db.assign_message_to_mailbox(msg_id, mb_id)
+        db.add_message_location(msg_id, "Box1", "INBOX")
+        db.add_message_location(msg_id, "Box1", "INBOX")
 
-        # Duplicate assignment should not fail (ON CONFLICT IGNORE)
-        db.assign_message_to_mailbox(msg_id, mb_id)
+        assert _places(db, msg_id) == [("Box1", "INBOX")]
 
-        rows = db.execute(
-            "SELECT mailbox_id FROM message_mailbox WHERE message_id=?",
-            (msg_id,),
-        ).fetchall()
-        assert len(rows) == 1
+
+def test_index_db_an_unknown_half_of_a_place_is_null_not_invented(tmp_path):
+    """Both halves may be missing, and neither may be filled in.
+
+    A mailbox with no folder is an archive whose history did not record one; a
+    folder with no mailbox is what an import writes. Guessing either is the one
+    thing this must not do.
+    """
+    db_path = tmp_path / "test.db"
+    with index_db.IndexDatabase(db_path) as db:
+        no_folder = db.add_message("h1", "<a@example.com>", None, "A")
+        db.add_message_location(no_folder, "ruhlgroup.com", None)
+        no_mailbox = db.add_message("h2", "<b@example.com>", None, "B")
+        db.add_message_location(no_mailbox, None, "docuware-2019")
+
+        assert _places(db, no_folder) == [("ruhlgroup.com", None)]
+        assert _places(db, no_mailbox) == [(None, "docuware-2019")]
+
+
+def test_index_db_a_repeated_place_with_an_unknown_half_is_still_one_row(tmp_path):
+    """SQLite holds every NULL distinct, so plain UNIQUE would not catch this.
+
+    The log is replayed on every refresh. Without the IFNULL index that is one
+    new row per run for every message whose folder was never recorded -- which
+    on an archive migrated from an old format is most of them.
+    """
+    db_path = tmp_path / "test.db"
+    with index_db.IndexDatabase(db_path) as db:
+        msg_id = db.add_message("h1", "<a@example.com>", None, "A")
+        for _ in range(3):
+            db.add_message_location(msg_id, "ruhlgroup.com", None)
+            db.add_message_location(msg_id, None, "docuware-2019")
+
+        assert _places(db, msg_id) == [(None, "docuware-2019"), ("ruhlgroup.com", None)]
 
 
 def test_index_db_sender_and_recipients(tmp_path):
@@ -152,15 +187,19 @@ def test_index_db_sender_and_recipients(tmp_path):
 
 
 def test_index_db_labels_are_committed_without_a_following_write(tmp_path):
-    """Labels added last must survive the connection closing."""
+    """Places added last must survive the connection closing."""
     db_path = tmp_path / "test.db"
     with index_db.IndexDatabase(db_path) as db:
         msg_id = db.add_message("aaa", "<a@example.com>", None, "Subject")
-        db.add_message_labels(msg_id, "INBOX", "Archiv/2016")
+        db.add_message_location(msg_id, "gmail.com", "INBOX")
+        db.add_message_location(msg_id, "gmail.com", "Archiv/2016")
 
     with index_db.IndexDatabase(db_path) as db:
         msg_id = db.store_id_map()["aaa"]
-        assert sorted(_labels(db, msg_id)) == ["Archiv/2016", "INBOX"]
+        assert _places(db, msg_id) == [
+            ("gmail.com", "Archiv/2016"),
+            ("gmail.com", "INBOX"),
+        ]
 
 
 def test_index_db_transaction_rollback(tmp_path):
@@ -185,13 +224,13 @@ def test_index_db_transaction_rollback(tmp_path):
 def test_index_db_v_messages_view(tmp_path):
     db_path = tmp_path / "test.db"
     with index_db.IndexDatabase(db_path) as db:
-        mb_id = db.add_mailbox("ViewTest")
         msg_id = db.add_message(
             store_id="hash_view",
             email_id="<view@example.com>",
             date=datetime(2026, 3, 27, tzinfo=UTC),
             subject="View Subject",
-            mailbox_id=mb_id,
+            mailbox="ViewTest",
+            folder="INBOX",
         )
         db.add_message_sender(msg_id, "sender@example.com")
         db.add_message_recipients(msg_id, "rcpt@example.com")
@@ -202,7 +241,34 @@ def test_index_db_v_messages_view(tmp_path):
         assert row["sender"] == "sender@example.com"
         assert row["recipient"] == "rcpt@example.com"
         assert row["mailbox"] == "ViewTest"
+        assert row["folder"] == "INBOX"
         assert row["subject"] == "View Subject"
+
+
+def test_index_db_v_messages_holds_every_message_the_archive_holds(tmp_path):
+    """The view used to inner-join sender, recipient and subject.
+
+    A message the view could not complete simply was not in it -- and a message
+    with no readable recipient is not a rarity in an archive going back to the
+    nineties. `SELECT count(*) FROM v_messages` then answered a question nobody
+    asked, and looked like an answer to the one they did.
+    """
+    db_path = tmp_path / "test.db"
+    with index_db.IndexDatabase(db_path) as db:
+        complete = db.add_message("h1", "<a@example.com>", None, "A")
+        db.add_message_sender(complete, "from@example.com")
+        db.add_message_recipients(complete, "to@example.com")
+        db.add_message_location(complete, "gmail.com", "INBOX")
+        # `To: Undisclosed recipients:;` -- legal RFC 5322, and no address.
+        db.add_message("h2", "<b@example.com>", None, "B")
+        # Nothing at all: no sender, no recipient, no subject, no place.
+        db.add_message("h3", "", None, "")
+
+        stored = db.execute("SELECT count(*) FROM message").fetchone()[0]
+        in_view = db.execute("SELECT count(DISTINCT store_id) FROM v_messages").fetchone()[0]
+
+        assert stored == 3
+        assert in_view == stored
 
 
 def test_index_db_v_duplicates_view(tmp_path):

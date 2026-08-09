@@ -107,34 +107,25 @@ def _make_mock_client():
     return client
 
 
-def _mailboxes_of(db, message_id: int) -> list[str]:
-    """The mailboxes a projection records for a message, straight from the tables.
+def _places_of(db, message_id: int) -> list[tuple[str | None, str | None]]:
+    """The (mailbox, folder) pairs a projection records, straight from the tables.
 
     Read with SQL rather than through an accessor: the projection has no reader
     for this in production -- the log answers it during a run -- and a method
     that exists only so a test can call it is the kind of thing that outlives its
     reason. `mailvault.legacy.store_db` has one because the migration needs it.
     """
-    return sorted(
-        row[0]
+    rows = [
+        (row[0], row[1])
         for row in db.execute(
-            "SELECT mb.name FROM message_mailbox mm JOIN mailbox mb USING (mailbox_id) "
-            "WHERE mm.message_id=?",
+            "SELECT mb.name, f.name FROM message_location loc "
+            "LEFT JOIN mailbox mb USING (mailbox_id) "
+            "LEFT JOIN folder f USING (folder_id) "
+            "WHERE loc.message_id=?",
             (message_id,),
         ).fetchall()
-    )
-
-
-def _labels_of(db, message_id: int) -> list[str]:
-    """The labels a projection records for a message, straight from the tables."""
-    return sorted(
-        row[0]
-        for row in db.execute(
-            "SELECT l.name FROM message_label ml JOIN label l USING (label_id) "
-            "WHERE ml.message_id=?",
-            (message_id,),
-        ).fetchall()
-    )
+    ]
+    return sorted(rows, key=lambda place: (place[0] or "", place[1] or ""))
 
 
 # ---------------------------------------------------------------------------
@@ -1409,7 +1400,7 @@ class TestRebuildWithLog:
         writer.seal(datetime(2026, 8, 1, tzinfo=UTC))
         return store_id
 
-    def test_replay_restores_mailbox_and_labels(self, tmp_path):
+    def test_replay_restores_the_places_a_message_was_seen_in(self, tmp_path):
         store_id = self._archive_with_log(tmp_path, [("mail.example.org", ["INBOX", "\\Sent"])])
 
         result = jobs.create_db(tmp_path, tmp_path / "out.db")
@@ -1421,20 +1412,32 @@ class TestRebuildWithLog:
         assert result.replay.unknown == 0
         with index_db.IndexDatabase(tmp_path / "out.db") as db:
             msg_id = db.store_id_map()[store_id]
-            assert _mailboxes_of(db, msg_id) == ["mail.example.org"]
-            assert _labels_of(db, msg_id) == ["INBOX", "\\Sent"]
+            assert _places_of(db, msg_id) == [
+                ("mail.example.org", "INBOX"),
+                ("mail.example.org", "\\Sent"),
+            ]
 
-    def test_replay_restores_a_message_held_in_several_mailboxes(self, tmp_path):
+    def test_replay_keeps_which_folder_of_which_mailbox(self, tmp_path):
+        """The pairing the log holds and the database used to take apart again.
+
+        Two mailboxes, one folder name each, and the same message in both. Split
+        across `message_mailbox` and `message_label` this came out as two
+        mailboxes and one folder, from which no query can tell whether the
+        message was in `INBOX` of one, of the other, or of both.
+        """
         store_id = self._archive_with_log(
             tmp_path,
-            [("mail.example.org", ["INBOX"]), ("other.example.org", ["INBOX"])],
+            [("mail.example.org", ["INBOX"]), ("other.example.org", ["Archiv"])],
         )
 
         jobs.create_db(tmp_path, tmp_path / "out.db")
 
         with index_db.IndexDatabase(tmp_path / "out.db") as db:
             msg_id = db.store_id_map()[store_id]
-            assert _mailboxes_of(db, msg_id) == ["mail.example.org", "other.example.org"]
+            assert _places_of(db, msg_id) == [
+                ("mail.example.org", "INBOX"),
+                ("other.example.org", "Archiv"),
+            ]
 
     def test_log_entries_for_absent_messages_are_counted_not_invented(self, tmp_path):
         """A blob removed from the archive must not reappear as a database row."""
@@ -1822,9 +1825,11 @@ class TestUpdateDbFromArchive:
         with index_db.IndexDatabase(tmp_path / "out.db") as db:
             rows = db.execute("SELECT * FROM message").fetchall()
             assert len(rows) == 1
-            # No mailbox assignment
-            mm_rows = db.execute("SELECT * FROM message_mailbox").fetchall()
-            assert len(mm_rows) == 0
+            # The message is there and no place is claimed for it -- which is
+            # the truth, and is what an archive built by `archive import` looks
+            # like all the way through.
+            places = db.execute("SELECT * FROM message_location").fetchall()
+            assert len(places) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1844,6 +1849,32 @@ class TestRefreshDb:
         assert result.rebuilt is True
         assert result.messages == 1
         assert db_path.exists()
+
+    def test_a_projection_from_an_earlier_version_is_built_again(self, tmp_path):
+        """The trap the shape marker exists to close.
+
+        The tables are created with IF NOT EXISTS, so an older projection would
+        quietly gain the new ones and keep the old -- and `applied_log`, which
+        survives untouched, reports every log file as already folded in. The new
+        tables would then stay empty for good, on a database that answers every
+        query without complaint.
+        """
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+        refresh_db(tmp_path, db_path)
+        with index_db.IndexDatabase(db_path) as db:
+            db.execute("PRAGMA user_version = 0")
+            db.commit()
+            db.execute("DELETE FROM message_location")
+            db.commit()
+
+        result = refresh_db(tmp_path, db_path)
+
+        assert result.rebuilt is True
+        with index_db.IndexDatabase(db_path) as db:
+            assert db.schema_version() == index_db.SCHEMA_VERSION
+            (msg_id,) = db.store_id_map().values()
+            assert _places_of(db, msg_id) == [("job", "INBOX")]
 
     def test_only_new_logs_are_applied_on_a_refresh(self, tmp_path):
         _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
