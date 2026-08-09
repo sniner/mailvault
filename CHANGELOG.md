@@ -85,7 +85,7 @@
   decision
 
 - **`verify` no longer reports byte-identical duplicates as missing mail.** A server folder can hold
-  the same message twice, byte for byte; an archive addressed by content holds it once, which is
+  the same message twice, byte for byte; an archive that deduplicates holds it once, which is
   what it is for. Counting copies made every copy after the first a missing message -- on a
   reference archive that was 1,729 of them, in a folder that was not missing a single message, and
   the same 1,729 after every run for good. `--repair` fetched all of them, stored none, and the

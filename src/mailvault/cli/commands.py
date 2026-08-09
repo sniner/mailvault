@@ -142,7 +142,7 @@ def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: boo
             # in the same breath, not three lines further up.
             line += (
                 f" -- {total_extra:,} further copy/copies of already-archived"
-                f" message(s), which a content-addressed archive holds once"
+                f" message(s), which a deduplicating archive holds once"
             )
         print(line)
     elif not repaired:
