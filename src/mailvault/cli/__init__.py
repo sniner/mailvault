@@ -273,10 +273,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Bring an archive written by an earlier version up to date",
         description=(
             "Bring an archive of any earlier shape up to the layout this version"
-            " writes, and say what was lifted. A backup does this by itself; the"
-            " command is for doing it deliberately, once, and seeing the result."
-            " Nothing is deleted, and a run that is interrupted is simply picked"
-            " up by the next one."
+            " writes, and say what was lifted. This is the first thing to do"
+            " after upgrading: until it has run, every other command refuses the"
+            " archive rather than looking for the mail where it no longer is."
+            " Nothing is deleted, a run that is interrupted is simply picked up"
+            " by the next one, and on an archive that is already current it reads"
+            " one small file and stops."
         ),
     )
 

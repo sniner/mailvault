@@ -1,4 +1,4 @@
-"""Job commands, one module each: backup, verify, migrate, create-db, folders.
+"""Job commands, one module each: backup, verify, migrate, db, folders.
 
 The package presents them as a flat API, so callers keep using ``jobs.backup(...)``
 and friends. Pieces shared between commands live in ``common``.

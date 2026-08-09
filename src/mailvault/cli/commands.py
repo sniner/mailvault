@@ -518,7 +518,7 @@ def _report_orphans(result: jobs.CheckResult, store_ids: list[str]) -> None:
         " intact, but nothing records which folder they came from"
     )
     print(
-        "  they are found like any other message: `archive create-db` builds a"
+        "  they are found like any other message: `db create` builds a"
         " query database with sender, subject and date"
     )
     print("  mail brought in with `archive import` is always like this")
@@ -856,7 +856,7 @@ def run_db(args: argparse.Namespace) -> int:
 
 
 def run_archive(args: argparse.Namespace) -> int:
-    """Run an `archive` subcommand (stats/import/compress/create-db/...).
+    """Run an `archive` subcommand (stats/import/compress/check/...).
 
     Every one of these works on the archive `--archive` names, or on the
     directory one is standing in. `import` is the only one with a directory of
