@@ -75,6 +75,15 @@
 
 ### Fixed
 
+- **A backup only refreshes `index.db` when the job wrote something.** It ran once per job
+  regardless, and a job with no new mail has nothing to add -- but finding that out means listing
+  the whole metadata log directory, which over a network share is 3.9 seconds of a run that had
+  nothing left to do. With five jobs that was twelve seconds per backup for zero new messages.
+  The information was there all along and simply not asked for. A job that fails part way through
+  still refreshes what it managed to write: "failed" does not mean "wrote nothing", and skipping
+  those messages until some later run happened to pick them up was an accident rather than a
+  decision
+
 - **`verify` no longer reports byte-identical duplicates as missing mail.** A server folder can hold
   the same message twice, byte for byte; an archive addressed by content holds it once, which is
   what it is for. Counting copies made every copy after the first a missing message -- on a

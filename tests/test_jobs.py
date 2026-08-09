@@ -2042,3 +2042,58 @@ class TestBackupIndexDb:
         self._run(mock_client, tmp_path, index_db=False)
 
         assert not (tmp_path / DEFAULT_QUERY_DB_NAME).exists()
+
+    def test_a_job_that_recorded_nothing_leaves_the_projection_alone(self, tmp_path):
+        """The measured cost: 3.9 seconds per job, over a share, for nothing.
+
+        A folder with no new mail records no log file, so there is nothing for
+        the projection to take in -- but finding that out means listing the whole
+        metadata log directory, once per job, whether or not the job wrote.
+        """
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = _storing_backup(_eml("<a@example.com>"))
+        self._run(mock_client, tmp_path, index_db=True)
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+        untouched = db_path.stat().st_mtime_ns
+
+        # A second run over a folder that has nothing new to offer.
+        quiet = _make_mock_client()
+        quiet.folder_backup.return_value = base.BackupResult(total=0, failed=0)
+        with patch("mailvault.jobs.backup._refresh_query_db") as refresh:
+            self._run(quiet, tmp_path, index_db=True)
+
+        refresh.assert_not_called()
+        assert db_path.stat().st_mtime_ns == untouched
+
+    def test_a_job_that_recorded_something_refreshes_it(self, tmp_path):
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = _storing_backup(_eml("<a@example.com>"))
+
+        with patch("mailvault.jobs.backup._refresh_query_db") as refresh:
+            self._run(mock_client, tmp_path, index_db=True)
+
+        refresh.assert_called_once()
+
+    def test_a_job_that_failed_after_writing_still_refreshes(self, tmp_path):
+        """ "Failed" does not mean "wrote nothing".
+
+        The first folder is archived, the second makes the run blow up in a way
+        the per-folder handler does not catch. What reached the log reached it,
+        and the projection must not skip it until some later run happens to.
+        """
+        mock_client = _make_mock_client()
+        mock_client.folders.return_value = iter(["INBOX", "Sent"])
+        mock_client.folder_backup.side_effect = _storing_backup(_eml("<a@example.com>"))
+
+        def _explode(*_a, **_kw):
+            raise OSError("the connection went away")
+
+        job = _make_job()
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(side_effect=_explode)
+            with patch("mailvault.jobs.backup._refresh_query_db") as refresh:
+                with pytest.raises(OSError):
+                    jobs.backup(job, tmp_path, index_db=True)
+
+        refresh.assert_called_once()

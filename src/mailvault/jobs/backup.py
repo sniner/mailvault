@@ -5,12 +5,13 @@ A backup writes the message (into the content-addressed storage) and its locatio
 stays in the message itself. Deletion after export is gated on the log being
 sealed, so a message leaves the server only once its location is durable. With
 `--index-db` it also refreshes a queryable `index.db` projection afterwards
-(see `storedb`).
+(see `mailvault.jobs.db`).
 """
 
 from __future__ import annotations
 
 import collections.abc
+import dataclasses
 import logging
 import pathlib
 from datetime import UTC, datetime
@@ -106,11 +107,24 @@ def _location_writer(
     return _record
 
 
+@dataclasses.dataclass
+class _Recorded:
+    """Whether this job wrote anything down, counted as it goes.
+
+    Held in an object rather than returned, because it has to survive a job that
+    fails part way through: what was written before the failure is written, and
+    the projection that comes after must not skip it because the run ended badly.
+    """
+
+    folders: int = 0
+
+
 def _backup_to_log(
     mb: base.MailboxClient,
     store: cas.ContentAddressedStorage,
     job: conf.JobConfig,
     store_path: pathlib.Path,
+    recorded: _Recorded,
     incremental: bool = True,
 ) -> None:
     """Back up the selected folders, recording locations and resume state."""
@@ -120,7 +134,7 @@ def _backup_to_log(
     folders = job.folders if job.folders else mb.folders()
     for folder in folders:
         try:
-            _backup_folder(
+            if _backup_folder(
                 mb,
                 store,
                 job,
@@ -129,7 +143,8 @@ def _backup_to_log(
                 log_root,
                 places,
                 incremental,
-            )
+            ):
+                recorded.folders += 1
         except Exception as exc:
             # One folder that cannot be read must not cost the remaining ones;
             # its snapshot simply does not advance and the next run tries again.
@@ -145,8 +160,12 @@ def _backup_folder(
     log_root: pathlib.Path,
     places: _ArchivedPlaces,
     incremental: bool = True,
-) -> None:
+) -> bool:
     """Back up one folder, recording where its messages were seen.
+
+    Returns whether anything was written down. An incremental pass over a folder
+    that has had no mail since the last run records nothing, and that answer is
+    what spares the query database a refresh with nothing to take in.
 
     The resume point is the backend's to make and the backend's to read; nothing
     here looks inside it. `--full` (`incremental=False`) simply withholds it,
@@ -155,8 +174,9 @@ def _backup_folder(
     """
     previous = _resume_point(heads_root, job.name, folder) if incremental else None
     if previous is None and incremental:
-        if _catch_up_if_possible(mb, store, job, folder, heads_root, log_root, places):
-            return
+        caught_up = _catch_up_if_possible(mb, store, job, folder, heads_root, log_root, places)
+        if caught_up is not None:
+            return caught_up
 
     observed_at = datetime.now(UTC)
     log_writer = metalog.LogWriter(log_root, heads_root)
@@ -172,8 +192,9 @@ def _backup_folder(
         # than deciding for us. Listing beats downloading the folder again, and
         # where that is not on offer the full read is at least an explicit one.
         log.info("%s::%s: the resume point is void", job.name, folder)
-        if _catch_up_if_possible(mb, store, job, folder, heads_root, log_root, places):
-            return
+        caught_up = _catch_up_if_possible(mb, store, job, folder, heads_root, log_root, places)
+        if caught_up is not None:
+            return caught_up
         log.info("%s::%s: reading the folder in full", job.name, folder)
         result = mb.folder_backup(
             folder,
@@ -181,6 +202,9 @@ def _backup_folder(
             resume=None,
             callback=_location_writer(log_writer),
         )
+    # Asked before the seal empties the writer: how much this pass observed, and
+    # therefore whether the log grew at all.
+    recorded = len(log_writer) > 0
     # The seal date stamps the log with when the folder was read, which is a
     # fact about the run and stays the wall clock. Where the *next* run resumes
     # is a claim about coverage, and that one comes back from the backend.
@@ -217,6 +241,7 @@ def _backup_folder(
     # `last_run` claims. Only `resume` is held back when the pass fell short.
     _record_pass(heads_root, job.name, folder, observed_at, resume)
     _purge_after_seal(mb, job, folder, result, sealed)
+    return recorded
 
 
 def _can_catch_up(job: conf.JobConfig) -> bool:
@@ -246,21 +271,26 @@ def _catch_up_if_possible(
     heads_root: pathlib.Path,
     log_root: pathlib.Path,
     places: _ArchivedPlaces,
-) -> bool:
-    """Bring the folder back in step by listing it. False when that is no option.
+) -> bool | None:
+    """Bring the folder back in step by listing it, and say whether it wrote.
 
-    No option means either the job is one that must not be caught up that way, or
-    the archive holds nothing at this place to compare against -- in which case
-    listing first would only add a round trip to a download that has to happen
-    anyway.
+    None when this was no option at all -- either the job is one that must not be
+    caught up that way, or the archive holds nothing at this place to compare
+    against, in which case listing first would only add a round trip to a
+    download that has to happen anyway. The caller then goes on to the ordinary
+    pass.
+
+    True or False when it ran, saying whether anything reached the log. Three
+    answers and not two, because "did not run" and "ran and found nothing new"
+    lead in opposite directions: the first means carry on, the second means this
+    folder is done and had nothing to add.
     """
     if not _can_catch_up(job):
-        return False
+        return None
     archived = places.of(folder)
     if not archived:
-        return False
-    _catch_up_folder(mb, store, job, folder, heads_root, log_root, archived)
-    return True
+        return None
+    return _catch_up_folder(mb, store, job, folder, heads_root, log_root, archived)
 
 
 def _catch_up_folder(
@@ -271,8 +301,12 @@ def _catch_up_folder(
     heads_root: pathlib.Path,
     log_root: pathlib.Path,
     archived: set[str],
-) -> None:
+) -> bool:
     """Read a folder in full, downloading only what the archive does not have.
+
+    Returns whether anything reached the log, which for this pass means whether
+    anything was fetched at all: every message it stores gets its place written
+    down in the same breath.
 
     Reached when a folder holds archived mail but no resume point -- an archive
     upgraded from a format that had none, or one whose state file was lost. The
@@ -317,6 +351,7 @@ def _catch_up_folder(
         )
         resume = None
     _record_pass(heads_root, job.name, folder, observed_at, resume)
+    return result.restored + result.recovered_copies > 0
 
 
 def _purge_after_seal(
@@ -370,8 +405,21 @@ def backup(
     """Back up one job's folders into the archive at `store_path`.
 
     `compress` stores the messages zstd-compressed; `index_db` refreshes the
-    queryable `index.db` projection beside the archive once the backup is done;
+    queryable `index.db` projection in the archive once the backup is done;
     `incremental` resumes each folder from its snapshot instead of re-fetching it.
+
+    **The projection is only refreshed when this job wrote something down.** A
+    job that had no new mail has nothing to add to it, and finding that out costs
+    a listing of the whole metadata log directory -- 3.9 seconds per job over a
+    network share, measured, for zero new messages, once for every job in the
+    configuration. The information was there all along; it was simply not asked
+    for.
+
+    Asked in a `finally`, and counted as the folders go rather than returned at
+    the end, so that a job which fails part way through still refreshes what it
+    managed to write. "Failed" does not mean "wrote nothing", and the projection
+    skipping those messages until some later run happened to pick them up was an
+    accident rather than a decision.
 
     Migrating a legacy archive happens first, before the mailbox is opened: it is
     a purely local operation that can take a while on a large `store.db`, and
@@ -380,11 +428,19 @@ def backup(
     starts, rather than after a silent connect.
     """
     migrate_archive(store_path)
-    with session.open_mailbox(job) as mb:
-        store = cas.mail_store(store_path, compress=compress)
-        _backup_to_log(mb, store, job, store_path, incremental=incremental)
-    if index_db:
-        _refresh_query_db(store_path)
+    recorded = _Recorded()
+    try:
+        with session.open_mailbox(job) as mb:
+            store = cas.mail_store(store_path, compress=compress)
+            _backup_to_log(mb, store, job, store_path, recorded, incremental=incremental)
+    finally:
+        if index_db and recorded.folders:
+            _refresh_query_db(store_path)
+        elif index_db:
+            log.debug(
+                "%s: nothing was recorded, the query database has nothing to take in",
+                job.name,
+            )
 
 
 def _refresh_query_db(store_path: pathlib.Path) -> None:
