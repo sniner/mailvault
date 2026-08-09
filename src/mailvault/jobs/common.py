@@ -24,13 +24,19 @@ def _seal_log(writer: metalog.LogWriter, date: datetime) -> bool:
     recorded, so a False return keeps those messages in place to be re-fetched
     next run. An empty pass records nothing and is durable by definition, so it
     returns True.
+
+    Neither line names the directory it wrote into. There is one metadata log in
+    an archive, the archive is named once at the start of the run, and what was
+    left standing here was its absolute path -- over a share routinely longer
+    than the sentence behind it. `metadata log:` says the same thing in words, as
+    the reports have said it all along.
     """
     recorded, places = len(writer), writer.places
     try:
         paths = writer.seal(date)
     except OSError as exc:
-        log.error("%s: metadata log not written: %s", writer.root, exc)
+        log.error("the metadata log was not written: %s", exc)
         return False
     if paths:
-        log.info("%s: %s message(s) recorded in %s place(s)", writer.root, recorded, places)
+        log.info("metadata log: %s message(s) recorded in %s place(s)", recorded, places)
     return True

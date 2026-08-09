@@ -2097,3 +2097,50 @@ class TestBackupIndexDb:
                     jobs.backup(job, tmp_path, index_db=True)
 
         refresh.assert_called_once()
+
+
+class TestTheArchiveIsNamedOnce:
+    """No log line of a run repeats the path of the archive it is working on.
+
+    The rule is old (`ca95ece`, `0230a82`) and was enforced line by line, which is
+    why a new one slipped back in: `_seal_log` printed the absolute path of
+    `meta/` on every folder that recorded anything. Over a share that prefix is
+    routinely longer than the sentence behind it, and it says nothing the line
+    above it did not already say.
+
+    Asserted over the whole run rather than for one message, so the next line to
+    be added is covered by a test nobody has to remember to write.
+
+    From INFO upwards, which is where the rule applies: `--verbose` is a
+    different contract, and a debug line that names the directory it marked is
+    telling somebody who asked for detail exactly what they asked for.
+    """
+
+    def test_a_backup_names_no_absolute_path(self, tmp_path, caplog):
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = _storing_backup(_eml("<a@example.com>"))
+        job = _make_job(folders=["INBOX"])
+
+        with caplog.at_level(logging.INFO):
+            with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+                mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+                mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+                jobs.backup(job, tmp_path, index_db=True)
+
+        offenders = [r.getMessage() for r in caplog.records if str(tmp_path) in r.getMessage()]
+        assert offenders == []
+
+    def test_but_the_log_still_says_what_it_recorded(self, tmp_path, caplog):
+        """Dropping the prefix must not drop the statement with it."""
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = _storing_backup(_eml("<a@example.com>"))
+
+        with caplog.at_level(logging.INFO):
+            with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+                mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+                mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+                jobs.backup(_make_job(folders=["INBOX"]), tmp_path)
+
+        assert any(
+            "1 message(s) recorded in 1 place(s)" in r.getMessage() for r in caplog.records
+        )
