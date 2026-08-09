@@ -10,7 +10,7 @@ import pytest
 from mailvault import conf
 from mailvault.jobs import guard
 from mailvault.jobs.common import JobError
-from mailvault.store import heads, metalog
+from mailvault.store import cas, heads, metalog
 
 WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
 STORE_ID = "df3823f1cd1638d0f374745bb0e200e3"
@@ -115,3 +115,48 @@ class TestCheckJobs:
         _with_heads(tmp_path, "gmail.com")
 
         guard.check_jobs(tmp_path, [])
+
+
+class TestAnArchiveWithMailAndNoNames:
+    """`archive import` fills an archive and records no mailbox anywhere.
+
+    Read as "empty", that let any configuration write into a full archive -- and
+    with `delete_after_export` the server copies went afterwards. It is the one
+    case where "no names" must not mean "nothing to protect".
+    """
+
+    def test_it_is_refused(self, tmp_path, dummy_eml_bytes):
+        cas.mail_store(tmp_path).add(dummy_eml_bytes)
+
+        with pytest.raises(JobError, match="--allow-new-mailbox"):
+            guard.check_jobs(tmp_path, _jobs("gmail.com"))
+
+    def test_the_message_says_where_such_an_archive_comes_from(self, tmp_path, dummy_eml_bytes):
+        """A reader who did the import recognises it; one who did not is warned."""
+        cas.mail_store(tmp_path).add(dummy_eml_bytes)
+
+        with pytest.raises(JobError) as excinfo:
+            guard.check_jobs(tmp_path, _jobs("gmail.com"))
+
+        assert "archive import" in str(excinfo.value)
+
+    def test_the_override_passes_and_leaves_a_warning(self, tmp_path, dummy_eml_bytes, caplog):
+        cas.mail_store(tmp_path).add(dummy_eml_bytes)
+
+        with caplog.at_level(logging.WARNING):
+            guard.check_jobs(tmp_path, _jobs("gmail.com"), allow_new=True)
+
+        assert any("records no mailbox" in r.getMessage() for r in caplog.records)
+
+    def test_a_truly_empty_archive_still_takes_anything(self, tmp_path):
+        """The distinction this rests on: no mail is not the same as no names."""
+        cas.mail_store(tmp_path)
+
+        guard.check_jobs(tmp_path, _jobs("gmail.com"))
+
+    def test_an_archive_with_names_never_asks_about_its_mail(self, tmp_path, dummy_eml_bytes):
+        """The walk is the fallback, not a second condition on the normal path."""
+        _with_heads(tmp_path, "gmail.com")
+        cas.mail_store(tmp_path).add(dummy_eml_bytes)
+
+        guard.check_jobs(tmp_path, _jobs("gmail.com"))

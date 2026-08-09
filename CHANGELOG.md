@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A backup into an archive built by `archive import` is no longer waved through.** The guard asks
+  which mailboxes an archive has seen and lets anything write into one that names none. An imported
+  archive names none -- an import writes messages, not a log, because nobody told it which mailbox
+  they came from -- so the fullest archive in the house was treated as the emptiest, and any
+  configuration could write into it. With `delete_after_export` the server copies went afterwards.
+  "No names" and "no mail" are now asked separately, and an archive that holds mail under no name
+  is refused until `--allow-new-mailbox` says otherwise
+
 ### Removed
 
 - **`archive addresses` is gone.** It read and parsed every message in the archive and printed the
