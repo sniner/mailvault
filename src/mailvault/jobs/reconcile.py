@@ -41,6 +41,7 @@ from datetime import UTC, datetime
 from mailvault import mailutils
 from mailvault.backend import base
 from mailvault.jobs.common import _seal_log
+from mailvault.jobs.ledger import MessageIdLedger
 from mailvault.store import cas, metalog
 
 log = logging.getLogger(__name__)
@@ -153,7 +154,7 @@ def reconcile_folder(
     # Said before the work, not after it: this reads one header per archived
     # message and has nothing to report until every one of them is done.
     log.info("%s: reading %s archived message(s)", ctx, f"{len(archived):,}")
-    known = mailutils.MessageIdLedger(archived_message_counts(store, archived, log_ctx=ctx))
+    known = MessageIdLedger(archived_message_counts(store, archived, log_ctx=ctx))
     log.info("%s: %s message(s) in archive", ctx, f"{len(known):,}")
 
     result = ReconcileResult(folder=folder)
