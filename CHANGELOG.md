@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- **`verify` no longer reports byte-identical duplicates as missing mail.** A server folder can hold
+  the same message twice, byte for byte; an archive addressed by content holds it once, which is
+  what it is for. Counting copies made every copy after the first a missing message -- on a
+  reference archive that was 1,729 of them, in a folder that was not missing a single message, and
+  the same 1,729 after every run for good. `--repair` fetched all of them, stored none, and the
+  next run said the same thing again. The two are now separate: `0 not archived, 1,729 further
+  copies of archived message(s)`, and a run that finds no gaps says the archive is complete no
+  matter how many further copies it saw. They are still fetched by `--repair`, because a second
+  copy is occasionally the byte-different version that really is absent and only its bytes can say
+  so -- but they are reported as what they turn out to be, and the ones that differed are counted
+  separately from the gaps that were closed
+
 - **A backup into an archive built by `archive import` is no longer waved through.** The guard asks
   which mailboxes an archive has seen and lets anything write into one that names none. An imported
   archive names none -- an import writes messages, not a log, because nobody told it which mailbox

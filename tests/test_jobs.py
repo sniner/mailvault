@@ -1586,6 +1586,91 @@ class TestVerify:
         assert results[0].missing == 0
         client.fetch_message.assert_not_called()
 
+    def test_a_byte_identical_duplicate_is_not_a_missing_message(self, tmp_path):
+        """The finding from `archive-ruhl`: 1,729 reported missing, none missing.
+
+        A server folder may hold the same message twice, byte for byte. The
+        archive is addressed by content and holds it once -- which is its job,
+        not a gap -- so the second copy has nothing left to claim. Counted as
+        missing it stood in the report of a complete archive after every run,
+        for good, and `--repair` fetched it every time to no effect.
+        """
+        job = _make_job(folders=["INBOX"])
+        _archive_message(tmp_path, "test-job", "INBOX", _eml("<a@example.com>", "Twice"))
+
+        client = _verify_client(
+            [
+                base.MessageRef(msg_id="id-a1", message_id="<a@example.com>"),
+                base.MessageRef(msg_id="id-a2", message_id="<a@example.com>"),
+            ],
+            {},
+        )
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            results = jobs.verify(job, tmp_path)
+
+        assert results[0].on_server == 2
+        assert results[0].missing == 0
+        assert results[0].extra_copies == 1
+
+    def test_an_extra_copy_is_still_fetched_and_reported_for_what_it_was(self, tmp_path):
+        """Fetched because only its bytes can say which of the two kinds it is.
+
+        A second copy is usually a duplicate the store cannot hold twice, and
+        occasionally the byte-different version that really is absent. Nothing
+        short of downloading it tells them apart, so it is downloaded -- and
+        counted under what it turned out to be, never under "missing".
+        """
+        job = _make_job(folders=["INBOX"])
+        _archive_message(tmp_path, "test-job", "INBOX", _eml("<a@example.com>", "First"))
+        other_version = _eml("<a@example.com>", "Second, and not the same bytes")
+
+        client = _verify_client(
+            [
+                base.MessageRef(msg_id="id-a1", message_id="<a@example.com>"),
+                base.MessageRef(msg_id="id-a2", message_id="<a@example.com>"),
+            ],
+            {"id-a2": other_version},
+        )
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            results = jobs.verify(job, tmp_path, repair=True)
+
+        assert results[0].missing == 0
+        assert results[0].extra_copies == 1
+        # Not "restored": nothing was missing. It differed, so it was kept.
+        assert results[0].restored == 0
+        assert results[0].recovered_copies == 1
+        assert len(list(cas.mail_store(tmp_path).walk())) == 2
+
+    def test_a_duplicate_that_really_is_one_leaves_the_archive_alone(self, tmp_path):
+        """The other outcome of the same fetch, and the common one."""
+        job = _make_job(folders=["INBOX"])
+        same = _eml("<a@example.com>", "Twice")
+        _archive_message(tmp_path, "test-job", "INBOX", same)
+
+        client = _verify_client(
+            [
+                base.MessageRef(msg_id="id-a1", message_id="<a@example.com>"),
+                base.MessageRef(msg_id="id-a2", message_id="<a@example.com>"),
+            ],
+            {"id-a2": same},
+        )
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            results = jobs.verify(job, tmp_path, repair=True)
+
+        assert results[0].extra_copies == 1
+        assert results[0].recovered_copies == 0
+        assert results[0].restored == 0
+        assert len(list(cas.mail_store(tmp_path).walk())) == 1
+
     def test_message_id_matching_ignores_brackets_and_case(self, tmp_path):
         job = _make_job(folders=["INBOX"])
         _archive_message(tmp_path, "test-job", "INBOX", _eml("<Mixed@Example.COM>"))

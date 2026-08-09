@@ -93,21 +93,57 @@ def require_archive(archive: pathlib.Path) -> None:
 
 
 def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: bool) -> None:
+    """Say what each folder turned out to hold, and whether anything is missing.
+
+    Two counts where there used to be one, and the whole point of the second is
+    that it is *not* added to the first. A folder can hold the same message
+    twice, byte for byte; the archive is addressed by content and holds it once,
+    so every copy after the first is a message the server has and the archive
+    cannot separately have. Counted as missing, it made a complete archive report
+    thousands of gaps after every run, for good -- and the summary line told its
+    owner to run `--repair`, which fetched all of them and changed nothing. A
+    number that is always there and never means anything is one a reader learns
+    to skip, and the next one along with it.
+
+    So the extra copies are named where there are any, and left out of both the
+    verdict and the advice. `verify` may now say an archive is complete while
+    still reporting a few thousand of them, and that is exactly the statement
+    intended: nothing is missing, and the server keeps more copies than a
+    content-addressed store has any way of keeping.
+    """
     for r in results:
         line = f"{job_name}::{r.folder}: {r.on_server:,} on server, {r.missing:,} not archived"
+        if r.extra_copies:
+            line += f", {r.extra_copies:,} further copies of archived message(s)"
         if repaired:
             line += f", {r.restored:,} restored"
+            if r.recovered_copies:
+                line += f", {r.recovered_copies:,} of the further copies differed and were kept"
             if r.failed:
                 line += f", {r.failed:,} failed"
         print(line)
     total_missing = sum(r.missing for r in results)
+    total_extra = sum(r.extra_copies for r in results)
     total_restored = sum(r.restored for r in results)
+    total_recovered = sum(r.recovered_copies for r in results)
     if not total_missing:
-        print(f"{job_name}: archive is complete")
+        line = f"{job_name}: archive is complete"
+        if total_extra:
+            # Named in the verdict too, because a reader who sees "complete"
+            # after a run that fetched thousands of messages is owed the reason
+            # in the same breath, not three lines further up.
+            line += (
+                f" -- {total_extra:,} further copy/copies of already-archived"
+                f" message(s), which a content-addressed archive holds once"
+            )
+        print(line)
     elif not repaired:
         print(f"{job_name}: {total_missing:,} message(s) missing, run again with --repair")
     else:
-        print(f"{job_name}: {total_restored:,} of {total_missing:,} message(s) restored")
+        line = f"{job_name}: {total_restored:,} of {total_missing:,} message(s) restored"
+        if total_recovered:
+            line += f", plus {total_recovered:,} further copy/copies that really did differ"
+        print(line)
 
 
 def _run_job(

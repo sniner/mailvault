@@ -27,6 +27,17 @@ collapse into a single object in the storage, so every copy after the first
 finds nothing left to claim and is downloaded again to be discarded. On a real
 folder that is a few thousand needless downloads -- bandwidth, on a command that
 runs rarely, against a message that would otherwise be missing for good.
+
+What those needless downloads must not do is *count* as missing mail, and that
+is the difference between the two numbers this reports. A Message-ID the archive
+has never seen at this place is a gap. One whose copies are merely outnumbered is
+not: it is a message that is archived, of which the server holds more copies than
+a content-addressed store can hold objects. Counted together, a folder with two
+thousand duplicates reported two thousand missing messages after every run, for
+good, on an archive that was not missing one -- and told its owner to run
+`--repair`, which fetched them all and changed nothing. They are still fetched,
+because from the outside a second copy might be the byte-different version that
+really is absent; they are just no longer called missing.
 """
 
 from __future__ import annotations
@@ -41,7 +52,7 @@ from datetime import UTC, datetime
 from mailvault import mailutils
 from mailvault.backend import base
 from mailvault.jobs.common import _seal_log
-from mailvault.jobs.ledger import MessageIdLedger
+from mailvault.jobs.ledger import Claim, MessageIdLedger
 from mailvault.store import cas, metalog
 
 log = logging.getLogger(__name__)
@@ -57,12 +68,27 @@ SERVER_PROGRESS_EVERY = 5_000
 
 @dataclasses.dataclass
 class ReconcileResult:
-    """Outcome of comparing one server folder against the local archive."""
+    """Outcome of comparing one server folder against the local archive.
+
+    `missing` and `extra_copies` are the two ways a server message can fail to be
+    accounted for, and they are kept apart because only the first is a gap. The
+    second is a copy too many of something already archived -- usually one the
+    store cannot hold twice, occasionally a byte-different version that really is
+    absent, and never distinguishable until it has been fetched.
+
+    `restored` counts the gaps a repair pass closed. `recovered_copies` counts the
+    extra copies that turned out to be new content after all -- the case that
+    justifies fetching them, and on a folder of byte-identical duplicates it
+    stays at zero however many are fetched. Keeping it apart from `restored` is
+    what stops a run from reporting more messages restored than were missing.
+    """
 
     folder: str
     on_server: int = 0
     missing: int = 0
+    extra_copies: int = 0
     restored: int = 0
+    recovered_copies: int = 0
     failed: int = 0
     sealed: bool = True
 
@@ -158,15 +184,21 @@ def reconcile_folder(
     log.info("%s: %s message(s) in archive", ctx, f"{len(known):,}")
 
     result = ReconcileResult(folder=folder)
-    missing: list[base.MessageRef] = []
+    # Each one carries which of the two it is: the downloader treats them alike,
+    # and what the pass reports afterwards depends on telling them apart.
+    wanted: list[tuple[base.MessageRef, Claim]] = []
     log.info("%s: listing the folder on the server", ctx)
     for ref in mb.message_index(folder):
         result.on_server += 1
-        if not known.take(mailutils.normalize_message_id(ref.message_id)):
-            missing.append(ref)
+        claim = known.claim(mailutils.normalize_message_id(ref.message_id))
+        if claim is Claim.ABSENT:
+            result.missing += 1
+            wanted.append((ref, claim))
+        elif claim is Claim.EXHAUSTED:
+            result.extra_copies += 1
+            wanted.append((ref, claim))
         if result.on_server % SERVER_PROGRESS_EVERY == 0:
             log.info("%s: %s message(s) indexed", ctx, f"{result.on_server:,}")
-    result.missing = len(missing)
 
     log.info(
         "%s: %s of %s message(s) on the server are not archived",
@@ -174,13 +206,24 @@ def reconcile_folder(
         f"{result.missing:,}",
         f"{result.on_server:,}",
     )
-    if not repair or not missing:
+    if result.extra_copies:
+        # Said separately, and said at all: on a folder that holds duplicates
+        # this is where the download count comes from, and a reader watching
+        # thousands of messages being fetched after "0 not archived" would
+        # otherwise have no way to account for them.
+        log.info(
+            "%s: %s further copy/copies of already-archived message(s), fetched to"
+            " find out whether they differ",
+            ctx,
+            f"{result.extra_copies:,}",
+        )
+    if not repair or not wanted:
         return result
 
     # A fetched message is new archive content, so its location has to reach the
     # log as well -- otherwise nothing records where it belongs.
     log_writer = metalog.LogWriter(log_root, heads_root)
-    for ref in missing:
+    for ref, claim in wanted:
         label = ref.message_id or ref.msg_id
         try:
             msg = mb.fetch_message(ref.msg_id, folder)
@@ -196,7 +239,15 @@ def reconcile_folder(
             result.failed += 1
             continue
         log.info("%s: restored %s: %s id=%s", ctx, label, status, store_id)
-        result.restored += 1
+        if claim is Claim.ABSENT:
+            # A gap closed, whether or not the bytes were new here: the archive
+            # may well hold this message under another folder, and what was
+            # missing at *this* place is the record that it belongs here too.
+            result.restored += 1
+        elif status == "NEW":
+            # An extra copy that was not a duplicate after all -- the byte-
+            # different second version, and the reason these get fetched.
+            result.recovered_copies += 1
 
     # Whether the locations reached disk is the caller's business: a pass that
     # fetched every message and could not write down where any of them belongs

@@ -10,6 +10,29 @@ from __future__ import annotations
 
 import bisect
 import collections.abc
+import enum
+
+
+class Claim(enum.Enum):
+    """What a place's ledger had left for a Message-ID the server offered.
+
+    Three outcomes and not two, because the two ways of coming away empty mean
+    entirely different things to whoever reads the report. `ABSENT` is a gap: the
+    archive has never seen this Message-ID at this place. `EXHAUSTED` is a
+    message that *is* archived, of which the server holds more copies than the
+    archive holds objects -- and the commonest reason for that is a byte-identical
+    duplicate, which a content-addressed store cannot hold twice no matter how
+    often it is fetched.
+
+    Telling them apart is what keeps a report honest. Counted together they made
+    a folder with two thousand duplicates report two thousand missing messages,
+    on every run, for good -- and a number that always stands there and never
+    means anything is one a reader learns to skip past.
+    """
+
+    TAKEN = "taken"
+    EXHAUSTED = "exhausted"
+    ABSENT = "absent"
 
 
 class MessageIdLedger:
@@ -30,7 +53,9 @@ class MessageIdLedger:
     much: byte-identical duplicates on the server collapse into one object here,
     so each further copy finds nothing left to claim and gets downloaded again to
     be discarded. Bandwidth on a command that runs rarely, against a message that
-    would otherwise be missing for good.
+    would otherwise be missing for good. What it no longer does is *call* them
+    missing: `claim` says which of the two kinds of empty it is, and the counts
+    part ways from there.
 
     Truncation is tolerated throughout. Exchange caps the Message-ID it reports
     in folder listings at around 255 characters, so a long value can arrive as a
@@ -50,25 +75,36 @@ class MessageIdLedger:
         self._left = {mid: n for mid, n in counts.items() if mid and n > 0}
         self._long = sorted(mid for mid in self._left if len(mid) > self.TRUNCATION_THRESHOLD)
 
-    def take(self, value: str) -> bool:
-        """Claim one archived copy of `value`; False when there is none left."""
+    def claim(self, value: str) -> Claim:
+        """Claim one archived copy of `value`, and say what was there to claim.
+
+        A count that has run down to zero keeps its entry rather than being
+        removed, which is the whole trick: it is what lets a later copy of the
+        same Message-ID be reported as one copy too many instead of as a message
+        nobody ever archived.
+        """
         if not value:
-            return False
-        if self._left.get(value, 0) > 0:
-            self._left[value] -= 1
-            return True
+            return Claim.ABSENT
+        left = self._left.get(value)
+        if left is not None:
+            if left > 0:
+                self._left[value] = left - 1
+                return Claim.TAKEN
+            return Claim.EXHAUSTED
         if len(value) <= self.TRUNCATION_THRESHOLD:
-            return False
+            return Claim.ABSENT
         # In a sorted list, any entry starting with `value` sits at or after the
         # first one that is >= `value`. Scan on from there: an earlier match may
         # have been claimed already, and a later one may still have a copy.
+        found = False
         for candidate in self._long[bisect.bisect_left(self._long, value) :]:
             if not candidate.startswith(value):
                 break
+            found = True
             if self._left.get(candidate, 0) > 0:
                 self._left[candidate] -= 1
-                return True
-        return False
+                return Claim.TAKEN
+        return Claim.EXHAUSTED if found else Claim.ABSENT
 
     def __len__(self) -> int:
         """How many archived copies are still unclaimed."""
