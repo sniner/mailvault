@@ -287,10 +287,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Consolidate the metadata log, dropping duplicate entries",
         description=(
             "Merge the many small metadata-log files an archive accumulates -- one"
-            " per folder per backup, with entries repeated across the incremental"
-            " overlap -- into one file per mailbox/folder holding each observation"
-            " once. Lossless and safe to run at any time; the originals are removed"
-            " only after the consolidated files are written and verified."
+            " per folder per backup, with entries repeated wherever a folder was"
+            " read in full -- into one file per mailbox/folder holding each"
+            " observation once. Lossless and safe to run at any time; the originals"
+            " are removed only after the consolidated files are written and verified."
         ),
     )
 

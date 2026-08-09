@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`archive compact` no longer explains itself with an overlap that no longer exists.** Its help
+  text and the deep dive said the log repeats entries "across the incremental overlap" -- true
+  while a run resumed from a date and re-read the day it had already read, which ended with the
+  server-issued resume points in 0.10.0. An incremental pass now records exactly what it fetched,
+  and entries repeat only where a folder is read in full instead: `backup --full`,
+  `incremental = false`, or a resume point the server voided. The command is unchanged; the reason
+  it gives for existing is now the real one
+
 ## 0.11.0 (2026-08-09)
 
 ### Added

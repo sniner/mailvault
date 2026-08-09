@@ -450,11 +450,12 @@ missing again, and `verify --repair` or a `backup --full` brings it back.
 
 ### Consolidating the metadata log
 
-Every backup writes a small file into `meta/` for each folder that received mail,
-and because incremental runs overlap, the same messages are recorded again in
-each run's file. Over months these add up, and everything that reads the log --
-`db create`, `db update`, `verify` -- reads all of them. `compact` folds them
-back down:
+Every backup writes a small file into `meta/` for each folder that received mail.
+Over months these add up, and everything that reads the log -- `db create`,
+`db update`, `verify` -- reads all of them. Entries repeat as well: a folder read
+in full rather than resumed -- `backup --full`, `incremental = false`, a resume
+point the server voided -- records every message it finds, including the ones an
+earlier file already names. `compact` folds them back down:
 
 ```console
 $ mailvault --archive ./backup archive compact

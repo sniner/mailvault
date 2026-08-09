@@ -527,11 +527,11 @@ class CompactResult:
 def compact(root: pathlib.Path, heads_root: pathlib.Path) -> CompactResult:
     """Consolidate the log into one file per place, dropping duplicate entries.
 
-    Incremental backups overlap -- each run re-records the messages in its lookback
-    window -- so a place accumulates many small files whose store ids repeat across
-    them. This reads them all, writes one file per (mailbox, folder) holding the
-    sorted union of that place's store ids, verifies the new files landed, and only
-    then removes the originals.
+    A place accumulates many small files -- one per backup that put mail there --
+    and their store ids repeat wherever a folder was read in full rather than
+    resumed, because such a pass records everything it finds. This reads them all,
+    writes one file per (mailbox, folder) holding the sorted union of that place's
+    store ids, verifies the new files landed, and only then removes the originals.
 
     Crash-safe by ordering: on an interrupt the originals are still there, a read
     takes the union regardless so nothing is lost, and a rerun finishes the job. A

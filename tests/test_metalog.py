@@ -384,7 +384,7 @@ class TestCompact:
     def test_consolidates_and_deduplicates_a_place(self, tmp_path):
         root = tmp_path / "meta"
         self._write(root, ["a", "b"])
-        self._write(root, ["b", "c"])  # 'b' repeats across the overlap
+        self._write(root, ["b", "c"])  # 'b' repeats, as after a full read
         self._write(root, ["c", "d"])  # 'c' repeats
         assert len(metalog.log_files(root)) == 3
 
