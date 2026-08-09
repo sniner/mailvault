@@ -22,13 +22,23 @@
   asked while looking like an answer to the one they did. Every join is now a left join, and the
   view gained a `folder` column
 
-- **A projection built by an earlier version is rebuilt, not quietly extended.** `index.db` now
-  records which shape it was written in. Without that marker an older one would gain the new
-  tables, keep the old, and leave the new ones empty for good -- `applied_log` reports every log
-  file as already folded in, so nothing would ever fill them, on a database that answers every
-  query without complaint. There is no upgrade path and there should not be: everything in the
-  projection can be rebuilt from the archive, which is what a mismatch now triggers, with a line
-  saying so
+- **A projection built by an earlier version is reported, not quietly extended.** `index.db` now
+  records which shape it was written in, and one this version does not read is left untouched --
+  not created into, not written, not stamped -- with a line saying so and what to run. Without
+  that marker an older one would gain the new tables, keep the old, and leave the new ones empty
+  for good: `applied_log` reports every log file as already folded in, so nothing would ever fill
+  them, on a database that answers every query without complaint. There is no upgrade path and
+  there should not be -- everything in the projection can be rebuilt from the archive, so a
+  mismatch costs a rebuild rather than a migration. Rebuilding it is left to whoever asks for it:
+  a backup deciding on its own to read every message in the archive is half an hour nobody
+  requested
+
+- **`index.db` says when it has fallen behind the archive.** It records, per mailbox and folder,
+  which point of the metadata log it has taken in; the archive names the current one in `heads/`.
+  A difference means mail has been archived since, and so does a folder the projection has never
+  heard of. Nothing about such a database looks wrong -- it answers every query, and the answers
+  are true, they are just not complete -- so the only way anybody finds out is being told, before
+  they base something on it rather than after
 
 ### Removed
 

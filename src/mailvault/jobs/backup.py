@@ -392,8 +392,10 @@ def _refresh_query_db(store_path: pathlib.Path) -> None:
 
     A convenience only: a failure to update it is logged and never allowed to
     fail the backup, whose real output -- the messages and the log -- is already
-    written. `refresh_db` itself rebuilds the projection when it is missing or
-    unreadable.
+    written. `refresh_db` builds the projection when it is missing or unreadable,
+    and leaves one written by another version alone -- having already said so, in
+    which case there is nothing to report here but the absence of a report. A
+    line claiming the database was updated would be worse than silence.
     """
     db_path = store_path / DEFAULT_QUERY_DB_NAME
     name = utils.under(store_path, db_path)
@@ -401,6 +403,8 @@ def _refresh_query_db(store_path: pathlib.Path) -> None:
         result = refresh_db(store_path, db_path)
     except Exception as exc:
         log.error("%s: query database not updated: %s", name, exc)
+        return
+    if result.outdated:
         return
     if result.rebuilt:
         log.info("%s: query database built, %s message(s)", name, f"{result.messages:,}")

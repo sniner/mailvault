@@ -44,8 +44,15 @@ class IndexDatabase:
     """Open the projection as a context manager, creating its schema on entry.
 
     `with IndexDatabase(path) as db:` yields an `IndexDatabaseConnection` and
-    closes the connection on exit. The schema is always created -- a projection
-    that is not there yet is one to be built, which is the ordinary case.
+    closes the connection on exit. The schema is created for a database that is
+    not there yet, which is the ordinary case.
+
+    **A database whose shape this version does not know is not touched at all.**
+    Not created into, not stamped, not written -- `outdated` says so and the
+    caller decides. Running `setup()` on one would add this version's tables
+    beside the old ones and stamp the file as current, which turns a database
+    that can be recognised as old into one that cannot: the complaint would be
+    made once and never again, over a projection that is still wrong.
     """
 
     def __init__(self, path: pathlib.Path | str):
@@ -56,7 +63,8 @@ class IndexDatabase:
     def __enter__(self) -> IndexDatabaseConnection:
         self.dbconn = connect(self.path)
         self.client = IndexDatabaseConnection(self.dbconn)
-        self.client.setup()
+        if not self.client.outdated:
+            self.client.setup()
         return self.client
 
     def __exit__(
@@ -85,8 +93,13 @@ class IndexDatabaseConnection(DatabaseConnection):
         # is the last moment it can be: `setup()` stamps the current version, so
         # anyone asking afterwards is told what this version writes rather than
         # what it found. 0 for a file nobody has stamped -- a fresh one, or one
-        # from before the shape was recorded at all.
+        # from before the shape was recorded at all, which is what the emptiness
+        # below tells apart.
         self.shape_on_open = self.schema_version()
+        self._new_file = (
+            self.execute("SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
+            == 0
+        )
         # Per-instance id caches for the lookup tables. These map a value (folder
         # name, address, ...) to its primary key so a repeated value is not
         # re-queried. Kept on the instance -- not via functools.lru_cache on the
@@ -305,13 +318,26 @@ class IndexDatabaseConnection(DatabaseConnection):
                 ORDER BY msg.date, msg.email_id, msg.message_id
             """)
 
-            # Stamped last, so a build that was interrupted leaves a file that
-            # does not claim to be this shape and is rebuilt rather than read.
-            self.execute(f"PRAGMA user_version = {SCHEMA_VERSION:d}")
+            # Stamped last, and only on a file that was empty when it was
+            # opened. Stamping one that already held a projection would be a
+            # claim nobody checked -- the tables above are created IF NOT
+            # EXISTS, so they say nothing about what else is in there.
+            if self._new_file:
+                self.execute(f"PRAGMA user_version = {SCHEMA_VERSION:d}")
 
     def schema_version(self) -> int:
         """Which shape this file was written in; 0 for anything before stamping."""
         return self.execute("PRAGMA user_version").fetchone()[0]
+
+    @property
+    def outdated(self) -> bool:
+        """Whether this file holds a projection this version does not read.
+
+        An empty file is not outdated, it is unwritten -- which is why the two
+        are told apart by whether there were any tables, and not by the version
+        alone: both answer 0.
+        """
+        return not self._new_file and self.shape_on_open != SCHEMA_VERSION
 
     def add_mailbox(self, mailbox_name: str) -> int:
         return self._intern(self._mailbox_ids, "mailbox", "mailbox_id", "name", mailbox_name)

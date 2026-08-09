@@ -13,7 +13,7 @@ import pytest
 from mailvault import conf, jobs, mailutils
 from mailvault.backend import base
 from mailvault.jobs import migration
-from mailvault.jobs.db import DEFAULT_QUERY_DB_NAME, refresh_db
+from mailvault.jobs.db import DEFAULT_QUERY_DB_NAME, freshness, refresh_db
 from mailvault.jobs.reconcile import archived_message_counts, places_from_log
 from mailvault.legacy import state_json as state
 from mailvault.legacy import store_db
@@ -1850,7 +1850,9 @@ class TestRefreshDb:
         assert result.messages == 1
         assert db_path.exists()
 
-    def test_a_projection_from_an_earlier_version_is_built_again(self, tmp_path):
+    def test_a_projection_from_an_earlier_version_is_left_alone_and_reported(
+        self, tmp_path, caplog
+    ):
         """The trap the shape marker exists to close.
 
         The tables are created with IF NOT EXISTS, so an older projection would
@@ -1858,6 +1860,10 @@ class TestRefreshDb:
         survives untouched, reports every log file as already folded in. The new
         tables would then stay empty for good, on a database that answers every
         query without complaint.
+
+        Rebuilding it here is not this routine's decision to make: it runs at the
+        end of a backup, and reading every message in the archive is half an hour
+        on a large one. So it says what it found and touches nothing.
         """
         _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
         db_path = tmp_path / DEFAULT_QUERY_DB_NAME
@@ -1865,16 +1871,78 @@ class TestRefreshDb:
         with index_db.IndexDatabase(db_path) as db:
             db.execute("PRAGMA user_version = 0")
             db.commit()
-            db.execute("DELETE FROM message_location")
+        before = db_path.read_bytes()
+
+        with caplog.at_level(logging.WARNING):
+            result = refresh_db(tmp_path, db_path)
+
+        assert result.outdated is True
+        assert result.rebuilt is False
+        assert db_path.read_bytes() == before, "an unreadable shape must not be written to"
+        assert any("build it again" in r.getMessage() for r in caplog.records)
+
+    def test_the_shape_of_an_old_projection_is_never_stamped_as_current(self, tmp_path):
+        """Or the complaint would be made once and never again.
+
+        `setup()` stamps the version, so an old file that got as far as being
+        opened for writing would come away claiming to be this shape -- still
+        holding the old tables, and no longer recognisable as old.
+        """
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+        refresh_db(tmp_path, db_path)
+        with index_db.IndexDatabase(db_path) as db:
+            db.execute("PRAGMA user_version = 0")
             db.commit()
 
-        result = refresh_db(tmp_path, db_path)
+        for _ in range(3):
+            assert refresh_db(tmp_path, db_path).outdated is True
 
-        assert result.rebuilt is True
-        with index_db.IndexDatabase(db_path) as db:
-            assert db.schema_version() == index_db.SCHEMA_VERSION
-            (msg_id,) = db.store_id_map().values()
-            assert _places_of(db, msg_id) == [("job", "INBOX")]
+    def test_a_refreshed_projection_reports_itself_current(self, tmp_path):
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+        refresh_db(tmp_path, db_path)
+
+        state = freshness(tmp_path, db_path)
+
+        assert state.is_current()
+        assert state.complaint(db_path.name) is None
+
+    def test_mail_archived_since_makes_the_projection_say_so(self, tmp_path):
+        """The reader the recorded heads exist for.
+
+        Nothing about a database that is merely behind looks wrong: it answers
+        every query, and the answers are true. What they are not is complete,
+        and the only way anybody finds out is being told.
+        """
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+        refresh_db(tmp_path, db_path)
+
+        _archive_message(tmp_path, "job", "INBOX", _eml("<b@example.com>"))
+
+        state = freshness(tmp_path, db_path)
+
+        assert state.behind == ["job::INBOX"]
+        complaint = state.complaint(db_path.name)
+        assert complaint is not None
+        assert "job::INBOX" in complaint
+
+    def test_a_place_the_projection_never_saw_counts_as_behind(self, tmp_path):
+        """A whole folder backed up since is the same finding, not a new one."""
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+        refresh_db(tmp_path, db_path)
+
+        _archive_message(tmp_path, "job", "Sent", _eml("<b@example.com>"))
+
+        assert freshness(tmp_path, db_path).behind == ["job::Sent"]
+
+    def test_a_projection_that_is_not_there_is_not_complained_about(self, tmp_path):
+        """Nothing to be behind with, and `refresh_db` builds one anyway."""
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+
+        assert freshness(tmp_path, tmp_path / DEFAULT_QUERY_DB_NAME).is_current()
 
     def test_only_new_logs_are_applied_on_a_refresh(self, tmp_path):
         _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
