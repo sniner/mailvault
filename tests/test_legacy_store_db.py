@@ -40,12 +40,12 @@ def test_where_a_message_was_seen_is_what_the_migration_comes_for(tmp_path):
     """The one thing the old database held that exists nowhere else."""
     path = tmp_path / "store.db"
     with legacy_store_db(path) as old:
-        mailbox = old.add_mailbox("ruhlgroup.com")
+        mailbox = old.add_mailbox("example.com")
         message = old.add_message("aaa", subject="One", mailbox_id=mailbox)
         old.add_message_labels(message, "INBOX", "Archiv/2016")
 
     with store_db.StoreDatabase(path) as db:
-        assert db.message_mailboxes() == {message: ["ruhlgroup.com"]}
+        assert db.message_mailboxes() == {message: ["example.com"]}
         assert sorted(db.message_labels()[message]) == ["Archiv/2016", "INBOX"]
 
 

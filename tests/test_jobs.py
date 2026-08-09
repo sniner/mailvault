@@ -1612,7 +1612,7 @@ class TestVerify:
         client.fetch_message.assert_not_called()
 
     def test_a_byte_identical_duplicate_is_not_a_missing_message(self, tmp_path):
-        """The finding from `archive-ruhl`: 1,729 reported missing, none missing.
+        """The finding from the reference archive: 1,729 reported missing, none missing.
 
         A server folder may hold the same message twice, byte for byte. The
         archive is addressed by content and holds it once -- which is its job,
@@ -1697,7 +1697,7 @@ class TestVerify:
         assert len(list(cas.mail_store(tmp_path).walk())) == 1
 
     def test_a_repair_that_recovers_nothing_leaves_the_log_alone(self, tmp_path):
-        """Measured on `archive-ruhl`: 1,729 duplicates, 1,729 needless entries.
+        """Measured on the reference archive: 1,729 duplicates, 1,729 needless entries.
 
         The log records observations, and an observation already recorded says no
         more than the first one did -- `compact` exists to take such repeats back

@@ -60,9 +60,9 @@ class TestPlacesThatWouldCollide:
         assert one != other, "but the name must"
 
     def test_a_hyphen_and_a_space_normalise_the_same(self):
-        hyphen = heads.head_name("job", "Ruhl-Projekte")
+        hyphen = heads.head_name("job", "Alte-Projekte")
 
-        assert hyphen != heads.head_name("job", "Ruhl Projekte")
+        assert hyphen != heads.head_name("job", "Alte Projekte")
 
     def test_the_separator_between_job_and_folder_cannot_be_shifted(self):
         """Without a separator that cannot occur, ("a", "b/c") and ("a/b", "c") agree."""
@@ -91,7 +91,7 @@ class TestNamesAtTheEdges:
     def test_a_very_deep_folder_is_cut_to_the_limit(self):
         deep = "/".join(f"Ordner{n}" for n in range(60))
 
-        name = heads.head_name("ruhlgroup.com", deep)
+        name = heads.head_name("example.com", deep)
         slug, _, identity = name.rpartition(".")
 
         assert len(slug) <= heads.SLUG_LIMIT

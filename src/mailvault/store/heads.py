@@ -101,7 +101,7 @@ def _identity(job: str, folder: str | None) -> str:
 
     The slug is lossy and its collisions are not contrived: `INBOX/Sent` and
     `INBOX.Sent` are different folders on servers that differ only in their
-    hierarchy separator, `Ruhl-Projekte` and `Ruhl Projekte` normalise the same,
+    hierarchy separator, `Alte-Projekte` and `Alte Projekte` normalise the same,
     and so does anything that agrees for the first however-many characters. A
     collision would mean two places sharing one file, and the second one's
     resume point overwriting the first -- a UID watermark from folder A applied

@@ -19,9 +19,9 @@ def _archive(path):
             datetime(2024, 3, 11, 10, 0, tzinfo=UTC),
             "Rechnung 4711",
         )
-        db.add_message_sender(first, "info@ruhlgroup.com")
+        db.add_message_sender(first, "info@example.com")
         db.add_message_recipients(first, "stefan@example.org")
-        db.add_message_location(first, "ruhlgroup.com", "Archiv")
+        db.add_message_location(first, "example.com", "Archiv")
 
         second = db.add_message(
             "b" * 96,
@@ -30,8 +30,8 @@ def _archive(path):
             "Lieferschein",
         )
         db.add_message_sender(second, "versand@example.net")
-        db.add_message_recipients(second, "info@ruhlgroup.com")
-        db.add_message_location(second, "ruhlgroup.com", "INBOX")
+        db.add_message_recipients(second, "info@example.com")
+        db.add_message_location(second, "example.com", "INBOX")
 
         third = db.add_message("c" * 96, "", None, "")
         db.add_message_location(third, None, "docuware-2019")
@@ -52,18 +52,18 @@ class TestFilters:
         assert _ids(search(db_path, SearchQuery())) == ["a", "b", "c"]
 
     def test_the_sender_is_matched_anywhere_and_case_is_ignored(self, db_path):
-        assert _ids(search(db_path, SearchQuery(sender="RUHLgroup"))) == ["a"]
+        assert _ids(search(db_path, SearchQuery(sender="XAMPLE.COM"))) == ["a"]
 
     def test_sender_and_recipient_are_not_the_same_question(self, db_path):
         """The same address on both sides of two different messages."""
-        assert _ids(search(db_path, SearchQuery(sender="info@ruhlgroup.com"))) == ["a"]
-        assert _ids(search(db_path, SearchQuery(recipient="info@ruhlgroup.com"))) == ["b"]
+        assert _ids(search(db_path, SearchQuery(sender="info@example.com"))) == ["a"]
+        assert _ids(search(db_path, SearchQuery(recipient="info@example.com"))) == ["b"]
 
     def test_the_subject_is_matched_anywhere(self, db_path):
         assert _ids(search(db_path, SearchQuery(subject="4711"))) == ["a"]
 
     def test_a_place_can_be_asked_for_by_either_half(self, db_path):
-        assert _ids(search(db_path, SearchQuery(mailbox="ruhlgroup"))) == ["a", "b"]
+        assert _ids(search(db_path, SearchQuery(mailbox="example.com"))) == ["a", "b"]
         assert _ids(search(db_path, SearchQuery(folder="Archiv"))) == ["a"]
 
     def test_a_place_with_no_mailbox_is_still_findable(self, db_path):
@@ -71,8 +71,9 @@ class TestFilters:
         assert _ids(search(db_path, SearchQuery(folder="docuware"))) == ["c"]
 
     def test_filters_are_combined_with_and(self, db_path):
-        assert _ids(search(db_path, SearchQuery(sender="ruhlgroup", folder="INBOX"))) == []
-        assert _ids(search(db_path, SearchQuery(sender="ruhlgroup", folder="Archiv"))) == ["a"]
+        sender = "info@example.com"
+        assert _ids(search(db_path, SearchQuery(sender=sender, folder="INBOX"))) == []
+        assert _ids(search(db_path, SearchQuery(sender=sender, folder="Archiv"))) == ["a"]
 
     def test_dates_are_compared_by_day(self, db_path):
         assert _ids(search(db_path, SearchQuery(since="2025-01-01"))) == ["b"]

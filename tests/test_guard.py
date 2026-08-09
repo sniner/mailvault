@@ -85,27 +85,27 @@ class TestCheckJobs:
         _with_heads(tmp_path, "gmail.com")
 
         with pytest.raises(JobError, match="--allow-new-mailbox"):
-            guard.check_jobs(tmp_path, _jobs("gmail.com", "ruhlgroup.com"))
+            guard.check_jobs(tmp_path, _jobs("gmail.com", "example.com"))
 
     def test_the_message_names_both_sides(self, tmp_path):
         """Enough to decide without opening anything: who is here, who is not."""
         _with_heads(tmp_path, "gmail.com")
 
         with pytest.raises(JobError) as excinfo:
-            guard.check_jobs(tmp_path, _jobs("ruhlgroup.com"))
+            guard.check_jobs(tmp_path, _jobs("example.com"))
 
         message = str(excinfo.value)
         assert "gmail.com" in message
-        assert "ruhlgroup.com" in message
+        assert "example.com" in message
         assert str(tmp_path) in message
 
     def test_the_override_passes_and_leaves_a_warning(self, tmp_path, caplog):
         _with_heads(tmp_path, "gmail.com")
 
         with caplog.at_level(logging.WARNING):
-            guard.check_jobs(tmp_path, _jobs("ruhlgroup.com"), allow_new=True)
+            guard.check_jobs(tmp_path, _jobs("example.com"), allow_new=True)
 
-        assert any("ruhlgroup.com" in r.getMessage() for r in caplog.records)
+        assert any("example.com" in r.getMessage() for r in caplog.records)
 
     def test_an_archive_nobody_wrote_into_takes_anything(self, tmp_path):
         guard.check_jobs(tmp_path, _jobs("gmail.com"))

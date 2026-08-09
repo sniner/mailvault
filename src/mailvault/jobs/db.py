@@ -525,7 +525,7 @@ class SearchQuery:
     """What to look for. Every field given has to match; empty means unfiltered.
 
     The text fields match anywhere in the value and ignore case, because that is
-    what somebody typing `--from ruhl` means. `since` and `until` are dates and
+    what somebody typing `--from example` means. `since` and `until` are dates and
     compare against the day a message is dated, whatever timezone it carried.
     """
 

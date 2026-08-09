@@ -215,7 +215,7 @@ class TestMailboxGuard:
 
     def test_a_configuration_that_never_wrote_here_is_refused(self, monkeypatch, tmp_path):
         archive = self._archive(tmp_path, "gmail.com", "posteo.de")
-        ran = self._jobs_run(monkeypatch, ["ruhlgroup.com"])
+        ran = self._jobs_run(monkeypatch, ["example.com"])
 
         with pytest.raises(jobs.JobError, match="wrong configuration"):
             commands.run_mailbox(_args(archive=archive))
@@ -225,7 +225,7 @@ class TestMailboxGuard:
     def test_nothing_is_touched_before_the_check(self, monkeypatch, tmp_path):
         """The point of the exercise: it fails before the first job, not during."""
         archive = self._archive(tmp_path, "gmail.com")
-        ran = self._jobs_run(monkeypatch, ["gmail.com", "ruhlgroup.com"])
+        ran = self._jobs_run(monkeypatch, ["gmail.com", "example.com"])
 
         with pytest.raises(jobs.JobError):
             commands.run_mailbox(_args(archive=archive))

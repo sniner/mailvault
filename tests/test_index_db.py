@@ -134,11 +134,11 @@ def test_index_db_an_unknown_half_of_a_place_is_null_not_invented(tmp_path):
     db_path = tmp_path / "test.db"
     with index_db.IndexDatabase(db_path) as db:
         no_folder = db.add_message("h1", "<a@example.com>", None, "A")
-        db.add_message_location(no_folder, "ruhlgroup.com", None)
+        db.add_message_location(no_folder, "example.com", None)
         no_mailbox = db.add_message("h2", "<b@example.com>", None, "B")
         db.add_message_location(no_mailbox, None, "docuware-2019")
 
-        assert _places(db, no_folder) == [("ruhlgroup.com", None)]
+        assert _places(db, no_folder) == [("example.com", None)]
         assert _places(db, no_mailbox) == [(None, "docuware-2019")]
 
 
@@ -153,10 +153,10 @@ def test_index_db_a_repeated_place_with_an_unknown_half_is_still_one_row(tmp_pat
     with index_db.IndexDatabase(db_path) as db:
         msg_id = db.add_message("h1", "<a@example.com>", None, "A")
         for _ in range(3):
-            db.add_message_location(msg_id, "ruhlgroup.com", None)
+            db.add_message_location(msg_id, "example.com", None)
             db.add_message_location(msg_id, None, "docuware-2019")
 
-        assert _places(db, msg_id) == [(None, "docuware-2019"), ("ruhlgroup.com", None)]
+        assert _places(db, msg_id) == [(None, "docuware-2019"), ("example.com", None)]
 
 
 def test_index_db_sender_and_recipients(tmp_path):
