@@ -890,3 +890,46 @@ class TestVerifyReportRepairCounts:
         commands.report_verify("job", self._results(on_server=3, extra_copies=1), repaired=True)
 
         assert "0 restored" in capsys.readouterr().out
+
+
+class TestTheLogIsReadOncePerRun:
+    """One archive has one metadata log, however many jobs the run names.
+
+    Measured on a real `verify`: five jobs, five identical reads, five identical
+    lines reporting 219,962 messages in 59 places -- 2.9 s of a 60 s run. The
+    same shape as the query database refreshing once per job, in the other
+    command, and identical output is what gives it away both times.
+    """
+
+    def _config(self, *names: str) -> conf.Config:
+        return conf.Config(jobs=[conf.JobConfig(name=n) for n in names])
+
+    def test_three_jobs_read_it_once(self, tmp_path, monkeypatch, caplog):
+        marker.write(tmp_path)
+        _archive_with_a_log(tmp_path)
+        monkeypatch.setattr(conf, "load", lambda *a, **kw: self._config("one", "two", "three"))
+        # Each job asks for a folder with nothing archived, which is what makes
+        # the question get asked at all.
+        def _ask(job, args, config, destination=None, places=None):
+            assert places is not None, "the run has to hand one down"
+            places.of(job.name, "INBOX")
+
+        monkeypatch.setattr(commands, "_run_job", _ask)
+
+        with caplog.at_level(logging.INFO):
+            commands.run_mailbox(_args(archive=tmp_path, allow_new_mailbox=True))
+
+        reads = [r for r in caplog.records if "reading the metadata log" in r.getMessage()]
+        assert len(reads) == 1, [r.getMessage() for r in caplog.records]
+
+    def test_it_stays_unread_when_nobody_asks(self, tmp_path, monkeypatch, caplog):
+        """The steady state: every folder has a resume point and nothing looks."""
+        marker.write(tmp_path)
+        _archive_with_a_log(tmp_path)
+        monkeypatch.setattr(conf, "load", lambda *a, **kw: self._config("one"))
+        monkeypatch.setattr(commands, "_run_job", lambda *a, **kw: None)
+
+        with caplog.at_level(logging.INFO):
+            commands.run_mailbox(_args(archive=tmp_path, allow_new_mailbox=True))
+
+        assert not any("reading the metadata log" in r.getMessage() for r in caplog.records)

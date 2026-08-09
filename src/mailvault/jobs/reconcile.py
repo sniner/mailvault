@@ -118,6 +118,46 @@ def places_from_log(log_root: pathlib.Path) -> dict[tuple[str, str | None], set[
     return places
 
 
+class ArchivedPlaces:
+    """What the archive already holds, read from the log at most once per run.
+
+    One archive has one metadata log, and it names every place in it -- so
+    reading it per job is reading the same 60 files five times to filter each
+    time by a different mailbox. Measured on a real run: five jobs, five
+    identical reads, five identical lines reporting 219,962 messages in 59
+    places, 2.9 seconds of a 60-second `verify`. Identical output is the tell.
+
+    Lazy, because in the steady state nobody asks: a backup only needs it for a
+    folder without a resume point, and where every folder has one the log stays
+    unread.
+
+    Its scope is one run, and that is why the caller makes it rather than each
+    job. A run that writes to the log leaves it stale afterwards, which costs
+    nothing: what a job writes belongs to that job's own places, and every other
+    job asks about its own.
+    """
+
+    def __init__(self, log_root: pathlib.Path):
+        self._log_root = log_root
+        self._places: dict[tuple[str, str | None], set[str]] | None = None
+
+    def of(self, job_name: str, folder: str) -> set[str]:
+        return self._all().get((job_name, folder), set())
+
+    def _all(self) -> dict[tuple[str, str | None], set[str]]:
+        if self._places is None:
+            # Named without a job in front of it: the log belongs to the
+            # archive, and the archive was named once when the run started.
+            log.info("reading the metadata log")
+            self._places = places_from_log(self._log_root)
+            log.info(
+                "%s message(s) recorded in %s place(s)",
+                f"{sum(len(ids) for ids in self._places.values()):,}",
+                len(self._places),
+            )
+        return self._places
+
+
 def archived_message_counts(
     store: cas.ContentAddressedStorage,
     store_ids: collections.abc.Iterable[str],

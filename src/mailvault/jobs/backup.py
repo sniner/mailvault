@@ -21,31 +21,10 @@ from mailvault.backend import base, session
 from mailvault.jobs.common import _seal_log
 from mailvault.jobs.db import DEFAULT_QUERY_DB_NAME, refresh_db
 from mailvault.jobs.migration import migrate_archive
-from mailvault.jobs.reconcile import places_from_log, reconcile_folder
+from mailvault.jobs.reconcile import ArchivedPlaces, reconcile_folder
 from mailvault.store import cas, heads, metalog
 
 log = logging.getLogger(__name__)
-
-
-class _ArchivedPlaces:
-    """What the archive already holds, read from the log at most once per run.
-
-    Only a folder that has to be caught up needs this, and reading the whole
-    metadata log is not a cost an ordinary incremental run should carry. In the
-    steady state every folder has a resume point, nothing asks, and the log stays
-    unread.
-    """
-
-    def __init__(self, log_root: pathlib.Path, job_name: str):
-        self._log_root = log_root
-        self._job_name = job_name
-        self._places: dict[tuple[str, str | None], set[str]] | None = None
-
-    def of(self, folder: str) -> set[str]:
-        if self._places is None:
-            log.info("%s: reading the metadata log", self._job_name)
-            self._places = places_from_log(self._log_root)
-        return self._places.get((self._job_name, folder), set())
 
 
 def _resume_point(heads_root: pathlib.Path, job_name: str, folder: str) -> dict | None:
@@ -140,12 +119,12 @@ def _backup_to_log(
     job: conf.JobConfig,
     store_path: pathlib.Path,
     recorded: _Recorded,
+    places: ArchivedPlaces,
     incremental: bool = True,
 ) -> None:
     """Back up the selected folders, recording locations and resume state."""
     heads_root = store_path / heads.DEFAULT_HEADS_DIR
     log_root = store_path / metalog.DEFAULT_LOG_DIR
-    places = _ArchivedPlaces(log_root, job.name)
     folders = job.folders if job.folders else mb.folders()
     for folder in folders:
         try:
@@ -173,7 +152,7 @@ def _backup_folder(
     folder: str,
     heads_root: pathlib.Path,
     log_root: pathlib.Path,
-    places: _ArchivedPlaces,
+    places: ArchivedPlaces,
     incremental: bool = True,
 ) -> bool:
     """Back up one folder, recording where its messages were seen.
@@ -291,7 +270,7 @@ def _catch_up_if_possible(
     folder: str,
     heads_root: pathlib.Path,
     log_root: pathlib.Path,
-    places: _ArchivedPlaces,
+    places: ArchivedPlaces,
     void_previous: bool = False,
 ) -> bool | None:
     """Bring the folder back in step by listing it, and say whether it wrote.
@@ -326,7 +305,7 @@ def _catch_up_if_possible(
     head = heads.read(heads_root, job.name, folder)
     if head is not None and head.log is None:
         return None
-    archived = places.of(folder)
+    archived = places.of(job.name, folder)
     if not archived:
         return None
     return _catch_up_folder(
@@ -443,6 +422,7 @@ def backup(
     compress: bool = False,
     index_db: bool = False,
     incremental: bool = True,
+    places: ArchivedPlaces | None = None,
 ) -> None:
     """Back up one job's folders into the archive at `store_path`.
 
@@ -471,10 +451,14 @@ def backup(
     """
     migrate_archive(store_path)
     recorded = _Recorded()
+    if places is None:
+        places = ArchivedPlaces(store_path / metalog.DEFAULT_LOG_DIR)
     try:
         with session.open_mailbox(job) as mb:
             store = cas.mail_store(store_path, compress=compress)
-            _backup_to_log(mb, store, job, store_path, recorded, incremental=incremental)
+            _backup_to_log(
+                mb, store, job, store_path, recorded, places, incremental=incremental
+            )
     finally:
         if index_db and recorded.folders:
             _refresh_query_db(store_path)

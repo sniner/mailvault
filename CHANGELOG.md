@@ -75,6 +75,12 @@
 
 ### Fixed
 
+- **The metadata log is read once per run, not once per job.** An archive has one log and it names
+  every place in it, so each job was reading all of it to keep the part that is theirs. On a
+  five-job `verify` that is five identical reads reporting five identical totals -- 2.9 seconds of
+  a 60-second run, and it grows with the log. Both `backup` and `verify` now share one reading,
+  and it still happens only when something actually asks
+
 - **A resume point the source rejects is forgotten instead of offered again.** It was only ever
   set, never cleared, so a folder whose point went void -- a UIDVALIDITY change, a `410 Gone` --
   kept it, offered it on the next run, had it refused again, and reconciled itself from scratch

@@ -18,7 +18,7 @@ import pathlib
 from mailvault import conf
 from mailvault.backend import session
 from mailvault.jobs.common import JobError
-from mailvault.jobs.reconcile import ReconcileResult, places_from_log, reconcile_folder
+from mailvault.jobs.reconcile import ArchivedPlaces, ReconcileResult, reconcile_folder
 from mailvault.store import cas, heads, metalog
 
 log = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ def verify(
     store_path: pathlib.Path,
     repair: bool = False,
     compress: bool = False,
+    places: ArchivedPlaces | None = None,
 ) -> list[VerifyResult]:
     """Check the archive for messages the server still has but the archive lacks.
 
@@ -55,16 +56,11 @@ def verify(
     log_root = store_path / metalog.DEFAULT_LOG_DIR
     heads_root = store_path / heads.DEFAULT_HEADS_DIR
     # The first thing that happens and the first thing that takes a while: the
-    # whole log is read before a connection is even opened. Announcing it is what
-    # keeps the start of the command from looking like nothing at all.
-    log.info("%s: reading the metadata log", job.name)
-    places = places_from_log(log_root)
-    log.info(
-        "%s: %s message(s) recorded in %s place(s)",
-        job.name,
-        f"{sum(len(ids) for ids in places.values()):,}",
-        len(places),
-    )
+    # whole log is read before a connection is even opened, and it announces
+    # itself for that reason. `places` comes from the caller where there is a
+    # run to share it across -- one archive has one log, and every job was
+    # reading all of it to keep the sixth of it that is theirs.
+    places = places if places is not None else ArchivedPlaces(log_root)
     with session.open_mailbox(job) as mb:
         store = cas.mail_store(store_path, compress=compress)
         folders = job.folders if job.folders else list(mb.folders())
@@ -76,7 +72,7 @@ def verify(
                         store,
                         log_root,
                         heads_root,
-                        places.get((job.name, folder), set()),
+                        places.of(job.name, folder),
                         job.name,
                         folder,
                         repair=repair,

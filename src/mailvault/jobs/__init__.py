@@ -26,10 +26,12 @@ from mailvault.jobs.db import (
 from mailvault.jobs.folders import folder_list
 from mailvault.jobs.init import InitResult, init_archive
 from mailvault.jobs.migration import MigrationResult, migrate_archive
+from mailvault.jobs.reconcile import ArchivedPlaces
 from mailvault.jobs.verification import VerifyResult, verify
 
 __all__ = [
     "DEFAULT_QUERY_DB_NAME",
+    "ArchivedPlaces",
     "CheckResult",
     "Freshness",
     "InitResult",

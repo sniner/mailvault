@@ -162,6 +162,7 @@ def _run_job(
     args: argparse.Namespace,
     config: conf.Config,
     destination: pathlib.Path | None = None,
+    places: jobs.ArchivedPlaces | None = None,
 ) -> None:
     log.info(f"Job item: {job.name}")
 
@@ -185,10 +186,13 @@ def _run_job(
             compress=compress,
             index_db=index_db,
             incremental=incremental,
+            places=places,
         )
     elif args.command == "verify":
         compress = args.compress or config.compress
-        results = jobs.verify(job, destination, repair=args.repair, compress=compress)
+        results = jobs.verify(
+            job, destination, repair=args.repair, compress=compress, places=places
+        )
         report_verify(job.name, results, repaired=args.repair)
 
 
@@ -238,15 +242,20 @@ def run_mailbox(args: argparse.Namespace) -> int:
     # worth nothing once a message has been written -- or, with
     # `delete_after_export`, removed from the server.
     destination = None
+    places = None
     if needs_archive:
         destination = archive
         guard.check_jobs(destination, selected, allow_new=args.allow_new_mailbox)
+        # One archive, one metadata log, one reading of it -- however many jobs
+        # the configuration names. Every job used to read all of it to keep the
+        # part that is theirs.
+        places = jobs.ArchivedPlaces(destination / metalog.DEFAULT_LOG_DIR)
 
     for job in selected:
         # One broken job must not stop the remaining ones, but the run as a
         # whole reports failure so callers/cron can react.
         try:
-            _run_job(job, args, config, destination)
+            _run_job(job, args, config, destination, places)
         except EXPECTED_ERRORS as exc:
             # A misconfigured or refused job is a user error, not a crash --
             # reported as one line here for the same reason `main` does it.
