@@ -234,8 +234,7 @@ database once:
 
 ```console
 $ mailvault db create
-130,997 message(s) read from the archive
-metadata log: 60 file(s), 219,690 of 219,690 location(s) applied
+130,997 message(s) named by 60 log file(s), 219,690 of 219,690 location(s) applied
 index.db: written
 ```
 
@@ -305,10 +304,12 @@ holds no fact the archive does not:
 $ mailvault db create --force
 ```
 
-`db drop` deletes it without asking and without a `--force`, for the same
-reason. Mail imported before `archive import` took a `--name` has no log entry
-and so is not picked up by an update; `db create --force` reads the archive again
-and finds it.
+`db drop` deletes it without asking and without a `--force`, for the same reason.
+
+What it holds is the mail the archive's log accounts for. Mail imported before
+`archive import` took a `--name` has no log entry, and building the database
+again will not find it either -- give it a place with `archive adopt` first, and
+it is in like everything else.
 
 
 ## Working on the archive

@@ -759,3 +759,85 @@ class TestMailStore:
         _status, _store_id, path = cas.mail_store(tmp_path, compress=True).add(b"a message")
 
         assert path.suffix == ".zst"
+
+
+class TestOpeningByStoreId:
+    """The read path of everything that has an id and wants what is behind it."""
+
+    @staticmethod
+    def _store(tmp_path, compress: bool = False) -> cas.ContentAddressedStorage:
+        return cas.ContentAddressedStorage(root_dir=tmp_path, suffix=".eml", compress=compress)
+
+    def test_it_yields_the_content_whatever_it_is_stored_as(self, tmp_path):
+        plain = self._store(tmp_path / "plain")
+        packed = self._store(tmp_path / "packed", compress=True)
+        _status, plain_id, _path = plain.add(b"a message")
+        _status, packed_id, _path = packed.add(b"a message")
+
+        with plain.reading(plain_id) as reader:
+            assert reader.read() == b"a message"
+        with packed.reading(packed_id) as reader:
+            assert reader.read() == b"a message"
+
+    def test_an_id_the_store_does_not_hold(self, tmp_path):
+        store = self._store(tmp_path)
+
+        with pytest.raises(FileNotFoundError):
+            with store.reading("ab" * 48):
+                pass
+
+    def test_a_value_that_is_not_a_hash_is_refused(self, tmp_path):
+        """It would otherwise be cut into directory names and followed."""
+        store = self._store(tmp_path)
+
+        with pytest.raises(ValueError, match="not a hash"):
+            with store.reading("../../etc/passwd"):
+                pass
+
+    def test_the_file_is_opened_and_not_asked_about_first(self, tmp_path, monkeypatch):
+        """The whole saving: one round trip per entry instead of two.
+
+        `locate(exists=True)` answers the same question with an `is_file()` before
+        the open that has to happen anyway, and over a network share that is the
+        difference between reading an archive once and reading it twice.
+        """
+        store = self._store(tmp_path)
+        _status, store_id, _path = store.add(b"a message")
+        monkeypatch.setattr(
+            pathlib.Path,
+            "is_file",
+            lambda self: pytest.fail("the entry was asked about before it was opened"),
+        )
+
+        with store.reading(store_id) as reader:
+            assert reader.read() == b"a message"
+
+    def test_it_learns_which_name_to_try_first(self, tmp_path):
+        """A store is normally all one way, so only the first entry pays for a miss."""
+        store = self._store(tmp_path, compress=True)
+        ids = [store.add(f"message {n}".encode())[1] for n in range(3)]
+        # Opened with the caller's own preference first, so nothing is learnt yet.
+        assert store._packed_first is True
+
+        plain = self._store(tmp_path)  # same directory, guesses the other way
+        assert plain._packed_first is False
+        for store_id in ids:
+            with plain.reading(store_id) as reader:
+                assert reader.read().startswith(b"message")
+        assert plain._packed_first is True, "the first miss turned it round"
+
+    def test_and_finds_an_entry_the_other_way_round_again(self, tmp_path):
+        """A half-converted store costs one wasted open per switch, and no more."""
+        store = self._store(tmp_path)
+        _status, plain_id, _path = store.add(b"stored plain")
+        _status, packed_id, _path = self._store(tmp_path, compress=True).add(b"stored packed")
+
+        for store_id, expected in ((packed_id, b"stored packed"), (plain_id, b"stored plain")):
+            with store.reading(store_id) as reader:
+                assert reader.read() == expected
+
+    def test_the_header_alone_can_be_had_by_id(self, tmp_path):
+        store = self._store(tmp_path)
+        _status, store_id, _path = store.add(b"Subject: hello\r\n\r\nthe body")
+
+        assert store.read_header_of(store_id) == b"Subject: hello\r\n\r\n"

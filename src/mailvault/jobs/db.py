@@ -241,22 +241,82 @@ def _mark_logs_applied(db: index_db.IndexDatabaseConnection, paths: list[pathlib
             )
 
 
-def _insert_message_from_path(
+class _Rows:
+    """The message rows this run has made, so each message is read once.
+
+    A message lies at as many places as it was observed in, and the log names it
+    once per place -- a Gmail message under three labels turns up in three files.
+    Reading its headers three times would be three round trips over a share for
+    an answer that cannot have changed.
+
+    Misses are remembered too, and for the same reason: an entry the log names
+    and the archive no longer holds costs one look, not one per place it was
+    recorded in.
+
+    It reports its own progress, because it is the one thing here that is slow:
+    everything else in a build is arithmetic on values already in hand.
+    """
+
+    def __init__(
+        self,
+        db: index_db.IndexDatabaseConnection,
+        store: cas.ContentAddressedStorage,
+    ):
+        self._db = db
+        self._store = store
+        # Empty for a fresh database, and the rows already there for a refresh.
+        self._known = db.store_id_map()
+        self._missing: set[str] = set()
+        self.created = 0
+
+    def of(self, store_id: str) -> int | None:
+        """The row id of a message, making the row the first time it is asked for.
+
+        None where the archive does not hold that message: the log records what
+        was observed and never that it is still there, so an entry naming a
+        message that has since been removed is an ordinary thing to meet.
+        """
+        msg_id = self._known.get(store_id)
+        if msg_id is not None:
+            return msg_id
+        if store_id in self._missing:
+            return None
+        msg_id = _insert_message(self._db, self._store, store_id)
+        if msg_id is None:
+            self._missing.add(store_id)
+            return None
+        self._known[store_id] = msg_id
+        self.created += 1
+        if self.created % CREATE_DB_BATCH == 0:
+            # Named for what it is doing, not merely counted. This reads every
+            # message the log accounts for and takes minutes on a large archive,
+            # and a bare "N message(s) read" leaves a reader watching a number
+            # climb with no idea what it is for.
+            log.info("building the query database: %s message(s) read", f"{self.created:,}")
+        return msg_id
+
+
+def _insert_message(
     db: index_db.IndexDatabaseConnection,
     store: cas.ContentAddressedStorage,
-    path: pathlib.Path,
-) -> int:
+    store_id: str,
+) -> int | None:
     """Read one archived message's headers and insert its row, returning its id.
 
     Only the headers are read: everything the database keeps about a message --
     sender, recipients, subject, date -- is in them, and the attachments behind
-    them are the bulk of the bytes.
+    them are the bulk of the bytes. The entry is opened by its id rather than
+    looked up first, which is one round trip instead of two -- see
+    `cas.ContentAddressedStorage.reading`.
+
+    None when the archive holds no such entry.
     """
-    header = mailutils.decode_email_header(store.read_header(path))
+    try:
+        raw = store.read_header_of(store_id)
+    except FileNotFoundError:
+        return None
+    header = mailutils.decode_email_header(raw)
     from_addrs, to_addrs = mailutils.addresses(header)
-    store_id = store.hashval_of(path)
-    if store_id is None:
-        raise ValueError(f"not an entry of the store: {path}")
     email_id = mailutils.message_id(header)
     date = mailutils.date(header)
     subject = mailutils.subject(header)
@@ -267,59 +327,55 @@ def _insert_message_from_path(
     return msg_id
 
 
-def _replay_metalog(
+def _fold_log_file(
     db: index_db.IndexDatabaseConnection,
-    log_root: pathlib.Path,
-) -> ReplayResult:
-    """Apply every log file to the database, in order.
+    rows: _Rows,
+    logfile: metalog.LogFile,
+) -> tuple[int, int]:
+    """Record one log file's observations, returning (applied, unknown).
 
-    Idempotent, so replaying is nothing more than calling it again: a message
-    seen in two places ends up with two rows exactly as the runs that observed it
-    would have written. Entries whose message is not in the archive are counted
-    and skipped -- the blob was removed, and inventing a row for it would
-    describe mail that is not there.
+    One file is one place, and every line in it says that message was seen
+    there. A file that names no mailbox is applied all the same -- the database
+    can hold either half as NULL, and a folder without a mailbox is what an
+    import and `archive adopt` write.
 
-    One log file is one place, and it goes in as one row. A file that names no
-    mailbox is applied all the same: it used to be skipped with a warning, which
-    threw away the only statement it carried. Whether both halves of a place are
-    known is not this reader's business -- the database can hold either as NULL,
-    and a folder without a mailbox is what an import writes.
+    One transaction per file rather than per entry: the write methods commit
+    individually when called at the top level, which would mean a commit per
+    message and is ruinous over a network share.
     """
-    result = ReplayResult()
-    known = db.store_id_map()
-    for logfile in metalog.read_all(log_root):
-        result.files += 1
-        if logfile.mailbox is None and logfile.folder is None:
-            log.warning("%s: names no place at all, skipped", metalog.where(logfile.path))
-            continue
-        # One transaction per file rather than per entry: the write methods
-        # commit individually when called at the top level, which would mean a
-        # commit per message and is ruinous over a network share.
-        with db.transaction():
-            for store_id in logfile.store_ids:
-                result.entries += 1
-                message_id = known.get(store_id)
-                if message_id is None:
-                    result.unknown += 1
-                    continue
-                db.add_message_location(message_id, logfile.mailbox, logfile.folder)
-                result.applied += 1
-    return result
+    applied = unknown = 0
+    with db.transaction():
+        for store_id in logfile.store_ids:
+            msg_id = rows.of(store_id)
+            if msg_id is None:
+                unknown += 1
+                continue
+            db.add_message_location(msg_id, logfile.mailbox, logfile.folder)
+            applied += 1
+    return applied, unknown
 
 
 def create_db(
     store_path: pathlib.Path,
     db_path: pathlib.Path,
-    mailbox: str | None = None,
     force: bool = False,
 ) -> RebuildResult:
-    """Build a queryable database from the archive and its log.
+    """Build a queryable database from the archive's metadata log.
 
     Not a rebuild of something the archive owns: the archive holds no database.
-    This makes one, wherever the caller asks for it, out of the two things that do
-    live there. The messages supply everything they carry in themselves -- sender,
-    recipients, subject, date -- and the log supplies the one thing they do not,
-    which mailbox and folder each was seen in.
+    This makes one, wherever the caller asks for it, out of what does live there.
+    The log says which messages the archive accounts for and where each was seen;
+    each of those is then read for what it carries in itself -- sender,
+    recipients, subject, date.
+
+    **The log is the list, not the store.** An archive is the mail and the log
+    together, and a message the log names nowhere is not part of it yet -- so it
+    is not in the projection either, and that is the archive being incomplete
+    rather than the database being wrong. `archive check` reports such messages
+    and `archive adopt` takes them in. Going through the log rather than walking
+    the shards is also what makes this half as expensive: the walk pays a round
+    trip per shard directory, and an id can be turned into an open file without
+    it.
 
     What comes out is a snapshot. It is accurate for the moment it was built and
     goes stale from the next backup onwards; build it again when that matters, or
@@ -342,7 +398,7 @@ def create_db(
     tmp_path = db_path.with_name(db_path.name + "._tmp_")
     tmp_path.unlink(missing_ok=True)
     try:
-        _build_db(store, store_path, tmp_path, mailbox, result)
+        _build_db(store, store_path, tmp_path, result)
     except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
@@ -354,35 +410,23 @@ def _build_db(
     store: cas.ContentAddressedStorage,
     store_path: pathlib.Path,
     db_path: pathlib.Path,
-    mailbox: str | None,
     result: RebuildResult,
 ) -> None:
-    """Fill a fresh database from the archive and its log."""
+    """Fill a fresh database from the archive's log and the messages it names."""
     log_root = store_path / metalog.DEFAULT_LOG_DIR
     with index_db.IndexDatabase(path=db_path) as db:
         _ensure_bookkeeping(db)
-        # One transaction per batch, not per message. Every write method commits
-        # on its own when called at the top level, which over a whole archive is
-        # half a million commits -- unnoticeable on a RAM disk and hours on a
-        # real filesystem, where each one waits for the device.
-        for batch in utils.batched(store.walk(), CREATE_DB_BATCH):
-            with db.transaction():
-                for path in batch:
-                    msg_id = _insert_message_from_path(db, store, path)
-                    if mailbox:
-                        # `--mailbox` files messages the archive records no place
-                        # for. It names a mailbox and no folder, which is exactly
-                        # what it is: an assertion about whose mail this is, and
-                        # none about where in it.
-                        db.add_message_location(msg_id, mailbox, None)
-                    result.messages += 1
-            # Named for what it is doing, not merely counted. This reads every
-            # message in the archive and takes half an hour on a large one, and
-            # a bare "N message(s) read" in the middle of a backup leaves a
-            # reader watching a number climb with no idea what it is for.
-            log.info("building the query database: %s message(s) read", f"{result.messages:,}")
-
-        result.replay = _replay_metalog(db, log_root)
+        rows = _Rows(db, store)
+        for logfile in metalog.read_all(log_root):
+            result.replay.files += 1
+            if logfile.mailbox is None and logfile.folder is None:
+                log.warning("%s: names no place at all, skipped", metalog.where(logfile.path))
+                continue
+            result.replay.entries += len(logfile.store_ids)
+            applied, unknown = _fold_log_file(db, rows, logfile)
+            result.replay.applied += applied
+            result.replay.unknown += unknown
+        result.messages = rows.created
         # Prime the bookkeeping so a later refresh reads only files added since,
         # and so a later *reader* can tell whether the archive has moved on.
         _mark_logs_applied(db, metalog.log_files(log_root))
@@ -470,7 +514,7 @@ def _apply_new_logs(
     """
     _ensure_bookkeeping(db)
     applied = {row[0] for row in db.execute("SELECT hash FROM applied_log")}
-    known = db.store_id_map()
+    rows = _Rows(db, store)
     for path in metalog.log_files(log_root):
         if _log_hash(path) in applied:
             continue
@@ -480,22 +524,11 @@ def _apply_new_logs(
             # repaired file is retried rather than skipped for good.
             continue
         result.files += 1
-        with db.transaction():
-            for store_id in logfile.store_ids:
-                msg_id = known.get(store_id)
-                if msg_id is None:
-                    msg_id = _insert_message(db, store, store_id)
-                    if msg_id is None:
-                        result.unknown += 1
-                        continue
-                    known[store_id] = msg_id
-                    result.messages += 1
-                db.add_message_location(msg_id, logfile.mailbox, logfile.folder)
-                result.applied += 1
-            db.execute(
-                "INSERT OR IGNORE INTO applied_log (hash) VALUES (?)",
-                (_log_hash(path),),
-            )
+        folded, unknown = _fold_log_file(db, rows, logfile)
+        result.applied += folded
+        result.unknown += unknown
+        db.execute("INSERT OR IGNORE INTO applied_log (hash) VALUES (?)", (_log_hash(path),))
+    result.messages = rows.created
 
 
 def drop_db(db_path: pathlib.Path) -> bool:
@@ -661,15 +694,3 @@ def search(db_path: pathlib.Path, query: SearchQuery) -> list[SearchHit]:
         )
         for row in rows
     ]
-
-
-def _insert_message(
-    db: index_db.IndexDatabaseConnection,
-    store: cas.ContentAddressedStorage,
-    store_id: str,
-) -> int | None:
-    """Insert the row for one archived message, or None when its blob is gone."""
-    path = store.locate(store_id, exists=True)
-    if path is None:
-        return None
-    return _insert_message_from_path(db, store, path)

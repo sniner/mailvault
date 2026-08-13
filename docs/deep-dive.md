@@ -603,6 +603,21 @@ sender, recipients and date; the archive's metadata log records which folder of
 which mailbox each was seen in. Nothing in the database is a fact the archive
 does not already hold, which is why throwing it away costs nothing.
 
+**The log is the list, and not the store.** Building goes through the log and
+reads the messages it names, rather than walking the shard directories and
+reading everything that lies there. Two things follow, and the first is the
+reason for the second:
+
+- a message the log names nowhere is not in the database. It is also not part of
+  the archive yet -- the archive is the mail and the log together -- so this is
+  the archive being incomplete and not the database falling short. `archive
+  check` reports such messages and `archive adopt` takes them in
+- it costs about half of what it used to. A walk pays a round trip per shard
+  directory before anything is read, and there are about as many of those as
+  there are messages: measured on 2,000 messages, 2,231 directory rounds that no
+  longer happen. What is left is one open per message, which is the work itself.
+  On a network share that was 16 of the 33 minutes a build took
+
 **A message with an unreadable Date header matches neither `--since` nor
 `--until`.** Its date is unknown, not old.
 
@@ -630,8 +645,11 @@ The columns are `message_id` (the row's own id, internal to the database),
 what `archive export` takes).
 
 **Archives that predate the location record** have no metadata log to say where
-a message came from. `db create --mailbox NAME` attributes every such message to
-that one name, so the mailbox column is at least not empty.
+a message came from, and such a message is not in the database at all: the log is
+the list of what the archive accounts for. `archive adopt --name NAME` gives them
+a place first, and then they are in it like everything else. `db create
+--mailbox NAME` used to make the same claim inside the database only, and is
+gone.
 
 **A database written by another version of mailvault** is left alone and
 reported rather than read or upgraded. Build that one again with
@@ -995,7 +1013,7 @@ command, everything else after it.
 | `ib-mailbox --config c.toml backup <dest>` | `mailvault --archive <dest> backup` |
 | `ib-mailbox --config c.toml verify [--repair] <dest>` | `mailvault --archive <dest> verify [--repair]` |
 | `ib-archive stats\|import\|compress\|decompress <dir>` | `mailvault --archive <dir> archive stats\|import\|compress\|decompress` |
-| `ib-archive db-from-archive --mailbox NAME <dir>` | `mailvault --archive <dir> db create --mailbox NAME` |
+| `ib-archive db-from-archive --mailbox NAME <dir>` | `mailvault --archive <dir> archive adopt --name NAME`, then `db create` |
 | `ib-copy --config c.toml copy [--idle]` | — removed, see below |
 
 The third tool, `ib-copy`, has no successor. It transferred mail between two IMAP

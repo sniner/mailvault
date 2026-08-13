@@ -374,13 +374,19 @@ def _report_generation(source: pathlib.Path, result: jobs.MigrationResult) -> in
 
 
 def report_create_db(target: pathlib.Path, result: jobs.RebuildResult) -> int:
-    """Say what went into the database, and name what could not."""
+    """Say what went into the database, and name what could not.
+
+    The first line says where its number comes from, and that is not decoration.
+    It used to be the count of a walk over the whole store and is now the count
+    of what the log accounts for -- the same command, the same wording, and on an
+    archive with mail nothing records a place for, a smaller number. Somebody
+    comparing two runs across that change has to be able to see why.
+    """
     replay = result.replay
-    print(f"{result.messages:,} message(s) read from the archive")
     if replay.files:
         print(
-            f"metadata log: {replay.files:,} file(s), "
-            f"{replay.applied:,} of {replay.entries:,} location(s) applied"
+            f"{result.messages:,} message(s) named by {replay.files:,} log file(s),"
+            f" {replay.applied:,} of {replay.entries:,} location(s) applied"
         )
         if replay.unknown:
             print(
@@ -388,9 +394,11 @@ def report_create_db(target: pathlib.Path, result: jobs.RebuildResult) -> int:
                 f"not in the archive, ignored"
             )
     else:
-        # Not a failure, and the reason matters: an archive can be built entirely
-        # out of imports made before an import recorded what it brought in.
-        print("no metadata log found -- no message has a mailbox or folder in it")
+        # An empty database, and the reason has a move: an archive built entirely
+        # from imports made before an import recorded what it brought in has
+        # nothing here, and everything in it is waiting to be taken in.
+        print("no metadata log -- nothing names a message, so the database is empty")
+        print("  `archive check` says what lies here, `archive adopt` gives it a place")
     print(f"{target.name}: written")
     return 0
 
@@ -410,9 +418,15 @@ def report_update_db(target: pathlib.Path, result: jobs.RefreshResult) -> int:
     if not result.files:
         print(f"{target.name}: already up to date")
         return 0
+    # Both numbers, because they come apart and the difference is the whole
+    # answer. A log file about mail the database already had -- what `archive
+    # adopt` writes, or a folder read in full a second time -- records locations
+    # and adds no message, and "0 message(s) added" on its own reads like a run
+    # that did nothing.
     print(
         f"{target.name}: {result.files:,} log file(s) taken in,"
-        f" {result.messages:,} message(s) added"
+        f" {result.applied:,} location(s) recorded,"
+        f" {result.messages:,} message(s) new"
     )
     if result.unknown:
         print(
@@ -971,7 +985,7 @@ def run_db(args: argparse.Namespace) -> int:
             )
         return report_create_db(
             db_path,
-            jobs.create_db(archive, db_path, mailbox=args.mailbox, force=True),
+            jobs.create_db(archive, db_path, force=True),
         )
     elif cmd == "update":
         return report_update_db(db_path, jobs.refresh_db(archive, db_path))

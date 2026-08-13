@@ -242,6 +242,11 @@ class ContentAddressedStorage:
         self.depth = _checked_depth(depth, self.hashfactory)
         self.suffix = suffix
         self.blocksize = 16384
+        # Which of an entry's two possible names to try first when opening one by
+        # its id -- see `_open_entry`. The caller's own preference is the best
+        # guess available at this point and costs nothing if it is wrong: the
+        # first entry read corrects it.
+        self._packed_first = compress
         if self.compress:
             zstd.require()  # fail fast if no zstd implementation is available
 
@@ -367,6 +372,66 @@ class ContentAddressedStorage:
             with path.open("rb") as f:
                 yield f
 
+    def _open_entry(self, hashval: str) -> tuple[Any, bool]:
+        """Open the entry filed under `hashval`, whichever of its names it has.
+
+        A store id does not name a file: it names two candidates, `<hash>.eml`
+        and `<hash>.eml.zst`, and nothing in the archive says which of them is
+        there. Asking first -- which is what `locate(exists=True)` does -- costs a
+        round trip before the one that reads, and over a network share that is
+        the difference between reading an archive once and reading it twice.
+
+        So the file is opened and the miss is the answer. Which candidate to try
+        first is remembered from the last one that hit: a store is normally all
+        one way, so after the first entry every further one costs a single open.
+        A half-converted store corrects it as it goes and pays one wasted open
+        per switch, which is what makes this a guess that adapts rather than a
+        setting somebody has to keep true.
+
+        Deliberately not written down anywhere: it has to hold for a run, not
+        beyond one, and a value on disk about how the mail happens to be stored
+        would be wrong from the first `archive compress`.
+        """
+        checked = normalize_hashval(hashval)
+        path = self._path(checked)
+        plain = path / (checked + self.suffix)
+        packed = path / (checked + self.suffix + ".zst")
+        for attempt, candidate in enumerate(
+            (packed, plain) if self._packed_first else (plain, packed)
+        ):
+            try:
+                handle = candidate.open("rb")
+            except FileNotFoundError:
+                continue
+            if attempt:
+                self._packed_first = not self._packed_first
+            return handle, candidate.name.endswith(".zst")
+        raise FileNotFoundError(f"{hashval}: no entry under this id in {self.root_dir}")
+
+    @contextlib.contextmanager
+    def reading(self, hashval: str) -> collections.abc.Iterator[Any]:
+        """Yield a reader over the entry with this id.
+
+        For everyone who has a store id and wants what is behind it: where the
+        entry lies is this store's business, and whether it lies compressed is
+        nobody's. There is no mode to pass, because there is nothing to do to an
+        entry but read it -- its name is the hash of its content, so writing to
+        one would only break the name.
+
+        Raises FileNotFoundError when the store holds nothing under that id,
+        which is a thing the caller has to expect rather than an accident: the
+        metadata log names messages, and a message can have been removed since.
+        """
+        handle, packed = self._open_entry(hashval)
+        try:
+            if packed:
+                with zstd.open_reader(handle) as reader:
+                    yield reader
+            else:
+                yield handle
+        finally:
+            handle.close()
+
     def _read_until_header_end(self, reader: Any, limit: int) -> bytes:
         """Pull blocks off `reader` until the headers are complete."""
         buf = bytearray()
@@ -399,6 +464,16 @@ class ContentAddressedStorage:
         for a message that has no such line.
         """
         with self._reading(path) as reader:
+            return self._read_until_header_end(reader, limit)
+
+    def read_header_of(self, hashval: str, limit: int = 1 << 20) -> bytes:
+        """Read only the header block of the entry with this id.
+
+        What `read_header` is for a caller that walked the store, for one that
+        got the id out of the metadata log. Raises FileNotFoundError where the
+        store holds no such entry.
+        """
+        with self.reading(hashval) as reader:
             return self._read_until_header_end(reader, limit)
 
     def read(self, path: pathlib.Path) -> bytes:

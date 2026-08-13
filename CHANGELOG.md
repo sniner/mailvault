@@ -4,6 +4,18 @@
 
 ### Breaking changes
 
+- **`db create` builds from the metadata log, not from a walk over the store, and is about
+  half as expensive.** The archive is the mail and the log together; a message the log names
+  nowhere is not part of it yet, and so it is no longer in the query database either. That is not
+  the database falling short but the archive being incomplete: `archive check` reports such
+  messages and `archive adopt` takes them in. Anyone whose archive holds mail from an import made
+  before `archive import` took a `--name` should run `archive adopt` first, or the database comes
+  out smaller than it used to. The first report line says where its number comes from, so the
+  change is visible rather than puzzling
+- **`db create --mailbox` is gone.** It filed messages the archive recorded no place for under a
+  mailbox name -- a claim that lasted until the next rebuild and lived only in the database. What
+  it was for is now `archive adopt --name NAME`, which makes the same statement in the archive
+  itself, once
 - **`archive import` now requires `--name`.** The name is what the archive records the imported
   mail under, and it is the answer to a question nothing else could answer afterwards: which
   import a message came from. Existing command lines have to add it --
@@ -54,6 +66,10 @@
 
 ### Changed
 
+- **`db update` says how many locations it recorded, not only how many messages were new.** A log
+  file about mail the database already had -- what `archive adopt` writes, or a folder read in full
+  a second time -- records locations and adds no message, and "0 message(s) added" on its own read
+  like a run that had done nothing at all
 - **Stored messages and metadata log files are written read-only.** An entry is named after the
   hash of its content, so anything that changes it breaks its name -- the mode now says that to
   whatever opens the file. Comfort, not protection: it is aimed at the viewer that "repairs" the

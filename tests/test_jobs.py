@@ -1476,27 +1476,66 @@ class TestRebuildWithLog:
             assert "stale" not in db.store_id_map()
 
     def test_an_interrupted_build_leaves_the_previous_database_alone(self, tmp_path):
-        store = cas.mail_store(tmp_path)
-        store.add(DUMMY_EML)
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
         target = tmp_path / "out.db"
         jobs.create_db(tmp_path, target)
         before = target.read_bytes()
 
-        with patch("mailvault.jobs.db._replay_metalog", side_effect=KeyboardInterrupt):
+        with patch("mailvault.jobs.db._record_heads", side_effect=KeyboardInterrupt):
             with pytest.raises(KeyboardInterrupt):
                 jobs.create_db(tmp_path, target, force=True)
 
         assert target.read_bytes() == before
         assert not (tmp_path / "out.db._tmp_").exists()
 
-    def test_rebuild_without_a_log_reports_no_files(self, tmp_path):
+    def test_a_message_no_log_names_is_not_in_the_projection(self, tmp_path):
+        """The archive is the mail and the log together, and this is only the mail.
+
+        Not the database falling short but the archive being incomplete --
+        `archive check` reports such a message and `archive adopt` takes it in.
+        """
         store = cas.mail_store(tmp_path)
         store.add(DUMMY_EML)
 
         result = jobs.create_db(tmp_path, tmp_path / "out.db")
 
-        assert result.messages == 1
+        assert result.messages == 0
         assert result.replay.files == 0
+        with index_db.IndexDatabase(tmp_path / "out.db") as db:
+            assert db.store_id_map() == {}
+
+    def test_and_is_in_it_once_it_has_a_place(self, tmp_path):
+        """What `archive adopt` writes: a place with a name and no mailbox."""
+        store = cas.mail_store(tmp_path)
+        _status, store_id, _path = store.add(DUMMY_EML)
+        writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
+        writer.add(None, ["Orphans"], store_id)
+        writer.seal(datetime(2026, 8, 1, tzinfo=UTC))
+
+        result = jobs.create_db(tmp_path, tmp_path / "out.db")
+
+        assert result.messages == 1
+        assert result.replay.applied == 1
+
+    def test_a_message_at_three_places_is_read_once(self, tmp_path):
+        """The expensive part is opening it, and its headers cannot have changed."""
+        store = cas.mail_store(tmp_path)
+        _status, store_id, _path = store.add(DUMMY_EML)
+        writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
+        writer.add("job", ["INBOX", "\\All", "\\Starred"], store_id)
+        writer.seal(datetime(2026, 8, 1, tzinfo=UTC))
+
+        with patch.object(
+            cas.ContentAddressedStorage,
+            "read_header_of",
+            autospec=True,
+            side_effect=cas.ContentAddressedStorage.read_header_of,
+        ) as reads:
+            result = jobs.create_db(tmp_path, tmp_path / "out.db")
+
+        assert result.replay.applied == 3, "three places"
+        assert result.messages == 1
+        assert reads.call_count == 1, "one read"
 
 
 # ---------------------------------------------------------------------------
@@ -1883,30 +1922,15 @@ class TestFolderList:
 
 class TestUpdateDbFromArchive:
     def test_rebuilds_db(self, tmp_path):
-        # Create a CAS with a message
-        store = cas.mail_store(tmp_path)
-        store.add(DUMMY_EML)
-
-        jobs.create_db(tmp_path, tmp_path / "out.db", mailbox="test")
-
-        with index_db.IndexDatabase(tmp_path / "out.db") as db:
-            rows = db.execute("SELECT * FROM message").fetchall()
-            assert len(rows) == 1
-
-    def test_rebuilds_db_without_mailbox(self, tmp_path):
-        store = cas.mail_store(tmp_path)
-        store.add(DUMMY_EML)
+        _archive_message(tmp_path, "test", "INBOX", DUMMY_EML)
 
         jobs.create_db(tmp_path, tmp_path / "out.db")
 
         with index_db.IndexDatabase(tmp_path / "out.db") as db:
             rows = db.execute("SELECT * FROM message").fetchall()
             assert len(rows) == 1
-            # The message is there and no place is claimed for it -- which is
-            # the truth, and is what an archive built by `archive import` looks
-            # like all the way through.
             places = db.execute("SELECT * FROM message_location").fetchall()
-            assert len(places) == 0
+            assert len(places) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2067,7 +2091,6 @@ class TestRefreshDb:
             refresh_db(tmp_path, db_path)
 
         assert "no query database yet" in caplog.text
-        assert "building the query database" in caplog.text
         # Named as it reads inside the archive, not by the whole path.
         assert str(tmp_path) not in caplog.text
 

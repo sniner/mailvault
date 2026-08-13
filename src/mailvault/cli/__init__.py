@@ -406,18 +406,14 @@ def build_db_parser(sub: argparse._SubParsersAction) -> None:
         "create",
         help="Build the query database from the archive",
         description=(
-            "Read every message in the archive and build the query database from"
-            " what they say plus what the metadata log records about where they"
-            " were seen. This is the expensive one -- every message is opened --"
-            " so it says how far it has got as it goes. An existing database is"
-            " refused: `db update` brings one up to date at a fraction of the cost."
+            "Build the query database from the metadata log and the messages it"
+            " names: the log says where each was seen, the message itself supplies"
+            " sender, subject and date. This is the expensive one -- every message"
+            " is opened -- so it says how far it has got as it goes. Mail the log"
+            " names nowhere is not in it; `archive check` reports such messages and"
+            " `archive adopt` gives them a place. An existing database is refused:"
+            " `db update` brings one up to date at a fraction of the cost."
         ),
-    )
-    d_create.add_argument(
-        "--mailbox",
-        type=str,
-        metavar="NAME",
-        help="File messages the archive records no place for under this mailbox",
     )
     d_create.add_argument(
         "--force",
