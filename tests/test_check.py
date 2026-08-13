@@ -366,4 +366,4 @@ class TestTheLogChain:
         commands.report_check(tmp_path, check(tmp_path))
 
         out = capsys.readouterr().out
-        assert "the chain names are gone" in out
+        assert "named by the chain and gone" in out

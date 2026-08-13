@@ -313,7 +313,7 @@ missing:
 ```console
 $ mailvault verify
 example.org::INBOX: 77,592 on server, 43 not archived
-example.org: 43 message(s) missing, run again with --repair
+example.org: 43 messages missing, run again with --repair
 ```
 
 The comparison only lists the folder's message headers, which costs a handful
@@ -324,7 +324,7 @@ and added to the archive:
 ```console
 $ mailvault verify --repair
 example.org::INBOX: 77,592 on server, 43 not archived, 43 restored
-example.org: 43 of 43 message(s) restored
+example.org: 43 of 43 messages restored
 ```
 
 Messages are matched by their `Message-ID`. A message whose `Message-ID` is
@@ -371,7 +371,7 @@ without writing anything or removing a single source file:
 
 ```console
 $ mailvault --archive ./backup archive import --dry-run ./my_mails
-./my_mails: 20,431 message(s) read -- 38 would be imported, 20,393 already in ./backup
+./my_mails: 20,431 messages read -- 38 would be imported, 20,393 already in ./backup
 ```
 
 That second number is worth a look before a large import, especially when the
@@ -398,7 +398,7 @@ gmail.com  INBOX                      12,043  2026-08-12
 gmail.com  [Google Mail]/All Mails     4,001  2026-08-12
            docuware-2019               5,412  2026-08-02
            orphaned                      110  2026-08-13
-4 place(s), 17,565 message(s)
+4 places, 17,565 messages
   the column adds up to more: a message can be in several places
 ```
 
@@ -439,7 +439,7 @@ yet -- closer to a file git does not track than to anything in `lost+found`.
 
 ```console
 $ mailvault --archive ./backup archive adopt --name orphaned --dry-run
-110 message(s) belong to no place and would be recorded as orphaned
+110 messages belong to no place and would be recorded as orphaned
   nothing corrects the log afterwards, so the name has to be right
   nothing was written; leave out --dry-run to record them
 ```
@@ -470,11 +470,11 @@ differently on purpose. Before the run it is a choice, and another name is one
 keystroke away:
 
 ```
-docuware-2019 is already a place and holds 5,412 message(s); these would go in with them
+docuware-2019 is already a place and holds 5,412 messages; these would go in with them
 ```
 
 Afterwards there is no choice left to name, so the line is a plain fact about the
-outcome -- `recorded as docuware-2019, which now holds 5,415 message(s)`. That is
+outcome -- `recorded as docuware-2019, which now holds 5,415 messages`. That is
 what catches a mistyped name: three messages adopted into a place that now holds
 five thousand were not adopted where they were meant to go. `archive places`
 answers the same question before anything is typed, which is the better way round.
@@ -503,10 +503,10 @@ it was named for.
 
 ```console
 $ mailvault --archive ./backup archive check
-130,997 message(s) stored, 130,887 of them accounted for by 60 log file(s) in 59 place(s)
-3 message(s) referenced in the log are missing
+130,997 messages stored, 130,887 of them accounted for by 60 log files in 59 places
+3 messages referenced in the log and missing from the archive
   6f3ac1…  mail.example.org::INBOX
-NOT sound -- 3 finding(s) above
+NOT sound -- 3 findings above
 ```
 
 The two message counts are there to be subtracted: what lies in the archive, and
@@ -519,7 +519,7 @@ The last line is the verdict, and it says which kind of run it was:
 
 ```console
 $ mailvault --archive ./backup archive check
-130,997 message(s) stored, 130,887 of them accounted for by 60 log file(s) in 59 place(s)
+130,997 messages stored, 130,887 of them accounted for by 60 log files in 59 places
 sound -- every message was read and matches its checksum
 ```
 
@@ -543,8 +543,8 @@ The passes that take a while number themselves, so a long run says how much of
 it is still ahead:
 
 ```
-step 1 of 3: 20,000 file(s) seen
-step 2 of 3: 60 log file(s) file 130,997 message(s) in 219,690 place(s)
+step 1 of 3: 20,000 files seen
+step 2 of 3: 60 log files account for 130,997 messages in 219,690 places
 step 3 of 3: 4,000 of 130,997 checked
 ```
 
@@ -572,8 +572,8 @@ earlier file already names. `compact` folds them back down:
 
 ```console
 $ mailvault --archive ./backup archive compact
-1,204 log file(s) -> 59 across 59 mailbox/folder place(s)
-41,388 duplicate observation(s) dropped
+1,204 log files -> 59 across 59 places
+41,388 duplicate observations dropped
 ```
 
 It rewrites one file per mailbox/folder holding each observation once, verifies
@@ -585,7 +585,7 @@ Since it is the one pass that has the log open, it also clears away what an
 interrupted write left behind there, and says so when it finds anything:
 
 ```console
-2 leftover(s) of an interrupted write removed
+2 leftovers of an interrupted write removed
 ```
 
 Only files old enough that no running backup can still be writing them, and only
@@ -985,12 +985,12 @@ other command refuses the archive and points here.
 
 ```console
 $ mailvault --archive ./backup archive migrate
-46 resume point(s) moved into heads/
-130,887 message(s) moved into 59 mailbox/folder place(s)
+46 resume points moved into heads/
+130,887 messages moved into 59 mailbox/folder places
 the database is now store.db.migrated and is no longer used
 delete it once you are satisfied with the archive
-256 shard(s) moved into mail/
-1,204 log file(s) -> 59 across 59 place(s)
+256 shards moved into mail/
+1,204 log files -> 59 across 59 places
 mailvault archive format 1
 ```
 

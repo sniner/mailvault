@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 import msal
 
-from mailvault import conf, mailutils
+from mailvault import conf, mailutils, utils
 from mailvault.backend import base
 from mailvault.store import cas
 
@@ -258,7 +258,12 @@ class MSGraphClient:
                 resp = self._http.request(method, url, **kwargs)
             except httpx.TransportError as exc:
                 if attempt >= self.max_retries:
-                    log.error("%s: giving up after %s attempt(s): %s", url, attempt + 1, exc)
+                    log.error(
+                        "%s: giving up after %s: %s",
+                        url,
+                        utils.counted(attempt + 1, "attempt"),
+                        exc,
+                    )
                     raise
                 delay = _backoff_delay(attempt)
                 attempt += 1
@@ -514,7 +519,11 @@ class MSGraphClient:
                 continue
 
             if removed:
-                log.info("%s: %s message(s) gone from the folder", ctx, removed)
+                log.info(
+                    "%s: %s gone from the folder",
+                    ctx,
+                    utils.counted(removed, "message"),
+                )
             delta_link = data.get("@odata.deltaLink")
             if not isinstance(delta_link, str) or not delta_link:
                 # Without it there is no position to carry forward, so the next
@@ -576,7 +585,12 @@ class MSGraphClient:
             messages, delta_link = self._delta_round(folder_name, folder_id, point)
         except _DeltaExpired:
             return base.BackupResult(resume_lost=True)
-        log.info("%s::%s: found %s messages", self.job_name, folder_name, len(messages))
+        log.info(
+            "%s::%s: found %s",
+            self.job_name,
+            folder_name,
+            utils.counted(len(messages), "message"),
+        )
 
         result = base.BackupResult(total=len(messages))
         # Collected while walking the folder and relocated afterwards, so one
@@ -676,11 +690,11 @@ class MSGraphClient:
                     exc,
                 )
         log.info(
-            "%s::%s: %s of %s message(s) moved to '%s'",
+            "%s::%s: %s of %s moved to '%s'",
             self.job_name,
             folder_name,
             moved,
-            len(msg_ids),
+            utils.counted(len(msg_ids), "message"),
             dest_folder,
         )
 

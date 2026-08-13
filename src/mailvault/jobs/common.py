@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
+from mailvault import utils
 from mailvault.store import metalog
 
 log = logging.getLogger(__name__)
@@ -77,5 +78,9 @@ def seal_log(writer: metalog.LogWriter, date: datetime) -> bool:
         log.error("the metadata log was not written: %s", exc)
         return False
     if paths:
-        log.info("metadata log: %s message(s) recorded in %s place(s)", recorded, places)
+        log.info(
+            "metadata log: %s recorded in %s",
+            utils.counted(recorded, "message"),
+            utils.counted(places, "place"),
+        )
     return True

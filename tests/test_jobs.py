@@ -2330,9 +2330,7 @@ class TestTheArchiveIsNamedOnce:
                 mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
                 jobs.backup(_make_job(folders=["INBOX"]), tmp_path)
 
-        assert any(
-            "1 message(s) recorded in 1 place(s)" in r.getMessage() for r in caplog.records
-        )
+        assert any("1 message recorded in 1 place" in r.getMessage() for r in caplog.records)
 
 
 class TestAResumePointTheSourceRejected:

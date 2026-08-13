@@ -122,7 +122,8 @@ def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: boo
     for r in results:
         line = f"{job_name}::{r.folder}: {r.on_server:,} on server, {r.missing:,} not archived"
         if r.extra_copies:
-            line += f", {r.extra_copies:,} further copies of archived message(s)"
+            copies = utils.counted(r.extra_copies, "further copy", "further copies")
+            line += f", {copies} of mail already archived"
         # Only where the pass had something to fetch. A folder with nothing
         # missing reporting "0 restored" is a number answering a question nobody
         # asked, on every line of every repair run.
@@ -143,17 +144,21 @@ def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: boo
             # Named in the verdict too, because a reader who sees "complete"
             # after a run that fetched thousands of messages is owed the reason
             # in the same breath, not three lines further up.
+            copies = utils.counted(total_extra, "further copy", "further copies")
             line += (
-                f" -- {total_extra:,} further copy/copies of already-archived"
-                f" message(s), which a deduplicating archive holds once"
+                f" -- {copies} of mail already archived, which a deduplicating"
+                f" archive holds once"
             )
         print(line)
     elif not repaired:
-        print(f"{job_name}: {total_missing:,} message(s) missing, run again with --repair")
+        missing = utils.counted(total_missing, "message")
+        print(f"{job_name}: {missing} missing, run again with --repair")
     else:
-        line = f"{job_name}: {total_restored:,} of {total_missing:,} message(s) restored"
+        missing = utils.counted(total_missing, "message")
+        line = f"{job_name}: {total_restored:,} of {missing} restored"
         if total_recovered:
-            line += f", plus {total_recovered:,} further copy/copies that really did differ"
+            copies = utils.counted(total_recovered, "further copy", "further copies")
+            line += f", plus {copies} that really did differ"
         print(line)
 
 
@@ -316,7 +321,8 @@ def report_migration(source: pathlib.Path, result: jobs.MigrationResult) -> int:
         print(f"already {marker.describe(marker.CURRENT_FORMAT)}, nothing to do")
         return 0
 
-    print(f"{result.resume_points:,} resume point(s) moved into {heads.DEFAULT_HEADS_DIR}/")
+    points = utils.counted(result.resume_points, "resume point")
+    print(f"{points} moved into {heads.DEFAULT_HEADS_DIR}/")
     if not result.needed:
         print("no metadata database, nothing to move out of one")
         return _report_rest(source, result)
@@ -324,12 +330,13 @@ def report_migration(source: pathlib.Path, result: jobs.MigrationResult) -> int:
         print("the written log files did not verify, database left alone")
         return 1
     print(
-        f"{result.messages:,} message(s) moved into {result.places:,} mailbox/folder place(s)"
+        f"{utils.counted(result.messages, 'message')} moved into"
+        f" {utils.counted(result.places, 'mailbox/folder place')}"
     )
     if result.snapshots:
         print(
-            f"{result.snapshots:,} resume timestamp(s) taken from the database"
-            f" -- as a record of when, never as a point to carry on from"
+            f"{utils.counted(result.snapshots, 'resume timestamp')} taken from the"
+            f" database -- as a record of when, never as a point to carry on from"
         )
     if result.placeless:
         print(
@@ -338,8 +345,8 @@ def report_migration(source: pathlib.Path, result: jobs.MigrationResult) -> int:
         )
     if result.undecidable:
         print(
-            f"{result.undecidable:,} folder name(s) fit more than one mailbox "
-            f"and were left out rather than guessed"
+            f"{utils.counted(result.undecidable, 'folder name')} could fit more than "
+            f"one mailbox, left out rather than guessed"
         )
     if result.renamed_to is not None:
         print(f"the database is now {result.renamed_to.name} and is no longer used")
@@ -349,7 +356,7 @@ def report_migration(source: pathlib.Path, result: jobs.MigrationResult) -> int:
 
 def _report_rest(source: pathlib.Path, result: jobs.MigrationResult) -> int:
     """The steps after the two older formats gave up what they held."""
-    print(f"{result.shards_moved:,} shard(s) moved into {cas.MAIL_DIR}/")
+    print(f"{utils.counted(result.shards_moved, 'shard')} moved into {cas.MAIL_DIR}/")
     if result.consolidated is not None:
         report_compact(source, result.consolidated)
     return _report_generation(source, result)
@@ -385,13 +392,14 @@ def report_create_db(target: pathlib.Path, result: jobs.RebuildResult) -> int:
     replay = result.replay
     if replay.files:
         print(
-            f"{result.messages:,} message(s) named by {replay.files:,} log file(s),"
-            f" {replay.applied:,} of {replay.entries:,} location(s) applied"
+            f"{utils.counted(result.messages, 'message')} named by"
+            f" {utils.counted(replay.files, 'log file')},"
+            f" {replay.applied:,} of {utils.counted(replay.entries, 'location')} applied"
         )
         if replay.unknown:
             print(
-                f"{replay.unknown:,} log entry/entries name messages that are "
-                f"not in the archive, ignored"
+                f"{utils.counted(replay.unknown, 'log entry', 'log entries')} about "
+                f"mail that is not in the archive, ignored"
             )
     else:
         # An empty database, and the reason has a move: an archive built entirely
@@ -413,7 +421,8 @@ def report_update_db(target: pathlib.Path, result: jobs.RefreshResult) -> int:
         # `refresh_db` has already said what it is and what to do about it.
         return 1
     if result.rebuilt:
-        print(f"{target.name}: built from the whole archive, {result.messages:,} message(s)")
+        messages = utils.counted(result.messages, "message")
+        print(f"{target.name}: built from the whole archive, {messages}")
         return 0
     if not result.files:
         print(f"{target.name}: already up to date")
@@ -421,17 +430,17 @@ def report_update_db(target: pathlib.Path, result: jobs.RefreshResult) -> int:
     # Both numbers, because they come apart and the difference is the whole
     # answer. A log file about mail the database already had -- what `archive
     # adopt` writes, or a folder read in full a second time -- records locations
-    # and adds no message, and "0 message(s) added" on its own reads like a run
+    # and adds no message, and "0 messages added" on its own reads like a run
     # that did nothing.
     print(
-        f"{target.name}: {result.files:,} log file(s) taken in,"
-        f" {result.applied:,} location(s) recorded,"
-        f" {result.messages:,} message(s) new"
+        f"{target.name}: {utils.counted(result.files, 'log file')} taken in,"
+        f" {utils.counted(result.applied, 'location')} recorded,"
+        f" {utils.counted(result.messages, 'message')} new"
     )
     if result.unknown:
         print(
-            f"{result.unknown:,} log entry/entries name messages that are "
-            f"not in the archive, ignored"
+            f"{utils.counted(result.unknown, 'log entry', 'log entries')} about "
+            f"mail that is not in the archive, ignored"
         )
     return 0
 
@@ -450,16 +459,17 @@ def report_compact(source: pathlib.Path, result: metalog.CompactResult) -> int:
         print("consolidated files did not verify, nothing was removed")
         return 1
     print(
-        f"{result.files_before:,} log file(s) -> {result.files_after:,} "
-        f"across {result.places:,} place(s)"
+        f"{utils.counted(result.files_before, 'log file')} -> {result.files_after:,} "
+        f"across {utils.counted(result.places, 'place')}"
     )
     dropped = result.entries_before - result.entries_after
     if dropped:
-        print(f"{dropped:,} duplicate observation(s) dropped")
+        print(f"{utils.counted(dropped, 'duplicate observation')} dropped")
     if result.transient_removed:
         # Said out loud rather than swept up quietly: each one is a write that
         # was interrupted, and that is worth knowing about.
-        print(f"{result.transient_removed:,} leftover(s) of an interrupted write removed")
+        leftovers = utils.counted(result.transient_removed, "leftover")
+        print(f"{leftovers} of an interrupted write removed")
     return 0
 
 
@@ -469,7 +479,12 @@ def report_compact(source: pathlib.Path, result: metalog.CompactResult) -> int:
 REPORT_LIMIT = 20
 
 
-def _report_items(finding: str, items: list[str]) -> None:
+def _report_items(
+    items: list[str],
+    singular: str,
+    finding: str = "",
+    plural: str | None = None,
+) -> None:
     """Print a finding's count and the first few of whatever it found.
 
     What each line names depends on what the finding is about. A message is
@@ -477,10 +492,15 @@ def _report_items(finding: str, items: list[str]) -> None:
     only handle its owner has any use for; where the file happens to lie is the
     store's business. A finding *about a file* -- one that is not a message at
     all, or a log file -- names the path, because there the file is the thing.
+
+    The count and the noun come from `utils.counted`, so what follows has to
+    read the same whether there is one of them or a thousand -- which is why
+    these findings say "damaged" rather than "is damaged". Where that cannot be
+    had, the finding is written out in both forms instead.
     """
     if not items:
         return
-    print(f"{len(items):,} {finding}")
+    print(f"{utils.counted(len(items), singular, plural)} {finding}".rstrip())
     for item in items[:REPORT_LIMIT]:
         print(f"  {item}")
     if len(items) > REPORT_LIMIT:
@@ -508,7 +528,7 @@ def report_import(
     total = result.stored + result.present
     verb = "would be imported" if result.dry_run else "imported"
     print(
-        f"{total:,} message(s) read -- {result.stored:,} {verb},"
+        f"{utils.counted(total, 'message')} read -- {result.stored:,} {verb},"
         f" {result.present:,} already in {destination}"
     )
     # An import with no name records nothing and falls short of nothing.
@@ -528,7 +548,7 @@ def report_import(
                 f" then `mailvault db search --folder {result.name}` finds them"
             )
     _report_items(
-        "message(s) could not be read", [utils.under(source, p) for p in result.failed]
+        [utils.under(source, p) for p in result.failed], "message", "could not be read"
     )
     return 1 if result.failed or (unrecorded and not result.dry_run) else 0
 
@@ -570,7 +590,10 @@ def report_places(summary: metalog.LogSummary) -> int:
         day = (place.last_seen or "")[:10] or "?"
         print(f"{mailbox:<{first}}  {folder:<{second}}  {count:>{third}}  {day}")
 
-    print(f"{len(summary.places):,} place(s), {summary.messages:,} message(s)")
+    print(
+        f"{utils.counted(len(summary.places), 'place')},"
+        f" {utils.counted(summary.messages, 'message')}"
+    )
     if sum(place.messages for place in summary.places) != summary.messages:
         print("  the column adds up to more: a message can be in several places")
     return 0
@@ -604,13 +627,13 @@ def report_adopt(result: jobs.AdoptResult) -> int:
 
     if result.dry_run:
         print(
-            f"{result.found:,} message(s) belong to no place and would be"
-            f" recorded as {result.name}"
+            f"{utils.counted(result.found, 'message belongs', 'messages belong')} to no"
+            f" place and would be recorded as {result.name}"
         )
         if result.held:
             print(
-                f"  {result.name} is already a place and holds {result.held:,}"
-                f" message(s); these would go in with them"
+                f"  {result.name} is already a place and holds"
+                f" {utils.counted(result.held, 'message')}; these would go in with them"
             )
         print("  nothing corrects the log afterwards, so the name has to be right")
         print("  nothing was written; leave out --dry-run to record them")
@@ -619,17 +642,15 @@ def report_adopt(result: jobs.AdoptResult) -> int:
     unrecorded = result.found - result.recorded
     if unrecorded:
         print(
-            f"{unrecorded:,} of {result.found:,} message(s) were not recorded --"
-            f" the metadata log could not be written. Nothing else changed, so"
-            f" the same command records them once the log can be written"
+            f"{unrecorded:,} of {utils.counted(result.found, 'message')} stayed"
+            f" unrecorded -- the metadata log could not be written. Nothing else"
+            f" changed, so the same command records them once the log can be written"
         )
         return 1
-    place = (
-        f"{result.name}, which now holds {result.held + result.recorded:,} message(s)"
-        if result.held
-        else result.name
-    )
-    print(f"{result.found:,} message(s) belong to no place, recorded as {place}")
+    held_now = utils.counted(result.held + result.recorded, "message")
+    place = f"{result.name}, which now holds {held_now}" if result.held else result.name
+    found = utils.counted(result.found, "message belongs", "messages belong")
+    print(f"{found} to no place, recorded as {place}")
     print(
         f"  `mailvault db update` takes it in, then `mailvault db search"
         f" --folder {result.name}` finds them"
@@ -661,8 +682,9 @@ def _report_orphans(result: jobs.CheckResult, store_ids: list[str]) -> None:
     if not store_ids:
         return
     print(
-        f"{len(store_ids):,} message(s) belong to no known place -- stored and"
-        " intact, but nothing records where they came from"
+        f"{utils.counted(len(store_ids), 'message belongs', 'messages belong')} to no"
+        " known place -- stored and intact, but nothing records where that mail"
+        " came from"
     )
     print(
         "  they are found like any other message: `db create` builds a"
@@ -706,46 +728,56 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
         return [store.hashval_of(path) or str(path) for path in paths]
 
     print(
-        f"{result.entries:,} message(s) stored, {result.referenced:,} of them"
-        f" accounted for by {result.log_files:,} log file(s) in {result.places:,} place(s)"
+        f"{utils.counted(result.entries, 'message')} stored, {result.referenced:,} of"
+        f" them accounted for by {utils.counted(result.log_files, 'log file')}"
+        f" in {utils.counted(result.places, 'place')}"
     )
     _report_items(
-        "message(s) referenced in the log are missing",
         [f"{store_id}  {where}" for store_id, where in result.missing.items()],
+        "message",
+        "referenced in the log and missing from the archive",
     )
     _report_items(
-        "log file(s) are damaged -- the content does not match its checksum",
         [utils.under(source, path) for path in result.damaged_logs],
+        "log file",
+        "damaged -- the content does not match its checksum",
     )
     _report_items(
-        "log file(s) the chain names are gone -- nothing records what they held",
         result.broken_chains,
+        "log file",
+        "named by the chain and gone -- nothing records what was written there",
     )
     _report_items(
-        "log file(s) no chain reaches -- they are still read, the chain is behind",
         [utils.under(source, path) for path in result.unchained],
+        "log file",
+        "no chain reaches -- still read, the chain is behind",
     )
     _report_items(
-        "message(s) are damaged -- the content does not match its checksum",
         ids(result.corrupt),
+        "message",
+        "damaged -- the content does not match its checksum",
     )
-    _report_items("message(s) could not be read", ids(result.unreadable))
+    _report_items(ids(result.unreadable), "message", "could not be read")
     _report_items(
-        "file(s) in the archive are not messages",
         [utils.under(source, path) for path in result.foreign],
+        "file in the archive that is not a message",
+        plural="files in the archive that are not messages",
     )
     _report_orphans(result, ids(result.orphans))
     if result.quarantined_before:
-        print(f"{result.quarantined_before:,} message(s) set aside by an earlier run")
+        aside = utils.counted(result.quarantined_before, "message")
+        print(f"{aside} set aside by an earlier run")
     if result.transient_removed:
-        print(f"{result.transient_removed:,} leftover(s) of an interrupted write removed")
+        leftovers = utils.counted(result.transient_removed, "leftover")
+        print(f"{leftovers} of an interrupted write removed")
     if result.quarantined:
         print(
-            f"{len(result.quarantined):,} damaged message(s) set aside -- they"
-            " count as missing now, fetch them with `verify --repair` or `backup --full`"
+            f"{utils.counted(len(result.quarantined), 'damaged message')} set aside --"
+            " counted as missing now, fetch again with `verify --repair` or"
+            " `backup --full`"
         )
     if not result.sound:
-        print(f"NOT sound -- {result.findings:,} finding(s) above")
+        print(f"NOT sound -- {utils.counted(result.findings, 'finding')} above")
     elif result.contents_checked:
         print("sound -- every message was read and matches its checksum")
     else:
@@ -769,12 +801,12 @@ def report_conversion(
     not: the archive would look converted when it is not, and a script driving
     the command would never find out.
     """
-    print(f"{result.converted:,} files {done}, {result.skipped:,} {already}")
+    print(f"{utils.counted(result.converted, 'file')} {done}, {result.skipped:,} {already}")
     for path in result.failed:
         print(f"{utils.under(source, path)}: could not be converted, left as it is")
     if not result.failed:
         return 0
-    print(f"{len(result.failed):,} file(s) failed, see the log for the reason")
+    print(f"{utils.counted(len(result.failed), 'file')} failed, see the log for the reason")
     return 1
 
 
@@ -916,7 +948,7 @@ def report_search(hits: list[jobs.SearchHit], query: jobs.SearchQuery) -> int:
     if not hits:
         print("no message matches" if not query.is_empty() else "the database is empty")
         return 0
-    print(f"{len(hits):,} message(s)")
+    print(utils.counted(len(hits), "message"))
     if query.limit is not None and len(hits) == query.limit:
         # Said out loud, because a limit that happens to be reached looks exactly
         # like a search that found that many.

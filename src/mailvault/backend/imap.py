@@ -408,18 +408,18 @@ class ImapClient:
                     result.total = items_found
                 if items_found != items_in_folder:
                     log.info(
-                        "%s::%s: found %s/%s messages",
+                        "%s::%s: found %s of %s",
                         self.job_name,
                         folder_name,
                         items_found,
-                        items_in_folder,
+                        utils.counted(items_in_folder, "message"),
                     )
                 else:
                     log.info(
-                        "%s::%s: found %s messages",
+                        "%s::%s: found %s",
                         self.job_name,
                         folder_name,
-                        items_found,
+                        utils.counted(items_found, "message"),
                     )
                 processed = 0
                 for msg_id, msg in self._walk_folder(folder_name, message_ids, result=result):
@@ -472,18 +472,18 @@ class ImapClient:
                         # mailbox owner to act on.
                         self.conn.uid_expunge(msg_ids)
                 log.info(
-                    "%s::%s: %s message(s) moved to '%s'",
+                    "%s::%s: %s moved to '%s'",
                     self.job_name,
                     folder_name,
-                    len(msg_ids),
+                    utils.counted(len(msg_ids), "message"),
                     dest_folder,
                 )
             except Exception as exc:
                 log.error(
-                    "%s::%s: could not move %s message(s) to '%s': %s",
+                    "%s::%s: could not move %s to '%s': %s",
                     self.job_name,
                     folder_name,
-                    len(msg_ids),
+                    utils.counted(len(msg_ids), "message"),
                     dest_folder,
                     exc,
                 )

@@ -188,11 +188,11 @@ when a message left the archive *after* it was stored:
 ```console
 $ mailvault verify
 example.org::INBOX: 77,592 on server, 43 not archived
-example.org: 43 message(s) missing, run again with --repair
+example.org: 43 messages missing, run again with --repair
 
 $ mailvault verify --repair
 example.org::INBOX: 77,592 on server, 43 not archived, 43 restored
-example.org: 43 of 43 message(s) restored
+example.org: 43 of 43 messages restored
 ```
 
 It compares headers rather than downloading everything, so a large mailbox takes
@@ -207,7 +207,7 @@ database once:
 
 ```console
 $ mailvault db create
-130,997 message(s) named by 60 log file(s), 219,690 of 219,690 location(s) applied
+130,997 messages named by 60 log files, 219,690 of 219,690 locations applied
 index.db: written
 ```
 
@@ -225,7 +225,7 @@ case:
 $ mailvault db search --from example.com --since 2024-01-01
 2024-03-11  a3f1c8e04b71…  info@example.com                Invoice 4711
 2024-05-02  9b0d47f2a180…  info@example.com                Delivery note 8842
-2 message(s)
+2 messages
 ```
 
 `--from`, `--to`, `--subject`, `--mailbox`, `--folder`, `--since`, `--until` and
@@ -250,7 +250,7 @@ rather than a pass over every message:
 
 ```console
 $ mailvault db update
-index.db: 3 log file(s) taken in, 412 message(s) added
+index.db: 3 log files taken in, 1,206 locations recorded, 412 messages new
 ```
 
 Or have it done for you: `index_db = true` in the `[global]` section, or
@@ -261,7 +261,7 @@ into the archive it has read, and a search says so before it prints anything if
 the archive has moved on:
 
 ```console
-index.db: behind the archive in 2 place(s) (example.com::INBOX, example.com::Sent)
+index.db: behind the archive in 2 places (example.com::INBOX, example.com::Sent)
           -- mail archived since is not in it, take it in with `mailvault db update`
 ```
 
@@ -299,7 +299,7 @@ removes the source files, `--dry-run` only counts:
 
 ```console
 $ mailvault archive import --name imported-2019 ./my_mails
-20,431 message(s) read -- 38 imported, 20,393 already in /srv/archive/private
+20,431 messages read -- 38 imported, 20,393 already in /srv/archive/private
 recorded as imported-2019 -- `mailvault db update` takes it in, then `mailvault db search --folder imported-2019` finds them
 ```
 
@@ -312,7 +312,7 @@ mailbox    folder                   messages  last seen
 gmail.com  INBOX                      12,043  2026-08-12
 gmail.com  [Google Mail]/All Mails     4,001  2026-08-12
            imported-2019               5,412  2026-08-02
-3 place(s), 17,455 message(s)
+3 places, 17,455 messages
   the column adds up to more: a message can be in several places
 ```
 
@@ -340,7 +340,7 @@ out of disk:
 
 ```console
 $ mailvault archive check
-130,997 message(s) stored, 130,887 of them accounted for by 60 log file(s) in 59 place(s)
+130,997 messages stored, 130,887 of them accounted for by 60 log files in 59 places
 sound -- every message was read and matches its checksum
 ```
 
@@ -355,8 +355,8 @@ folder, and over months they add up:
 
 ```console
 $ mailvault archive compact
-1,204 log file(s) -> 59 across 59 mailbox/folder place(s)
-41,388 duplicate observation(s) dropped
+1,204 log files -> 59 across 59 places
+41,388 duplicate observations dropped
 ```
 
 **Migrate** an archive written by an older version, once, after upgrading:

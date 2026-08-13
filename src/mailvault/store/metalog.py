@@ -343,9 +343,9 @@ class LogWriter:
                 _serialize(mailbox, folder, date.isoformat(), store_ids, prev=_chain(head))
             )
             log.debug(
-                "%s: %s message(s) in %s",
+                "%s: %s in %s",
                 where(path),
-                len(store_ids),
+                utils.counted(len(store_ids), "message"),
                 heads.place_name(mailbox, folder),
             )
             _move_head(self.heads_root, head, hashval)
@@ -502,10 +502,10 @@ def read_log(path: pathlib.Path) -> LogFile | None:
     declared = header.get("messages")
     if isinstance(declared, int) and declared != len(store_ids):
         log.warning(
-            "%s: header declares %s message(s) but %s were readable, file is damaged",
+            "%s: header declares %s but only %s could be read, file is damaged",
             where(path),
-            declared,
-            len(store_ids),
+            utils.counted(declared, "message"),
+            f"{len(store_ids):,}",
         )
 
     prev = header.get("prev")

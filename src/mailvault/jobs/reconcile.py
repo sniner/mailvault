@@ -49,7 +49,7 @@ import logging
 import pathlib
 from datetime import UTC, datetime
 
-from mailvault import mailutils
+from mailvault import mailutils, utils
 from mailvault.backend import base
 from mailvault.jobs.common import seal_log
 from mailvault.jobs.ledger import Claim, MessageIdLedger
@@ -151,9 +151,9 @@ class ArchivedPlaces:
             log.info("reading the metadata log")
             self._places = places_from_log(self._log_root)
             log.info(
-                "%s message(s) recorded in %s place(s)",
-                f"{sum(len(ids) for ids in self._places.values()):,}",
-                len(self._places),
+                "%s recorded in %s",
+                utils.counted(sum(len(ids) for ids in self._places.values()), "message"),
+                utils.counted(len(self._places), "place"),
             )
         return self._places
 
@@ -189,7 +189,7 @@ def archived_message_counts(
     for store_id in store_ids:
         read += 1
         if log_ctx and read % ARCHIVE_PROGRESS_EVERY == 0:
-            log.info("%s: %s message(s) read from the archive", log_ctx, f"{read:,}")
+            log.info("%s: %s read from the archive", log_ctx, utils.counted(read, "message"))
         path = store.locate(store_id, exists=True)
         if path is None:
             continue
@@ -223,9 +223,9 @@ def reconcile_folder(
     ctx = f"{job_name}::{folder}"
     # Said before the work, not after it: this reads one header per archived
     # message and has nothing to report until every one of them is done.
-    log.info("%s: reading %s archived message(s)", ctx, f"{len(archived):,}")
+    log.info("%s: reading %s", ctx, utils.counted(len(archived), "archived message"))
     known = MessageIdLedger(archived_message_counts(store, archived, log_ctx=ctx))
-    log.info("%s: %s message(s) in archive", ctx, f"{len(known):,}")
+    log.info("%s: %s in archive", ctx, utils.counted(len(known), "message"))
 
     result = ReconcileResult(folder=folder)
     # Each one carries which of the two it is: the downloader treats them alike,
@@ -242,13 +242,13 @@ def reconcile_folder(
             result.extra_copies += 1
             wanted.append((ref, claim))
         if result.on_server % SERVER_PROGRESS_EVERY == 0:
-            log.info("%s: %s message(s) indexed", ctx, f"{result.on_server:,}")
+            log.info("%s: %s indexed", ctx, utils.counted(result.on_server, "message"))
 
     log.info(
-        "%s: %s of %s message(s) on the server are not archived",
+        "%s: %s of %s on the server are not archived",
         ctx,
         f"{result.missing:,}",
-        f"{result.on_server:,}",
+        utils.counted(result.on_server, "message"),
     )
     if result.extra_copies:
         # Said separately, and said at all: on a folder that holds duplicates
@@ -256,10 +256,9 @@ def reconcile_folder(
         # thousands of messages being fetched after "0 not archived" would
         # otherwise have no way to account for them.
         log.info(
-            "%s: %s further copy/copies of already-archived message(s), fetched to"
-            " find out whether they differ",
+            "%s: %s of mail already archived, fetched to find out whether the content differs",
             ctx,
-            f"{result.extra_copies:,}",
+            utils.counted(result.extra_copies, "further copy", "further copies"),
         )
     if not repair or not wanted:
         return result
@@ -275,7 +274,7 @@ def reconcile_folder(
     # link in the chain, every time it ran.
     log_writer = metalog.LogWriter(log_root, heads_root)
     recorded = set(archived)
-    log.info("%s: fetching %s message(s)", ctx, f"{len(wanted):,}")
+    log.info("%s: fetching %s", ctx, utils.counted(len(wanted), "message"))
     for fetched, (ref, claim) in enumerate(wanted, start=1):
         if fetched % FETCH_PROGRESS_EVERY == 0:
             log.info("%s: %s of %s fetched", ctx, f"{fetched:,}", f"{len(wanted):,}")

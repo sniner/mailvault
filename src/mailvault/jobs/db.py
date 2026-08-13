@@ -115,7 +115,7 @@ class Freshness:
         if len(self.behind) > 3:
             places += f" and {len(self.behind) - 3:,} more"
         return (
-            f"{db_name}: behind the archive in {len(self.behind):,} place(s)"
+            f"{db_name}: behind the archive in {utils.counted(len(self.behind), 'place')}"
             f" ({places}) -- mail archived since is not in it, take it in with"
             f" `{UPDATE_COMMAND}`"
         )
@@ -294,9 +294,12 @@ class _Rows:
         if self.created % CREATE_DB_BATCH == 0:
             # Named for what it is doing, not merely counted. This reads every
             # message the log accounts for and takes minutes on a large archive,
-            # and a bare "N message(s) read" leaves a reader watching a number
+            # and a bare "N messages read" leaves a reader watching a number
             # climb with no idea what it is for.
-            log.info("building the query database: %s message(s) read", f"{self.created:,}")
+            log.info(
+                "building the query database: %s read",
+                utils.counted(self.created, "message"),
+            )
         return msg_id
 
 

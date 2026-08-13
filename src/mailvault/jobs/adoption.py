@@ -32,6 +32,7 @@ import logging
 import pathlib
 from datetime import UTC, datetime
 
+from mailvault import utils
 from mailvault.jobs.common import SEAL_BATCH, check_place_name, seal_log
 from mailvault.store import cas, heads, metalog
 
@@ -100,7 +101,10 @@ def adopt(store_path: pathlib.Path, name: str, dry_run: bool = False) -> AdoptRe
 
     log.info("step 1 of 2: reading the metadata log")
     referenced, result.held = _read_log(log_root, name)
-    log.info("step 1 of 2: %s message(s) already have a place", f"{len(referenced):,}")
+    log.info(
+        "step 1 of 2: %s already have a place",
+        utils.counted(len(referenced), "message"),
+    )
 
     log.info("step 2 of 2: looking through the archive")
     writer = metalog.LogWriter(log_root, store_path / heads.DEFAULT_HEADS_DIR)
@@ -109,7 +113,7 @@ def adopt(store_path: pathlib.Path, name: str, dry_run: bool = False) -> AdoptRe
     for path in store.walk():
         seen += 1
         if seen % WALK_PROGRESS_EVERY == 0:
-            log.info("step 2 of 2: %s message(s) seen", f"{seen:,}")
+            log.info("step 2 of 2: %s seen", utils.counted(seen, "message"))
         store_id = store.hashval_of(path)
         if store_id is None or store_id in referenced:
             continue

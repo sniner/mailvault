@@ -115,7 +115,7 @@ def _folder_owners(db: store_db.StoreDatabaseConnection) -> dict[str, set[str]]:
         learnt = _learn_by_elimination(owners, mailboxes, folders)
         if not learnt:
             return owners
-        log.debug("Folder owners: %s pairing(s) learnt by elimination", learnt)
+        log.debug("Folder owners: %s learnt by elimination", utils.counted(learnt, "pairing"))
 
 
 def _export_metalog(
@@ -243,9 +243,9 @@ def import_state_file(store_path: pathlib.Path) -> int:
 
     path.unlink()
     log.info(
-        "%s: %s place(s) moved into %s",
+        "%s: %s moved into %s",
         path.name,
-        f"{imported:,}",
+        utils.counted(imported, "place"),
         heads.DEFAULT_HEADS_DIR,
     )
     return imported
@@ -308,7 +308,7 @@ def move_shards_into_mail(store_path: pathlib.Path) -> int:
         _merge_into(shard, destination)
         moved += 1
     if moved:
-        log.info("%s shard(s) moved into %s", f"{moved:,}", cas.MAIL_DIR)
+        log.info("%s moved into %s", utils.counted(moved, "shard"), cas.MAIL_DIR)
     return moved
 
 
@@ -368,10 +368,10 @@ def _migrate_database(store_path: pathlib.Path) -> MigrationResult:
     legacy.replace(target)
     result.renamed_to = target
     log.info(
-        "migrated -- %s message(s) into %s place(s), %s snapshot(s); %s is no longer used",
-        result.messages,
-        result.places,
-        result.snapshots,
+        "migrated -- %s into %s, %s; %s is no longer used",
+        utils.counted(result.messages, "message"),
+        utils.counted(result.places, "place"),
+        utils.counted(result.snapshots, "snapshot"),
         target.name,
     )
     return result

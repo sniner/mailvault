@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **What is counted is now said in English: `1 message`, not `1 message(s)`.** Every report and
+  log line that names a number picks the word to go with it, and groups the number while it is
+  at it -- `found 1 message`, `1,204 log files -> 59 across 59 places`, `1 log entry about mail
+  that is not in the archive`. A folder holding exactly one message was reported as `found 1
+  messages`, on IMAP and on Graph; everywhere else it read `message(s)`, `entry/entries` or
+  `copy/copies`, never wrong and never quite readable either. Some findings are worded
+  differently as a result, because a sentence that has to fit both numbers cannot say "are
+  missing": `archive check` reports `3 messages referenced in the log and missing from the
+  archive`, and a log file the chain names and that is gone is `named by the chain and gone`.
+  Anything that reads mailvault's output with a pattern wants looking at once
+
 ## 0.12.1 (2026-08-14)
 
 ### Fixed

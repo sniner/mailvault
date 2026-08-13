@@ -222,11 +222,11 @@ def _backup_folder(
         # Taking the new point now would push the failed messages out of
         # everything the next pass asks for, losing them permanently.
         log.warning(
-            "%s::%s: %s of %s message(s) failed, resume point not advanced",
+            "%s::%s: %s of %s failed, resume point not advanced",
             job.name,
             folder,
             result.failed,
-            result.total,
+            utils.counted(result.total, "message"),
         )
     else:
         # Downloads were clean but the location log did not reach disk. Holding
@@ -340,11 +340,11 @@ def _catch_up_folder(
     """
     observed_at = datetime.now(UTC)
     log.info(
-        "%s::%s: no resume point but %s archived message(s) -- reconciling against"
+        "%s::%s: no resume point but %s -- reconciling against"
         " the archive by Message-ID instead of downloading the folder",
         job.name,
         folder,
-        f"{len(archived):,}",
+        utils.counted(len(archived), "archived message"),
     )
     resume = mb.resume_point(folder)
     result = reconcile_folder(
@@ -352,11 +352,11 @@ def _catch_up_folder(
     )
     if not result.complete:
         log.warning(
-            "%s::%s: %s of %s message(s) failed, resume point not started",
+            "%s::%s: %s of %s failed, resume point not started",
             job.name,
             folder,
             result.failed,
-            result.missing,
+            utils.counted(result.missing, "message"),
         )
         resume = None
     elif not result.sealed:
@@ -402,10 +402,10 @@ def _purge_after_seal(
         return
     if not sealed:
         log.error(
-            "%s::%s: metadata log not sealed, %s message(s) left on the server",
+            "%s::%s: metadata log not sealed, %s left on the server",
             job.name,
             folder,
-            len(result.deletable),
+            utils.counted(len(result.deletable), "message"),
         )
         return
     try:
@@ -489,11 +489,15 @@ def _refresh_query_db(store_path: pathlib.Path) -> None:
     if result.outdated:
         return
     if result.rebuilt:
-        log.info("%s: query database built, %s message(s)", name, f"{result.messages:,}")
+        log.info(
+            "%s: query database built, %s",
+            name,
+            utils.counted(result.messages, "message"),
+        )
     else:
         log.info(
-            "%s: query database updated, %s new message(s) from %s log file(s)",
+            "%s: query database updated, %s from %s",
             name,
-            f"{result.messages:,}",
-            f"{result.files:,}",
+            utils.counted(result.messages, "new message"),
+            utils.counted(result.files, "log file"),
         )

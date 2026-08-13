@@ -309,10 +309,10 @@ def test_archive_decompress_reports_what_it_could_not_convert(tmp_path, capsys):
 
     assert exit_code == 1
     out = capsys.readouterr().out
-    assert "1 files decompressed" in out
+    assert "1 file decompressed" in out
     assert str(broken.relative_to(root)) in out, "named as it reads inside the archive"
     assert str(root) not in out, "the archive is named once, not on every line"
-    assert "1 file(s) failed" in out
+    assert "1 file failed" in out
     assert store.read(good.with_suffix("")) == b"a real message"
     assert broken.exists(), "what could not be converted is left as it is"
 
@@ -358,7 +358,7 @@ def test_archive_check_that_finds_nothing_exits_zero(tmp_path, capsys):
 
     assert exit_code == 0
     out = capsys.readouterr().out
-    assert "1 message(s) stored" in out
+    assert "1 message stored" in out
     assert "the integrity check was skipped" in out, "a run that did not look must say so"
 
 
@@ -381,7 +381,7 @@ def test_archive_check_takes_the_directory_you_are_standing_in(tmp_path, monkeyp
     exit_code = commands.run_archive(_check_args(None))
 
     assert exit_code == 0
-    assert "1 message(s) stored" in capsys.readouterr().out
+    assert "1 message stored" in capsys.readouterr().out
 
 
 def test_archive_check_exits_non_zero_when_the_archive_is_not_what_it_claims(tmp_path, capsys):
@@ -391,8 +391,8 @@ def test_archive_check_exits_non_zero_when_the_archive_is_not_what_it_claims(tmp
 
     out = capsys.readouterr().out
     assert exit_code == 1
-    assert "1 message(s) referenced in the log are missing" in out
-    assert "NOT sound -- 1 finding(s)" in out, "the verdict, not just the exit code"
+    assert "1 message referenced in the log and missing from the archive" in out
+    assert "NOT sound -- 1 finding" in out, "the verdict, not just the exit code"
 
 
 def test_archive_check_quarantine_without_the_integrity_check_is_refused(tmp_path):
@@ -684,7 +684,7 @@ class TestPlacesReport:
         assert "gmail.com" in lines[1] and "INBOX" in lines[1]
         assert lines[2].startswith(" "), "no mailbox, so the column stays empty"
         assert "docuware-2019" in lines[2]
-        assert "2 place(s), 5 message(s)" in lines[3]
+        assert "2 places, 5 messages" in lines[3]
 
     def test_a_message_in_two_places_is_explained_rather_than_left_odd(self, tmp_path, capsys):
         store = cas.mail_store(tmp_path)
@@ -698,7 +698,7 @@ class TestPlacesReport:
         commands.report_places(self._summary(tmp_path))
 
         out = capsys.readouterr().out
-        assert "2 place(s), 1 message(s)" in out
+        assert "2 places, 1 message" in out
         assert "the column adds up to more" in out
 
     def test_an_archive_nobody_has_written_to_says_how_places_come_about(
@@ -739,7 +739,7 @@ class TestAdoptReport:
         assert commands.run_archive(self._adopt_args(archive, dry_run=True)) == 0
 
         out = capsys.readouterr().out
-        assert "3 message(s) belong to no place and would be recorded as orphaned" in out
+        assert "3 messages belong to no place and would be recorded as orphaned" in out
         assert "nothing corrects the log afterwards" in out
         assert metalog.log_files(archive / metalog.DEFAULT_LOG_DIR) == []
 
@@ -749,7 +749,7 @@ class TestAdoptReport:
         assert commands.run_archive(self._adopt_args(archive)) == 0
 
         out = capsys.readouterr().out
-        assert "3 message(s) belong to no place, recorded as orphaned" in out
+        assert "3 messages belong to no place, recorded as orphaned" in out
         assert "db search --folder orphaned" in out
 
     def test_an_archive_that_is_whole_reads_like_a_good_outcome(self, tmp_path, capsys):
@@ -771,7 +771,7 @@ class TestAdoptReport:
 
         assert commands.run_archive(self._adopt_args(archive)) == 1
 
-        assert "2 of 2 message(s) were not recorded" in capsys.readouterr().out
+        assert "2 of 2 messages stayed unrecorded" in capsys.readouterr().out
 
     def test_a_taken_name_is_a_choice_before_the_run(self, tmp_path, capsys):
         """While it can still be called off, so it names what the other option is."""
@@ -784,7 +784,7 @@ class TestAdoptReport:
         commands.run_archive(self._adopt_args(archive, name="docuware-2019", dry_run=True))
 
         out = capsys.readouterr().out
-        assert "docuware-2019 is already a place and holds 2 message(s)" in out
+        assert "docuware-2019 is already a place and holds 2 messages" in out
         assert "these would go in with them" in out
 
     def test_and_a_fact_after_it(self, tmp_path, capsys):
@@ -797,7 +797,7 @@ class TestAdoptReport:
 
         commands.run_archive(self._adopt_args(archive, name="docuware-2019"))
 
-        assert "recorded as docuware-2019, which now holds 5 message(s)" in (
+        assert "recorded as docuware-2019, which now holds 5 messages" in (
             capsys.readouterr().out
         )
 

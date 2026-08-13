@@ -172,7 +172,7 @@ def _classify(
     for path in _store_files(store.root_dir):
         seen += 1
         if seen % WALK_PROGRESS_EVERY == 0:
-            log.info("%s: %s file(s) seen", step, f"{seen:,}")
+            log.info("%s: %s seen", step, utils.counted(seen, "file"))
         hashval = store.hashval_of(path)
         if hashval is not None:
             entries[hashval] = path
@@ -380,18 +380,18 @@ def check(
 
     log.info("step 1 of %s: looking through the archive", steps)
     entries = _classify(store, result, step=f"step 1 of {steps}")
-    log.info("step 1 of %s: %s message(s) found", steps, f"{result.entries:,}")
+    log.info("step 1 of %s: %s found", steps, utils.counted(result.entries, "message"))
 
     log.info("step 2 of %s: reading the metadata log", steps)
     chain: dict[str, metalog.LogFile] = {}
     seen_at = _read_log(store_path / metalog.DEFAULT_LOG_DIR, result, chain)
     _walk_chains(store_path / heads.DEFAULT_HEADS_DIR, chain, result)
     log.info(
-        "step 2 of %s: %s log file(s) account for %s message(s) in %s place(s)",
+        "step 2 of %s: %s account for %s in %s",
         steps,
-        f"{result.log_files:,}",
-        f"{result.referenced:,}",
-        f"{result.places:,}",
+        utils.counted(result.log_files, "log file"),
+        utils.counted(result.referenced, "message"),
+        utils.counted(result.places, "place"),
     )
 
     for store_id, where in seen_at.items():
@@ -403,9 +403,9 @@ def check(
         # The count belongs in the announcement, not after it: this is the step
         # that takes half an hour, and how long is the first thing anyone asks.
         log.info(
-            "step 3 of %s: integrity check on %s message(s) -- each one is read in full",
+            "step 3 of %s: integrity check on %s -- each one is read in full",
             steps,
-            f"{result.entries:,}",
+            utils.counted(result.entries, "message"),
         )
         _check_contents(store, entries, result, step=f"step 3 of {steps}")
     if quarantine:

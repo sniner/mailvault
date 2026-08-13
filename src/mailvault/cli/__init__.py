@@ -59,7 +59,7 @@ def add_mailbox_options(parser: argparse.ArgumentParser, writes: bool = False) -
         "--job",
         action="append",
         metavar="NAME",
-        help="Run only the named job(s); may be repeated",
+        help="Run only the named job; may be repeated",
     )
     parser.add_argument(
         "--allow-exec",

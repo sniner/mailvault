@@ -73,6 +73,32 @@ class TestBatched:
         assert len(seen) == 10
 
 
+class TestCounted:
+    """The noun agrees with the number, and the number is readable."""
+
+    def test_one_takes_the_singular(self):
+        assert utils.counted(1, "message") == "1 message"
+
+    def test_anything_else_takes_the_plural(self):
+        assert utils.counted(2, "message") == "2 messages"
+
+    def test_none_of_them_is_plural_too(self):
+        """Zero takes the plural in English; only one is singular."""
+        assert utils.counted(0, "message") == "0 messages"
+
+    def test_an_irregular_plural_is_named(self):
+        assert utils.counted(3, "log entry", "log entries") == "3 log entries"
+        assert utils.counted(1, "log entry", "log entries") == "1 log entry"
+
+    def test_the_noun_may_be_more_than_one_word(self):
+        """The `s` goes on the noun, which is where the phrase ends."""
+        assert utils.counted(2, "resume point") == "2 resume points"
+
+    def test_a_large_count_is_grouped(self):
+        """Why the number is in here at all: nobody reads 131000 at a glance."""
+        assert utils.counted(131000, "message") == "131,000 messages"
+
+
 class TestUnder:
     """A path as it reads inside the thing a run is about."""
 

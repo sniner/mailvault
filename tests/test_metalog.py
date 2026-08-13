@@ -218,7 +218,7 @@ class TestReading:
         assert logfile is not None
 
         assert logfile.store_ids == ["aaa", "bbb"]
-        assert "header declares 3 message(s) but 2 were readable" in caplog.text
+        assert "header declares 3 messages but only 2 could be read" in caplog.text
 
     def test_unknown_version_is_rejected(self, tmp_path, caplog):
         path = tmp_path / "log.jsonl"
