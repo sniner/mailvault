@@ -20,7 +20,12 @@ def _heads(log_root):
     return log_root.parent / heads.DEFAULT_HEADS_DIR
 
 
-def _write(root, mailbox="job", folder="INBOX", store_ids=(STORE_ID,)):
+def _write(
+    root,
+    mailbox: str | None = "job",
+    folder: str | None = "INBOX",
+    store_ids=(STORE_ID,),
+):
     writer = metalog.LogWriter(root, _heads(root))
     for store_id in store_ids:
         writer.add(mailbox, [folder] if folder is not None else [], store_id)
