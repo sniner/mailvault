@@ -652,6 +652,65 @@ class TestImportSource:
         assert (source / "a.eml").exists()
 
 
+class TestPlacesReport:
+    """The names `db search` takes, and where an import name is one of them."""
+
+    @staticmethod
+    def _summary(archive: pathlib.Path) -> metalog.LogSummary:
+        return metalog.summarize(archive / metalog.DEFAULT_LOG_DIR)
+
+    @staticmethod
+    def _record(archive: pathlib.Path, mailbox: str | None, folder: str, count: int) -> None:
+        store = cas.mail_store(archive)
+        writer = metalog.LogWriter(
+            archive / metalog.DEFAULT_LOG_DIR, archive / heads.DEFAULT_HEADS_DIR
+        )
+        for number in range(count):
+            _status, store_id, _path = store.add(
+                f"From: a\r\nSubject: {folder}{number}\r\n\r\nbody".encode()
+            )
+            writer.add(mailbox, [folder], store_id)
+        writer.seal(WHEN)
+
+    def test_an_import_name_stands_where_the_mailbox_would(self, tmp_path, capsys):
+        """The empty column is what says this place has nobody behind it."""
+        self._record(tmp_path, "gmail.com", "INBOX", 2)
+        self._record(tmp_path, None, "docuware-2019", 3)
+
+        assert commands.report_places(self._summary(tmp_path)) == 0
+
+        lines = capsys.readouterr().out.splitlines()
+        assert lines[0].split() == ["mailbox", "folder", "messages", "last", "seen"]
+        assert "gmail.com" in lines[1] and "INBOX" in lines[1]
+        assert lines[2].startswith(" "), "no mailbox, so the column stays empty"
+        assert "docuware-2019" in lines[2]
+        assert "2 place(s), 5 message(s)" in lines[3]
+
+    def test_a_message_in_two_places_is_explained_rather_than_left_odd(self, tmp_path, capsys):
+        store = cas.mail_store(tmp_path)
+        _status, store_id, _path = store.add(b"From: a\r\n\r\nboth")
+        writer = metalog.LogWriter(
+            tmp_path / metalog.DEFAULT_LOG_DIR, tmp_path / heads.DEFAULT_HEADS_DIR
+        )
+        writer.add("gmail.com", ["INBOX", "\\All"], store_id)
+        writer.seal(WHEN)
+
+        commands.report_places(self._summary(tmp_path))
+
+        out = capsys.readouterr().out
+        assert "2 place(s), 1 message(s)" in out
+        assert "the column adds up to more" in out
+
+    def test_an_archive_nobody_has_written_to_says_how_places_come_about(
+        self, tmp_path, capsys
+    ):
+        assert commands.report_places(self._summary(tmp_path)) == 0
+
+        out = capsys.readouterr().out
+        assert "no place recorded yet" in out
+        assert "archive adopt" in out
+
+
 class TestAdoptReport:
     """The count is what the reader weighs: it is how many messages a run speaks for."""
 
@@ -713,6 +772,44 @@ class TestAdoptReport:
         assert commands.run_archive(self._adopt_args(archive)) == 1
 
         assert "2 of 2 message(s) were not recorded" in capsys.readouterr().out
+
+    def test_a_taken_name_is_a_choice_before_the_run(self, tmp_path, capsys):
+        """While it can still be called off, so it names what the other option is."""
+        archive = self._archive_with_orphans(tmp_path, count=2)
+        commands.run_archive(self._adopt_args(archive, name="docuware-2019"))
+        for number in range(3):
+            cas.mail_store(archive).add(f"From: b\r\n\r\nlater {number}".encode())
+        capsys.readouterr()
+
+        commands.run_archive(self._adopt_args(archive, name="docuware-2019", dry_run=True))
+
+        out = capsys.readouterr().out
+        assert "docuware-2019 is already a place and holds 2 message(s)" in out
+        assert "these would go in with them" in out
+
+    def test_and_a_fact_after_it(self, tmp_path, capsys):
+        """Afterwards there is no move left, so it says what the place holds now."""
+        archive = self._archive_with_orphans(tmp_path, count=2)
+        commands.run_archive(self._adopt_args(archive, name="docuware-2019"))
+        for number in range(3):
+            cas.mail_store(archive).add(f"From: b\r\n\r\nlater {number}".encode())
+        capsys.readouterr()
+
+        commands.run_archive(self._adopt_args(archive, name="docuware-2019"))
+
+        assert "recorded as docuware-2019, which now holds 5 message(s)" in (
+            capsys.readouterr().out
+        )
+
+    def test_a_fresh_name_says_nothing_about_what_it_holds(self, tmp_path, capsys):
+        """There is nothing to tell: the place is what this run put in it."""
+        archive = self._archive_with_orphans(tmp_path, count=2)
+
+        commands.run_archive(self._adopt_args(archive, name="orphaned"))
+
+        out = capsys.readouterr().out
+        assert "recorded as orphaned\n" in out
+        assert "already a place" not in out
 
     def test_the_check_names_it_as_the_move(self, tmp_path, capsys):
         """A finding that names no move is what this whole line exists against."""

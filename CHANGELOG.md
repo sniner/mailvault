@@ -14,6 +14,14 @@
 
 ### Added
 
+- **`archive places` lists what the archive has mail from.** Every mailbox and folder, every
+  import, and everything `archive adopt` took in, with how many messages each holds and when it
+  was last written to. These are the names `db search --mailbox` and `--folder` take, and the ones
+  already spoken for when picking a new one -- until now the only way to find them out was to read
+  the log. Two name columns rather than the `mailbox::folder` the findings print, because those two
+  are what gets typed, and because an empty mailbox column is what an import and an adopted place
+  look like. The counts are of distinct messages, so the total comes out smaller than the column
+  adds up to, and the report says why rather than leaving it odd
 - **`archive adopt --name NAME` takes in the messages that belong to no place.** An archive is
   the message store and the metadata log together, and a message that lies in `mail/` while no log
   file names it is not a damaged part of it but a file that is not part of it yet. `archive check`
@@ -22,8 +30,10 @@
   exactly the way an import is recorded, because it is the same statement. Messages that already
   have a place are left alone, so running it twice is harmless. Nothing corrects the log
   afterwards, which is what `--dry-run` is for and why the report says how many messages a run is
-  about to speak for. Where the directory an import read from still exists, importing it again is
-  the better move: what that records cannot be wrong
+  about to speak for. A name that is already a place is said before the run as a choice ("these
+  would go in with them") and afterwards as a fact ("which now holds 5,415 message(s)") -- which
+  is what catches a mistyped name. Where the directory an import read from still exists, importing
+  it again is the better move: what that records cannot be wrong
 - **An import records where its mail came from, so imported mail is no longer mail nothing knows
   anything about.** It goes into the metadata log the way a backup's observations do, with one
   difference: the mailbox stays empty, because there is no mailbox behind an import and nobody to

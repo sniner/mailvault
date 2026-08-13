@@ -528,6 +528,71 @@ def read_all(root: pathlib.Path) -> collections.abc.Iterator[LogFile]:
 
 
 @dataclasses.dataclass
+class PlaceSummary:
+    """One place, as somebody asking what is in this archive wants it."""
+
+    mailbox: str | None
+    folder: str | None
+    messages: int
+    last_seen: str | None
+
+
+@dataclasses.dataclass
+class LogSummary:
+    """Every place the log knows, and how much mail it accounts for altogether.
+
+    `messages` is not the sum of the places' counts and is usually smaller: a
+    message filed under three Gmail labels lies at three places and is one
+    message. Both numbers are wanted -- per place to know where to look, in total
+    to hold against what the archive holds -- and a reader who adds the column up
+    has to be told why it comes out higher.
+    """
+
+    places: list[PlaceSummary]
+    messages: int
+
+
+def summarize(root: pathlib.Path) -> LogSummary:
+    """Read the whole log into one line per place.
+
+    The counts are of *distinct* messages, which is why this reads the files
+    rather than their headers. A header carries the count of its own file, and
+    the same message is written again whenever a folder is read in full instead
+    of resumed -- summing those would report an archive larger than it is, and a
+    number that is quietly an upper bound is worse than no number.
+
+    It holds the union of every place's store ids while it runs, the same
+    structure `compact` holds and for the same reason. That is the one thing here
+    that grows with the archive rather than with the number of places.
+
+    What comes out are the places mail was *seen* in, which is what
+    `db search --folder` matches. A place that has only a resume point and no
+    observations is not among them -- Gmail has such places, where the folder a
+    job polls and the label the server reports are two names for one thing.
+    """
+    ids: dict[Place, set[str]] = {}
+    dates: dict[Place, str] = {}
+    for logfile in read_all(root):
+        ids.setdefault(logfile.place, set()).update(logfile.store_ids)
+        seen = dates.get(logfile.place)
+        if logfile.date is not None and (seen is None or logfile.date > seen):
+            dates[logfile.place] = logfile.date
+    places = [
+        PlaceSummary(
+            mailbox=mailbox,
+            folder=folder,
+            messages=len(ids[(mailbox, folder)]),
+            last_seen=dates.get((mailbox, folder)),
+        )
+        # A place with no mailbox comes last: what an import or `archive adopt`
+        # brought in is the exception, and the mailboxes are what an archive is
+        # mostly made of.
+        for mailbox, folder in sorted(ids, key=lambda p: (p[0] is None, p[0] or "", p[1] or ""))
+    ]
+    return LogSummary(places=places, messages=len(set().union(*ids.values())) if ids else 0)
+
+
+@dataclasses.dataclass
 class CompactResult:
     """Outcome of consolidating the log."""
 

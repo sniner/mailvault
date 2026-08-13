@@ -468,6 +468,73 @@ class TestCompact:
         assert places[("job", "INBOX")] == {"a", "b"}
 
 
+class TestSummarize:
+    """What `archive places` reads: one line per place, distinct counts."""
+
+    def test_a_log_with_nothing_in_it_has_no_places(self, tmp_path):
+        summary = metalog.summarize(tmp_path / "meta")
+
+        assert summary.places == []
+        assert summary.messages == 0
+
+    def test_one_line_per_place_with_what_it_holds(self, tmp_path):
+        root = tmp_path / "meta"
+        _write(root, mailbox="gmail.com", folder="INBOX", store_ids=("aa" * 48, "bb" * 48))
+        _write(root, mailbox="gmail.com", folder="Sent", store_ids=("cc" * 48,))
+
+        summary = metalog.summarize(root)
+
+        assert [(p.folder, p.messages) for p in summary.places] == [("INBOX", 2), ("Sent", 1)]
+        assert summary.messages == 3
+
+    def test_a_message_recorded_twice_at_a_place_counts_once(self, tmp_path):
+        """A folder read in full records what it already recorded -- an upper bound."""
+        root = tmp_path / "meta"
+        _write(root, store_ids=(STORE_ID,))
+        _write(root, store_ids=(STORE_ID, "dd" * 48))
+
+        (place,) = metalog.summarize(root).places
+
+        assert place.messages == 2, "two distinct, not the three the headers add up to"
+
+    def test_the_total_is_distinct_across_places(self, tmp_path):
+        """The Gmail case: one message under two labels is one message."""
+        root = tmp_path / "meta"
+        _write(root, folder="INBOX", store_ids=(STORE_ID,))
+        _write(root, folder="\\All", store_ids=(STORE_ID,))
+
+        summary = metalog.summarize(root)
+
+        assert sum(p.messages for p in summary.places) == 2
+        assert summary.messages == 1
+
+    def test_the_newest_date_of_a_place_is_the_one_reported(self, tmp_path):
+        root = tmp_path / "meta"
+        writer = metalog.LogWriter(root, _heads(root))
+        writer.add("job", ["INBOX"], STORE_ID)
+        writer.seal(datetime(2026, 1, 1, tzinfo=UTC))
+        writer.add("job", ["INBOX"], "ee" * 48)
+        writer.seal(WHEN)
+
+        (place,) = metalog.summarize(root).places
+
+        assert place.last_seen is not None
+        assert place.last_seen.startswith("2026-08-01")
+
+    def test_places_with_no_mailbox_come_last(self, tmp_path):
+        """An import is the exception; the mailboxes are what an archive is made of."""
+        root = tmp_path / "meta"
+        _write(root, mailbox=None, folder="docuware-2019", store_ids=("aa" * 48,))
+        _write(root, mailbox="gmail.com", folder="INBOX", store_ids=("bb" * 48,))
+
+        summary = metalog.summarize(root)
+
+        assert [(p.mailbox, p.folder) for p in summary.places] == [
+            ("gmail.com", "INBOX"),
+            (None, "docuware-2019"),
+        ]
+
+
 class TestTheChain:
     """Each place's files name their predecessor; the newest is named by its head."""
 

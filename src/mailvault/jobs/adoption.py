@@ -54,20 +54,30 @@ class AdoptResult:
     name: str = ""
     found: int = 0
     recorded: int = 0
+    held: int = 0
     dry_run: bool = False
 
 
-def _referenced(log_root: pathlib.Path) -> set[str]:
-    """Every store id the metadata log names, wherever it names it.
+def _read_log(log_root: pathlib.Path, name: str) -> tuple[set[str], int]:
+    """Every store id the log names, and how many the target place already holds.
 
-    The place does not matter here, only that there is one. A message recorded
-    in a mailbox and a message recorded under an import name are both accounted
-    for, and neither is this command's business.
+    The place does not matter for the first: a message recorded in a mailbox and
+    a message recorded under an import name are both accounted for, and neither
+    is this command's business.
+
+    The second is, and it costs nothing on the same pass. A name that is already
+    a place is not an error -- adopting the leftovers of an import under that
+    import's name is the case this command exists for -- but it is the one thing
+    that tells a mistyped name from a fresh one, and the report cannot say so
+    without counting it here.
     """
     referenced: set[str] = set()
+    held: set[str] = set()
     for logfile in metalog.read_all(log_root):
         referenced.update(logfile.store_ids)
-    return referenced
+        if logfile.place == (None, name):
+            held.update(logfile.store_ids)
+    return referenced, len(held)
 
 
 def adopt(store_path: pathlib.Path, name: str, dry_run: bool = False) -> AdoptResult:
@@ -89,7 +99,7 @@ def adopt(store_path: pathlib.Path, name: str, dry_run: bool = False) -> AdoptRe
     result = AdoptResult(name=name, dry_run=dry_run)
 
     log.info("step 1 of 2: reading the metadata log")
-    referenced = _referenced(log_root)
+    referenced, result.held = _read_log(log_root, name)
     log.info("step 1 of 2: %s message(s) already have a place", f"{len(referenced):,}")
 
     log.info("step 2 of 2: looking through the archive")

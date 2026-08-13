@@ -36,12 +36,19 @@ def _placed(archive: pathlib.Path, mailbox: str | None, folder: str, body: bytes
 
 
 def _log_of(archive: pathlib.Path, folder: str) -> metalog.LogFile:
-    """The one log file of a place, so a failure lands on the assertion."""
+    """The one log file of a place.
+
+    Insists there is exactly one. Where a place has several, which of them comes
+    first depends on the date inside them and therefore on the run -- use
+    `metalog.summarize` for what the place holds altogether instead.
+    """
+    found = []
     for path in metalog.log_files(archive / metalog.DEFAULT_LOG_DIR):
         logfile = metalog.read_log(path)
         if logfile is not None and logfile.folder == folder:
-            return logfile
-    raise AssertionError(f"no log file for {folder}")
+            found.append(logfile)
+    assert len(found) == 1, f"{len(found)} log file(s) for {folder}, expected one"
+    return found[0]
 
 
 class TestWhatItTakesIn:
@@ -102,6 +109,26 @@ class TestWhatItTakesIn:
 
         assert again.found == 0
         assert len(metalog.log_files(tmp_path / metalog.DEFAULT_LOG_DIR)) == 1
+
+    def test_it_counts_what_the_name_already_holds(self, tmp_path):
+        """The one thing that tells a mistyped name from a fresh one."""
+        _placed(tmp_path, None, "docuware-2019", b"From: a\r\n\r\nimported")
+        _orphans(tmp_path, 2)
+
+        result = jobs.adopt(tmp_path, "docuware-2019")
+
+        assert result.held == 1, "what the place held before this run"
+        assert result.found == 2
+        # Asked of the place and not of a file: it has two now, and which of them
+        # sorts first depends on the date inside them.
+        (place,) = metalog.summarize(tmp_path / metalog.DEFAULT_LOG_DIR).places
+        assert place.messages == 3
+
+    def test_and_holds_nothing_under_a_fresh_name(self, tmp_path):
+        _placed(tmp_path, "gmail.com", "INBOX", b"From: a\r\n\r\nplaced")
+        _orphans(tmp_path, 2)
+
+        assert jobs.adopt(tmp_path, "orphaned").held == 0
 
     def test_a_name_of_nothing_is_refused(self, tmp_path):
         _orphans(tmp_path, 1)

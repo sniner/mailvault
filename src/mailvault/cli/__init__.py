@@ -248,6 +248,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     a_import.add_argument("source", type=pathlib.Path, help="Directory to copy/move mails from")
 
+    asub.add_parser(
+        "places",
+        help="List the places the archive knows and what each holds",
+        description=(
+            "List every mailbox and folder the archive has mail from, every"
+            " import, and everything `archive adopt` took in -- with how many"
+            " messages each holds and when it was last written to. This is where"
+            " the names come from that `db search --mailbox` and `--folder` take,"
+            " and it is worth a look before `archive import --name` or"
+            " `archive adopt --name`: a name already listed here is one you would"
+            " be adding to."
+        ),
+    )
+
     a_adopt = asub.add_parser(
         "adopt",
         help="Take messages that belong to no place into one, under a name",

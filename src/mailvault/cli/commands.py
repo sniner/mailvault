@@ -519,6 +519,49 @@ def report_import(
     return 1 if result.failed or (unrecorded and not result.dry_run) else 0
 
 
+# How wide the two name columns may get before they are cut. A mailbox is a host
+# name and stays short; a folder can be `[Google Mail]/Alle Nachrichten` or a
+# nested path, and cutting it is better than a table that wraps.
+MAILBOX_WIDTH = 30
+FOLDER_WIDTH = 44
+
+
+def report_places(summary: metalog.LogSummary) -> int:
+    """List what the archive has mail from, one line per place.
+
+    Two name columns rather than the `mailbox::folder` the findings print,
+    because these two are what the reader types into `db search`, and because an
+    empty mailbox column says by itself what kind of place that is -- an import
+    or what `archive adopt` took in, neither of which has a mailbox behind it.
+
+    The total is not the column added up, and where they differ the difference is
+    named: a message under three Gmail labels lies at three places and is one
+    message. Two numbers that do not add up and no word about it is how a report
+    sends a reader looking for a fault that is not there.
+    """
+    if not summary.places:
+        print("no place recorded yet -- a backup records one per folder,")
+        print("`archive import` and `archive adopt` one per name they are given")
+        return 0
+
+    mailboxes = [_cut(place.mailbox, MAILBOX_WIDTH) for place in summary.places]
+    folders = [_cut(place.folder, FOLDER_WIDTH) for place in summary.places]
+    counts = [f"{place.messages:,}" for place in summary.places]
+    first = max(len("mailbox"), *(len(name) for name in mailboxes))
+    second = max(len("folder"), *(len(name) for name in folders))
+    third = max(len("messages"), *(len(count) for count in counts))
+
+    print(f"{'mailbox':<{first}}  {'folder':<{second}}  {'messages':>{third}}  last seen")
+    for place, mailbox, folder, count in zip(summary.places, mailboxes, folders, counts):
+        day = (place.last_seen or "")[:10] or "?"
+        print(f"{mailbox:<{first}}  {folder:<{second}}  {count:>{third}}  {day}")
+
+    print(f"{len(summary.places):,} place(s), {summary.messages:,} message(s)")
+    if sum(place.messages for place in summary.places) != summary.messages:
+        print("  the column adds up to more: a message can be in several places")
+    return 0
+
+
 def report_adopt(result: jobs.AdoptResult) -> int:
     """Say what was taken into the archive, or what would have been.
 
@@ -527,6 +570,15 @@ def report_adopt(result: jobs.AdoptResult) -> int:
     the same sentence, and the dry run says in as many words that the log is not
     corrected afterwards -- that sentence has to arrive while the run can still
     be called off, which is the only moment it is worth anything.
+
+    A name that is already a place is said differently in the two modes, and on
+    purpose. Before the run it is a **choice**: these would go in with what is
+    already there, and a different name is one keystroke away. Afterwards it can
+    only be a **fact**, and it is written as one -- what the place holds now. A
+    warning after the writing would be the kind of line that names a state and no
+    move, and there is no move left to name. What it is still good for is the
+    mistyped name: three messages adopted into a place that now holds five
+    thousand says at a glance that this was not the name that was meant.
 
     Nothing was found is a good outcome and reads like one. It is also the
     outcome that says the archive is whole in itself, which is worth more than
@@ -541,6 +593,11 @@ def report_adopt(result: jobs.AdoptResult) -> int:
             f"{result.found:,} message(s) belong to no place and would be"
             f" recorded as {result.name}"
         )
+        if result.held:
+            print(
+                f"  {result.name} is already a place and holds {result.held:,}"
+                f" message(s); these would go in with them"
+            )
         print("  nothing corrects the log afterwards, so the name has to be right")
         print("  nothing was written; leave out --dry-run to record them")
         return 0
@@ -553,7 +610,12 @@ def report_adopt(result: jobs.AdoptResult) -> int:
             f" the same command records them once the log can be written"
         )
         return 1
-    print(f"{result.found:,} message(s) belong to no place, recorded as {result.name}")
+    place = (
+        f"{result.name}, which now holds {result.held + result.recorded:,} message(s)"
+        if result.held
+        else result.name
+    )
+    print(f"{result.found:,} message(s) belong to no place, recorded as {place}")
     print(
         f"  `mailvault db update` takes it in, then `mailvault db search"
         f" --folder {result.name}` finds them"
@@ -982,6 +1044,8 @@ def run_archive(args: argparse.Namespace) -> int:
                 dry_run=args.dry_run,
             ),
         )
+    elif cmd == "places":
+        return report_places(metalog.summarize(archive / metalog.DEFAULT_LOG_DIR))
     elif cmd == "adopt":
         return report_adopt(jobs.adopt(archive, args.name, dry_run=args.dry_run))
     elif cmd == "compress":

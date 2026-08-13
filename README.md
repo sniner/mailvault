@@ -332,6 +332,24 @@ $ mailvault archive import --name docuware-2019 ./my_mails
 recorded as docuware-2019 -- `mailvault db update` takes it in, then `mailvault db search --folder docuware-2019` finds them
 ```
 
+**Places** lists what the archive has mail from -- every mailbox and folder, every
+import, everything `archive adopt` took in. These are the names `db search`
+takes, and the ones already spoken for when you pick a new one:
+
+```console
+$ mailvault archive places
+mailbox           folder                          messages  last seen
+gmail.com         INBOX                             12,043  2026-08-12
+gmail.com         [Google Mail]/Alle Nachrichten      4,001  2026-08-12
+                  docuware-2019                       5,412  2026-08-02
+                  orphaned                              110  2026-08-13
+4 place(s), 17,455 message(s)
+  the column adds up to more: a message can be in several places
+```
+
+The empty mailbox column is what an import and an adopted place look like: there
+is no mailbox behind them.
+
 **Adopt** the messages that belong to no place -- what an import left behind
 before it took a `--name`, and what a lost log entry leaves behind. `archive
 check` reports them; this takes them in under a name you give:

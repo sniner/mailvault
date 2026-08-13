@@ -389,6 +389,34 @@ name repairs that, and it is the only thing that does -- the archive cannot
 invent a provenance it was never told. It costs the reading of the source and
 stores nothing twice.
 
+### Asking what the archive has mail from
+
+```console
+$ mailvault --archive ./backup archive places
+mailbox           folder                          messages  last seen
+gmail.com         INBOX                             12,043  2026-08-12
+gmail.com         [Google Mail]/Alle Nachrichten      4,001  2026-08-12
+                  docuware-2019                       5,412  2026-08-02
+                  orphaned                              110  2026-08-13
+4 place(s), 17,455 message(s)
+  the column adds up to more: a message can be in several places
+```
+
+Two columns rather than the `mailbox::folder` the findings print, because these
+two are what `db search --mailbox` and `--folder` take. An empty mailbox column
+is not a gap: it is what an import and an adopted place look like, and it says
+there is nobody behind that name to ask again.
+
+The counts are of distinct messages, which is why the total is smaller than the
+column: a message under three Gmail labels lies at three places and is one
+message. The per-place counts are distinct too -- a folder read in full records
+what it already recorded, so adding up the log files' own headers would report an
+archive larger than it is.
+
+A place with only a resume point and no observations is not listed. Gmail has
+such places: the folder a job polls and the label the server reports are two
+names for one thing, and only the second is where messages are recorded.
+
 ### Taking in what belongs to no place
 
 An archive is the message store and the metadata log together: a message belongs
@@ -423,6 +451,21 @@ it twice is therefore harmless: the second run finds nothing.
 Where the directory an import read from still exists, importing it again is the
 better move and this is the wrong one: an import records only what really lay in
 that directory, so it cannot be wrong about it.
+
+A name that is already a place is not an error -- adopting the leftovers of an
+import under that import's name is what this is for. It is said in both modes and
+differently on purpose. Before the run it is a choice, and another name is one
+keystroke away:
+
+```
+docuware-2019 is already a place and holds 5,412 message(s); these would go in with them
+```
+
+Afterwards there is no choice left to name, so the line is a plain fact about the
+outcome -- `recorded as docuware-2019, which now holds 5,415 message(s)`. That is
+what catches a mistyped name: three messages adopted into a place that now holds
+five thousand were not adopted where they were meant to go. `archive places`
+answers the same question before anything is typed, which is the better way round.
 
 ### Exporting a single message
 
