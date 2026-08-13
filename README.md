@@ -42,7 +42,7 @@ mailvault` and `pip install mailvault` work just as well, and so does naming a
 particular release or the development state:
 
 ```console
-$ uv tool install mailvault==0.11.0
+$ uv tool install mailvault==0.12.0
 $ uv tool install git+https://github.com/sniner/mailvault
 ```
 

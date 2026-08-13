@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 (2026-08-13)
 
 ### Breaking changes
 
@@ -11,7 +11,9 @@
   messages and `archive adopt` takes them in. Anyone whose archive holds mail from an import made
   before `archive import` took a `--name` should run `archive adopt` first, or the database comes
   out smaller than it used to. The first report line says where its number comes from, so the
-  change is visible rather than puzzling
+  change is visible rather than puzzling. Measured together with the page cache below, on 131,333
+  messages over SMB: **109 minutes down to 38**, and where the old build got steadily slower the
+  longer it ran, the new one holds its pace
 - **`db create --mailbox` is gone.** It filed messages the archive recorded no place for under a
   mailbox name -- a claim that lasted until the next rebuild and lived only in the database. What
   it was for is now `archive adopt --name NAME`, which makes the same statement in the archive
