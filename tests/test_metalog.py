@@ -9,6 +9,7 @@ import time
 from datetime import UTC, datetime
 
 from mailvault.store import cas, heads, metalog
+from tests.tamper import tamper
 
 WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
 STORE_ID = "df3823f1cd1638d0f374745bb0e200e3"
@@ -62,7 +63,7 @@ class TestWriting:
         """
         (path,) = _write(tmp_path / "meta", store_ids=["aaaa", "bbbb"])
         body = path.read_text(encoding="utf-8")
-        path.write_text(body.replace("bbbb", "cccc"), encoding="utf-8")
+        tamper(path, body.replace("bbbb", "cccc"))
 
         logfile = metalog.read_log(path)
         assert logfile is not None
@@ -196,7 +197,7 @@ class TestReading:
         """The expected shape of an interrupted write."""
         (path,) = _write(tmp_path / "meta", store_ids=["aaa", "bbb"])
         body = path.read_text(encoding="utf-8")
-        path.write_text(body[: body.rindex("\n") - 12], encoding="utf-8")
+        tamper(path, body[: body.rindex("\n") - 12])
 
         logfile = metalog.read_log(path)
         assert logfile is not None
@@ -206,7 +207,7 @@ class TestReading:
         """A file cut at a newline parses cleanly and is still short."""
         (path,) = _write(tmp_path / "meta", store_ids=["aaa", "bbb", "ccc"])
         lines = path.read_text(encoding="utf-8").splitlines()
-        path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+        tamper(path, "\n".join(lines[:-1]) + "\n")
 
         logfile = metalog.read_log(path)
         assert logfile is not None

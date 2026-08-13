@@ -13,6 +13,7 @@ from mailvault.cli import commands
 from mailvault.jobs.check import check, quarantine_entry
 from mailvault.jobs.common import JobError
 from mailvault.store import cas, heads, metalog
+from tests.tamper import tamper
 
 WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
 
@@ -106,7 +107,7 @@ class TestWhatItFinds:
         store, ids = _archive(tmp_path)
         victim = store.locate(ids[1], exists=True)
         assert victim is not None
-        victim.write_bytes(b"not what the name says")
+        tamper(victim, b"not what the name says")
 
         assert check(tmp_path, contents=False).sound, "a walk cannot see this, only reading can"
 
@@ -117,7 +118,7 @@ class TestWhatItFinds:
     def test_a_log_file_that_no_longer_matches_its_own_name(self, tmp_path):
         _archive(tmp_path)
         (logfile,) = metalog.log_files(tmp_path / metalog.DEFAULT_LOG_DIR)
-        logfile.write_bytes(logfile.read_bytes() + b'{"store_id":"aa"}\n')
+        tamper(logfile, logfile.read_bytes() + b'{"store_id":"aa"}\n')
 
         result = check(tmp_path)
 
@@ -207,7 +208,7 @@ class TestQuarantine:
         store, ids = _archive(tmp_path)
         victim = store.locate(ids[1], exists=True)
         assert victim is not None
-        victim.write_bytes(b"not what the name says")
+        tamper(victim, b"not what the name says")
         return store, ids, victim
 
     def test_with_names_only_it_is_refused(self, tmp_path):
@@ -247,7 +248,9 @@ class TestQuarantine:
     def test_a_second_quarantine_does_not_overwrite_the_first(self, tmp_path):
         _store, _ids, victim = self._with_a_damaged_entry(tmp_path)
         check(tmp_path, contents=True, quarantine=True)
-        # The message came back and broke again: same name, same fate.
+        # The message came back and broke again: same name, same fate. The name
+        # is free after the quarantine, so this writes a file rather than
+        # changing one -- no protection to lift.
         victim.write_bytes(b"broken a second time")
 
         result = check(tmp_path, contents=True, quarantine=True)

@@ -607,7 +607,7 @@ def compact(root: pathlib.Path, heads_root: pathlib.Path) -> CompactResult:
     # just written (an already-compact place produces the same hash).
     for path in consumed:
         if path not in written:
-            path.unlink(missing_ok=True)
+            utils.remove_file(path, missing_ok=True)
 
     # Folding a hundred files into one empties most of the shard directories, and
     # nothing else ever removes them -- a store that only grows, like the mail, has

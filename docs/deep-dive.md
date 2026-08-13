@@ -566,6 +566,22 @@ The messages have their own directory rather than the root, because the root is
 what somebody standing in the archive sees, and 256 shard directories there bury
 the handful of files worth looking at.
 
+Messages and log files are written without their write bits:
+
+```console
+$ ls -l mail/00/00/00003c6ec5464cca9…7af8.eml
+-r--r--r-- 1 you you 4711 … 00003c6ec5464cca9…7af8.eml
+```
+
+Their name is the hash of their content, so anything that changes one breaks its
+name, and the mode says as much to whatever opens the file -- viewers that
+"repair" the text file they are displaying are the reason it is worth saying at
+all. Comfort, not protection: it stops a slip, not a decision, and it has nothing
+to say about deletion. Not every filesystem carries a mode; on a desktop-mounted
+SMB share the archive looks exactly as it did before, and nothing is lost by
+that. `archive export` hands out a normal, writable file, which is the way to
+look at a message.
+
 ### `meta/` — where each message was seen
 
 `meta/` answers the one question the messages cannot: which mailbox and which

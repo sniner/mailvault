@@ -8,9 +8,29 @@ same expectations.
 
 from __future__ import annotations
 
+import logging
 import pathlib
+import stat
+
+import pytest
 
 from mailvault import utils
+from mailvault.utils import fs
+
+
+@pytest.fixture(autouse=True)
+def a_fresh_answer(monkeypatch):
+    """Every test asks the filesystem itself, whatever an earlier one learned.
+
+    `fs` remembers whether the write protection holds here, so a run does not
+    ask once per message. Left alone, the first test to touch it would decide
+    for all the others.
+    """
+    monkeypatch.setattr(fs, "_chmod_honoured", None)
+
+
+def writable(path: pathlib.Path) -> bool:
+    return bool(stat.S_IMODE(path.stat().st_mode) & fs.WRITE_BITS)
 
 
 class TestBatched:
@@ -93,3 +113,171 @@ class TestUnderDir:
         path = pathlib.Path("/tmp/loose/a1b2.jsonl")
 
         assert utils.under_dir("meta", path) == str(path)
+
+
+class TestSetReadOnly:
+    """The write bits come off what the archive is finished with."""
+
+    def test_the_write_bits_are_gone_afterwards(self, tmp_path):
+        """What a program that opens the file finds: nothing to write into."""
+        path = tmp_path / "entry.eml"
+        path.write_bytes(b"a stored message")
+
+        assert utils.set_read_only(path)
+
+        assert not writable(path)
+
+    def test_what_is_in_the_file_is_untouched(self, tmp_path):
+        path = tmp_path / "entry.eml"
+        path.write_bytes(b"a stored message")
+
+        utils.set_read_only(path)
+
+        assert path.read_bytes() == b"a stored message"
+
+    def test_a_chmod_that_changes_nothing_is_reported_as_such(self, tmp_path, monkeypatch):
+        """The failure worth catching: success reported, mode as it was.
+
+        A desktop-mounted SMB share does exactly this, which is why the answer
+        comes from a `stat` afterwards and never from the call.
+        """
+        path = tmp_path / "entry.eml"
+        path.write_bytes(b"lying on a share that cannot do this")
+        monkeypatch.setattr(pathlib.Path, "chmod", lambda self, mode: None)
+
+        assert not utils.set_read_only(path)
+
+        assert writable(path)
+
+    def test_it_reads_back_what_it_did_once_and_not_per_message(self, tmp_path, monkeypatch):
+        """Three calls for the first entry of a run, two for every one after it.
+
+        The read-back is what makes a silent no-op visible, and once is what it
+        takes: the answer belongs to the filesystem, not to the file.
+        """
+        paths = []
+        for serial in range(3):
+            path = tmp_path / f"entry-{serial}.eml"
+            path.write_bytes(b"one of many messages")
+            paths.append(path)
+        stat_of = pathlib.Path.stat
+        stats: list[pathlib.Path] = []
+
+        def counting_stat(self: pathlib.Path, *, follow_symlinks: bool = True):
+            stats.append(self)
+            return stat_of(self, follow_symlinks=follow_symlinks)
+
+        monkeypatch.setattr(pathlib.Path, "stat", counting_stat)
+        for path in paths:
+            assert utils.set_read_only(path)
+
+        assert len(stats) == 4, "2 for the first message, 1 for each of the others"
+
+    def test_it_stops_asking_once_it_knows(self, tmp_path):
+        """Two round trips per message, on the filesystems where they are dear."""
+        attempts: list[pathlib.Path] = []
+
+        def chmod_that_does_nothing(self: pathlib.Path, mode: int) -> None:
+            attempts.append(self)
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(pathlib.Path, "chmod", chmod_that_does_nothing)
+            for serial in range(3):
+                path = tmp_path / f"entry-{serial}.eml"
+                path.write_bytes(b"one of many messages")
+                assert not utils.set_read_only(path)
+
+        assert len(attempts) == 1
+
+    def test_a_file_that_is_not_there_is_not_an_error(self, tmp_path):
+        """A run gets the mail home; this is comfort and may not stop one."""
+        assert not utils.set_read_only(tmp_path / "never-written.eml")
+
+    def test_a_chmod_that_is_refused_says_so_once_and_for_the_run(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A gvfs SMB mount answers EOPNOTSUPP rather than doing nothing.
+
+        The log has to name the conclusion, not only the first file it happened
+        on -- otherwise the one line about the archive never appears.
+        """
+
+        def refusing_chmod(self: pathlib.Path, mode: int) -> None:
+            raise OSError(95, "Operation not supported")
+
+        monkeypatch.setattr(pathlib.Path, "chmod", refusing_chmod)
+        paths = []
+        for serial in range(2):
+            path = tmp_path / f"entry-{serial}.eml"
+            path.write_bytes(b"one of many messages")
+            paths.append(path)
+
+        with caplog.at_level(logging.DEBUG, logger="mailvault.utils.fs"):
+            for path in paths:
+                assert not utils.set_read_only(path)
+
+        assert "write protection does not hold here" in caplog.text
+        assert caplog.text.count("write protection") == 1
+
+    def test_a_refusal_later_on_gives_up_for_the_rest_of_the_run(self, tmp_path, monkeypatch):
+        """A chmod that worked and then stops working is not asked a third time.
+
+        An archive two hosts write to is where that happens: only the owner may
+        chmod a file. The rest of the run keeps its mail and loses the comfort.
+        """
+        protected = tmp_path / "mine.eml"
+        protected.write_bytes(b"written by this host")
+        assert utils.set_read_only(protected)
+        attempts: list[pathlib.Path] = []
+
+        def not_yours(self: pathlib.Path, mode: int) -> None:
+            attempts.append(self)
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(pathlib.Path, "chmod", not_yours)
+        for name in ("someone-elses.eml", "mine-too.eml"):
+            path = tmp_path / name
+            path.write_bytes(b"written by whoever")
+            assert not utils.set_read_only(path)
+
+        assert len(attempts) == 1, "the second file is not tried at all"
+        assert writable(tmp_path / "mine-too.eml")
+
+
+class TestRemoveFile:
+    """Deleting what the archive has protected, on both kinds of filesystem."""
+
+    def test_a_protected_file_goes(self, tmp_path):
+        path = tmp_path / "entry.eml"
+        path.write_bytes(b"about to be consolidated away")
+        utils.set_read_only(path)
+
+        utils.remove_file(path)
+
+        assert not path.exists()
+
+    def test_a_refusal_is_answered_by_lifting_the_protection(self, tmp_path, monkeypatch):
+        """What Windows does: a read-only file cannot go while it is one."""
+        path = tmp_path / "entry.eml"
+        path.write_bytes(b"about to be consolidated away")
+        utils.set_read_only(path)
+        unlink = pathlib.Path.unlink
+
+        def windows_unlink(self: pathlib.Path, missing_ok: bool = False) -> None:
+            if self.exists() and not writable(self):
+                raise PermissionError(13, "read-only")
+            unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(pathlib.Path, "unlink", windows_unlink)
+
+        utils.remove_file(path)
+
+        assert not path.exists()
+
+    def test_a_file_that_is_not_there_is_the_caller_s_to_expect(self, tmp_path):
+        missing = tmp_path / "gone.eml"
+
+        with pytest.raises(FileNotFoundError):
+            utils.remove_file(missing)
+
+        utils.remove_file(missing, missing_ok=True)

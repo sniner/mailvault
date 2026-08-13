@@ -14,6 +14,11 @@ alone, so two runs storing the same message at the same time cannot write into
 the same file and rename the mixture into place. And the content reaches the
 device before the rename, the directory entry naming it after it, so a power cut
 cannot publish a name whose content never arrived.
+
+What is immutable by construction is also marked as such: the write bits come
+off just before the entry takes its name, so no program that opens one finds an
+invitation to change it. A comfort, not a guarantee -- see `mailvault.utils.fs`
+for what it is worth and where it does nothing at all.
 """
 
 from __future__ import annotations
@@ -172,6 +177,11 @@ def _writing_to(destination: pathlib.Path) -> collections.abc.Iterator[io.Buffer
     properly would mean a second sync per shard, for a window that only exists
     for the first entry to land in one of 65,536 directories.
 
+    The write protection goes on here too, on the transient file and before the
+    rename -- the entry is protected from the second it carries its name, with
+    no window in between. It cannot fail the write: an entry that is there and
+    writable is a stored message, an exception here would lose one.
+
     Nothing is left behind when the write fails: the transient file goes and
     the destination is untouched.
     """
@@ -183,12 +193,13 @@ def _writing_to(destination: pathlib.Path) -> collections.abc.Iterator[io.Buffer
             yield f
             f.flush()
             os.fsync(f.fileno())
+        utils.set_read_only(tmp_path)
         tmp_path.replace(destination)
         renamed = True
     finally:
         if not renamed:
             log.debug("%s: write failed, removing transient file", destination)
-            tmp_path.unlink(missing_ok=True)
+            utils.remove_file(tmp_path, missing_ok=True)
 
     atomic.sync_directory(destination.parent)
 
@@ -447,7 +458,7 @@ class ContentAddressedStorage:
             try:
                 with path.open("rb") as src, _writing_to(target_fn(path)) as dst:
                     converter(src, dst)
-                path.unlink()
+                utils.remove_file(path)
             except Exception as exc:
                 # Deliberately broad: a codec error is not an OSError, and one
                 # damaged entry must not stop a pass over a whole archive. The
@@ -546,7 +557,7 @@ class ContentAddressedStorage:
         trace an interrupted write leaves behind.
         """
         try:
-            path.unlink()
+            utils.remove_file(path)
         except OSError as exc:
             log.debug(f"{self.where(path)}: kept: {exc}")
             return False

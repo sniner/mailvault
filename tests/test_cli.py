@@ -15,6 +15,7 @@ from mailvault import cli, conf, jobs
 from mailvault.backend import base
 from mailvault.cli import commands
 from mailvault.store import cas, heads, marker, metalog
+from tests.tamper import tamper
 
 WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
 
@@ -300,7 +301,7 @@ def test_archive_decompress_reports_what_it_could_not_convert(tmp_path, capsys):
     store = cas.mail_store(root, compress=True)
     _, _, good = store.add(b"a real message")
     _, _, broken = store.add(b"about to be corrupted")
-    broken.write_bytes(b"this is not a zstd frame")
+    tamper(broken, b"this is not a zstd frame")
 
     exit_code = commands.run_archive(
         argparse.Namespace(archive_command="decompress", archive=root)

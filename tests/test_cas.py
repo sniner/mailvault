@@ -1,11 +1,14 @@
 import io
 import os
 import pathlib
+import stat
 import time
 
 import pytest
 
 from mailvault.store import cas
+from mailvault.utils import fs
+from tests.tamper import tamper
 
 
 def test_cas_init_directory(tmp_path):
@@ -420,7 +423,7 @@ def test_cas_verify(tmp_path):
     _, _, path = store.add(b"original content")
     assert store.verify(path)
 
-    path.write_bytes(b"tampered with")
+    tamper(path, b"tampered with")
     assert not store.verify(path)
 
 
@@ -614,6 +617,75 @@ def test_cas_a_failed_write_syncs_nothing(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Writing: the protection an entry carries once it has its name
+# ---------------------------------------------------------------------------
+
+
+def _writable(path: pathlib.Path) -> bool:
+    return bool(stat.S_IMODE(path.stat().st_mode) & fs.WRITE_BITS)
+
+
+def test_cas_an_entry_is_not_writable(tmp_path, monkeypatch):
+    """What a program that opens an entry finds: nothing to write into.
+
+    Comfort, not security -- see `mailvault.utils.fs`. The store still reads it,
+    and still recognises the content as one it already holds.
+    """
+    monkeypatch.setattr(fs, "_chmod_honoured", None)
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+
+    _status, _hashval, path = store.add(b"a message that made it")
+
+    assert not _writable(path)
+    assert store.read(path) == b"a message that made it"
+    assert store.add(b"a message that made it")[0] == "EXISTS"
+
+
+def test_cas_the_protection_is_on_before_the_entry_has_its_name(tmp_path, monkeypatch):
+    """No window in which an entry carries its name and is still writable."""
+    seen: list[bool] = []
+    rename = pathlib.Path.replace
+
+    def watched_replace(self: pathlib.Path, target):
+        seen.append(_writable(self))
+        return rename(self, target)
+
+    monkeypatch.setattr(pathlib.Path, "replace", watched_replace)
+    monkeypatch.setattr(fs, "_chmod_honoured", None)
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+
+    store.add(b"a message that made it")
+
+    assert seen == [False], "the transient file is protected, then renamed"
+
+
+def test_cas_a_filesystem_that_cannot_do_it_stores_all_the_same(tmp_path, monkeypatch):
+    """A share where the chmod is a no-op costs the comfort, never the mail."""
+    monkeypatch.setattr(pathlib.Path, "chmod", lambda self, mode: None)
+    monkeypatch.setattr(fs, "_chmod_honoured", None)
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+
+    _status, _hashval, path = store.add(b"a message that made it")
+
+    assert store.read(path) == b"a message that made it"
+    assert _writable(path)
+
+
+def test_cas_a_protected_entry_can_still_be_converted(tmp_path):
+    """`compress` replaces an entry with another one, and the old file has to go."""
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    _status, _hashval, plain = store.add(b"compressible " * 100)
+    assert not _writable(plain)
+
+    store.compress = True
+    result = store.compress_all()
+
+    assert result.converted == 1
+    assert result.failed == []
+    assert not plain.exists()
+
+
+# ---------------------------------------------------------------------------
 # Reading
 # ---------------------------------------------------------------------------
 
@@ -646,7 +718,7 @@ def test_cas_conversion_failure_is_reported_not_swallowed(tmp_path):
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml", compress=True)
     _, _, good = store.add(b"a real entry")
     _, _, broken = store.add(b"about to be corrupted")
-    broken.write_bytes(b"this is not a zstd frame")
+    tamper(broken, b"this is not a zstd frame")
 
     result = store.decompress_all()
 

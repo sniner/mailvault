@@ -20,6 +20,7 @@ import pathlib
 import re
 from datetime import UTC, datetime
 
+from mailvault import utils
 from mailvault.legacy import state_json, store_db
 from mailvault.store import cas, heads, marker, metalog
 
@@ -271,7 +272,7 @@ def _merge_into(shard: pathlib.Path, destination: pathlib.Path) -> None:
             continue
         here = destination / entry.relative_to(shard)
         if here.exists():
-            entry.unlink()
+            utils.remove_file(entry)
             continue
         here.parent.mkdir(parents=True, exist_ok=True)
         entry.rename(here)

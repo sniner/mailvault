@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed
+
+- **Stored messages and metadata log files are written read-only.** An entry is named after the
+  hash of its content, so anything that changes it breaks its name -- the mode now says that to
+  whatever opens the file. Comfort, not protection: it is aimed at the viewer that "repairs" the
+  text file it is displaying, not at anyone who means it, and it does not stop deletion. Where the
+  filesystem does not carry the mode -- a desktop-mounted SMB share is the usual case -- nothing
+  changes and nothing is reported. `archive export` still hands out a normal, writable file
+
 ### Fixed
 
 - **`archive compact` no longer explains itself with an overlap that no longer exists.** Its help

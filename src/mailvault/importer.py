@@ -15,6 +15,7 @@ import logging
 import os
 import pathlib
 
+from mailvault import utils
 from mailvault.store import cas, zstd
 
 log = logging.getLogger(__name__)
@@ -96,7 +97,9 @@ class ExternalMailArchive:
             else:
                 result.present += 1
             if move and not dry_run:
-                eml.unlink()
+                # The source may be another mailvault archive, whose entries carry a
+                # write protection of their own.
+                utils.remove_file(eml)
                 log.debug("%s: file deleted", eml)
         return result
 
