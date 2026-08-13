@@ -14,7 +14,6 @@ import email.policy
 import io
 import logging
 
-from mailvault import fixedpolicy
 from mailvault.mailutils.reading import mail_reader
 
 log = logging.getLogger(__name__)
@@ -24,6 +23,14 @@ def unwrap_exchange_journal_item(msg: io.IOBase | bytes) -> bytes | None:
     """Returns None if not a journal item. Binary RFC822 message otherwise."""
 
     def as_bytes(m):
+        """The attached message written back out, or None if it cannot be.
+
+        Both attempts are the same one twice, once with a policy that may hold
+        utf-8 where the other cannot. What is parsed here always comes from
+        bytes, and its non-ASCII arrives as surrogates that either policy writes
+        out unchanged -- the encode error these guard against needs a payload
+        that was never bytes, and there is no way to get one on this path.
+        """
         try:
             return m.as_bytes(policy=email.policy.SMTP)
         except UnicodeEncodeError:
@@ -32,19 +39,6 @@ def unwrap_exchange_journal_item(msg: io.IOBase | bytes) -> bytes | None:
             return m.as_bytes(policy=email.policy.SMTPUTF8)
         except UnicodeEncodeError:
             log.debug("as_bytes: email.policy.SMTPUTF8 failed")
-        # FIXME: fixedpolicy
-        try:
-            return m.as_bytes(policy=fixedpolicy.SMTP)
-        except UnicodeEncodeError:
-            log.debug("as_bytes: fixedpolicy.SMTP failed")
-        try:
-            return m.as_bytes(policy=fixedpolicy.SMTPUTF8)
-        except UnicodeEncodeError:
-            log.debug("as_bytes: fixedpolicy.SMTPUTF8 failed")
-        try:
-            return m.as_bytes(policy=fixedpolicy.compat32)
-        except UnicodeEncodeError:
-            log.debug("as_bytes: fixedpolicy.compat32 failed")
         return None
 
     def rfc822_attachment(parts, idx):

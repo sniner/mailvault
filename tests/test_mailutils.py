@@ -146,6 +146,37 @@ def test_unwrap_exchange_journal_item():
     assert b"Real Message" in result
 
 
+def test_a_journal_item_carrying_non_ascii_is_written_back_out_whole():
+    """The unencoded 8-bit that Exchange hands over, through unwrapping and back.
+
+    Raw non-ASCII in a header and in the body, declared 8bit -- the shape that
+    used to send `as_bytes` down a fallback chain. It has to come back byte for
+    byte in the body, because what is written out here is what the archive keeps.
+    """
+    body = "Grüße aus München -- ölig, süß\r\n".encode()
+    journal = (
+        b"From: journal@example.com\r\n"
+        b"Subject: Journal\r\n"
+        b'Content-Type: multipart/mixed; boundary="BOUNDARY"\r\n'
+        b"\r\n"
+        b"--BOUNDARY\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"\r\n"
+        b"Journal envelope\r\n"
+        b"--BOUNDARY\r\n"
+        b"Content-Type: message/rfc822\r\n"
+        b"\r\n"
+        b"From: real-sender@example.com\r\n"
+        b"Subject: " + "Ölwechsel".encode() + b"\r\n"
+        b'Content-Type: text/plain; charset="utf-8"\r\n'
+        b"Content-Transfer-Encoding: 8bit\r\n"
+        b"\r\n" + body + b"--BOUNDARY--\r\n"
+    )
+    result = mailutils.unwrap_exchange_journal_item(journal)
+    assert result is not None
+    assert body.rstrip(b"\r\n") in result
+
+
 def test_unwrap_exchange_journal_not_a_journal():
     plain = b"""From: a@b.com
 To: c@d.com
