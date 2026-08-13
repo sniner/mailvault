@@ -403,9 +403,21 @@ gmail.com         [Google Mail]/Alle Nachrichten      4,001  2026-08-12
 ```
 
 Two columns rather than the `mailbox::folder` the findings print, because these
-two are what `db search --mailbox` and `--folder` take. An empty mailbox column
-is not a gap: it is what an import and an adopted place look like, and it says
-there is nobody behind that name to ask again.
+two are what `db search --mailbox` and `--folder` take.
+
+A cell is empty where there is no name to print, and the two columns mean
+different things by it. **No mailbox** is what an import and an adopted place
+look like: there is nobody behind that name to ask again. **No folder** is a
+mailbox whose folder was never recorded -- an archive lifted from the database
+mailvault kept before 0.8 has one such place per mailbox, often its largest,
+because that database stored which mailbox a message came from and not which
+folder of it. Nothing can recover that: the folder was never in the archive. A
+`backup --full` over the folders in question would record it from now on, at the
+price of fetching every message in them again.
+
+Neither is written out as a word. A cell that said "(not recorded)" would sit
+where a name sits while not being one, and the first thing anybody would do with
+it is type it into `--folder`.
 
 The counts are of distinct messages, which is why the total is smaller than the
 column: a message under three Gmail labels lies at three places and is one

@@ -19,9 +19,10 @@
   was last written to. These are the names `db search --mailbox` and `--folder` take, and the ones
   already spoken for when picking a new one -- until now the only way to find them out was to read
   the log. Two name columns rather than the `mailbox::folder` the findings print, because those two
-  are what gets typed, and because an empty mailbox column is what an import and an adopted place
-  look like. The counts are of distinct messages, so the total comes out smaller than the column
-  adds up to, and the report says why rather than leaving it odd
+  are what gets typed, and a cell stays empty where there is no name to print -- no mailbox is an
+  import or an adopted place, no folder is a mailbox whose folder was never recorded. The counts
+  are of distinct messages, so the total comes out smaller than the column adds up to, and the
+  report says why rather than leaving it odd
 - **`archive adopt --name NAME` takes in the messages that belong to no place.** An archive is
   the message store and the metadata log together, and a message that lies in `mail/` while no log
   file names it is not a damaged part of it but a file that is not part of it yet. `archive check`

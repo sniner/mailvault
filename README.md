@@ -347,8 +347,10 @@ gmail.com         [Google Mail]/Alle Nachrichten      4,001  2026-08-12
   the column adds up to more: a message can be in several places
 ```
 
-The empty mailbox column is what an import and an adopted place look like: there
-is no mailbox behind them.
+A cell is empty where there is no name to print. No mailbox is what an import and
+an adopted place look like -- there is none behind them. No folder is a mailbox
+whose folder was never recorded, which is what an archive carried over from the
+database mailvault kept before 0.8 has.
 
 **Adopt** the messages that belong to no place -- what an import left behind
 before it took a `--name`, and what a lost log entry leaves behind. `archive
