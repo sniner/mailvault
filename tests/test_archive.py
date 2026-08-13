@@ -4,8 +4,8 @@ import pathlib
 
 import pytest
 
-from mailvault import conf, importer, jobs
-from mailvault.jobs import guard
+from mailvault import conf, jobs
+from mailvault.jobs import guard, importing
 from mailvault.store import cas, heads, metalog
 
 
@@ -18,7 +18,7 @@ def test_mail_archive_walk(tmp_path, dummy_eml_bytes):
     dummy_file = tmp_path / "test.txt"
     dummy_file.write_text("Hello")
 
-    arch = importer.ExternalMailArchive(root_dir=tmp_path)
+    arch = importing.ExternalMailArchive(root_dir=tmp_path)
     files = list(arch.walk())
 
     assert len(files) == 1
@@ -29,7 +29,7 @@ def test_mail_archive_stats(tmp_path, dummy_eml_bytes):
     eml_file = tmp_path / "test.eml"
     eml_file.write_bytes(dummy_eml_bytes)
 
-    arch = importer.ExternalMailArchive(root_dir=tmp_path)
+    arch = importing.ExternalMailArchive(root_dir=tmp_path)
     count, size = arch.stats()
 
     assert count == 1
@@ -42,7 +42,7 @@ def test_mail_archive_sees_compressed(tmp_path, dummy_eml_bytes):
     store = cas.ContentAddressedStorage(root_dir=tmp_path, suffix=".eml", compress=True)
     store.add(dummy_eml_bytes)
 
-    arch = importer.ExternalMailArchive(root_dir=tmp_path)
+    arch = importing.ExternalMailArchive(root_dir=tmp_path)
     files = list(arch.walk())
     assert len(files) == 1
     assert files[0].name.endswith(".eml.zst")
@@ -60,7 +60,7 @@ def test_mail_archive_import_compressed_roundtrip(tmp_path, dummy_eml_bytes):
 
     dst_dir = tmp_path / "dst"
     dst = cas.ContentAddressedStorage(root_dir=dst_dir, suffix=".eml")
-    importer.ExternalMailArchive(root_dir=src).archive_to_cas(dst, move=False)
+    importing.ExternalMailArchive(root_dir=src).archive_to_cas(dst, move=False)
 
     imported = list(dst.walk())
     assert len(imported) == 1
@@ -74,7 +74,7 @@ def test_mail_archive_to_cas(tmp_path, dummy_eml_bytes):
     cas_dir = tmp_path / "cas"
     store = cas.ContentAddressedStorage(root_dir=cas_dir)
 
-    arch = importer.ExternalMailArchive(root_dir=tmp_path)
+    arch = importing.ExternalMailArchive(root_dir=tmp_path)
     arch.archive_to_cas(store, move=False)
 
     assert list(store.walk())  # Should have one file
@@ -95,7 +95,7 @@ def test_import_dry_run_writes_nothing_and_counts_both_kinds(tmp_path, dummy_eml
 
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
     store.add(dummy_eml_bytes)
-    arch = importer.ExternalMailArchive(root_dir=src)
+    arch = importing.ExternalMailArchive(root_dir=src)
 
     result = arch.archive_to_cas(store, move=True, dry_run=True)
 
@@ -114,7 +114,7 @@ def test_a_dry_run_predicts_what_the_real_import_then_does(tmp_path, dummy_eml_b
     (src / "two.eml").write_bytes(b"From: someone\r\n\r\nanother one")
 
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
-    arch = importer.ExternalMailArchive(root_dir=src)
+    arch = importing.ExternalMailArchive(root_dir=src)
 
     predicted = arch.archive_to_cas(store, dry_run=True)
     actual = arch.archive_to_cas(store)
@@ -130,18 +130,18 @@ def test_an_unreadable_message_is_named_rather_than_counted(tmp_path, monkeypatc
 
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
     monkeypatch.setattr(
-        importer, "_read_eml", lambda path: (_ for _ in ()).throw(OSError("unreadable"))
+        importing, "_read_eml", lambda path: (_ for _ in ()).throw(OSError("unreadable"))
     )
 
-    result = importer.ExternalMailArchive(root_dir=src).archive_to_cas(store)
+    result = importing.ExternalMailArchive(root_dir=src).archive_to_cas(store)
 
     assert result.failed == [broken]
     assert (result.stored, result.present) == (0, 0)
 
 
-def _provenance(archive: pathlib.Path, name: str = "docuware-2019") -> importer.Provenance:
-    """What the CLI hands the importer: a name and the log to write it in."""
-    return importer.Provenance(
+def _provenance(archive: pathlib.Path, name: str = "docuware-2019") -> importing.Provenance:
+    """What the CLI hands the import: a name and the log to write it in."""
+    return importing.Provenance(
         name=name,
         log=metalog.LogWriter(
             archive / metalog.DEFAULT_LOG_DIR, archive / heads.DEFAULT_HEADS_DIR
@@ -167,7 +167,7 @@ class TestWhatAnImportRecords:
         _sources(tmp_path / "src", 2)
         store = cas.mail_store(archive)
 
-        importer.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+        importing.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
             store, provenance=_provenance(archive)
         )
 
@@ -182,7 +182,7 @@ class TestWhatAnImportRecords:
         archive = tmp_path / "archive"
         _sources(tmp_path / "src", 1)
 
-        importer.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+        importing.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
             cas.mail_store(archive), provenance=_provenance(archive)
         )
 
@@ -202,7 +202,7 @@ class TestWhatAnImportRecords:
         store = cas.mail_store(archive)
         store.add(dummy_eml_bytes)
 
-        result = importer.ExternalMailArchive(root_dir=src).archive_to_cas(
+        result = importing.ExternalMailArchive(root_dir=src).archive_to_cas(
             store, provenance=_provenance(archive)
         )
 
@@ -211,11 +211,11 @@ class TestWhatAnImportRecords:
 
     def test_it_is_written_down_in_batches(self, tmp_path, monkeypatch):
         """A batch is what `--move` may let go of, so it must reach the log first."""
-        monkeypatch.setattr(importer, "SEAL_BATCH", 2)
+        monkeypatch.setattr(importing, "SEAL_BATCH", 2)
         archive = tmp_path / "archive"
         _sources(tmp_path / "src", 5)
 
-        result = importer.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+        result = importing.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
             cas.mail_store(archive), provenance=_provenance(archive)
         )
 
@@ -224,11 +224,11 @@ class TestWhatAnImportRecords:
         assert len(files) == 3, "two full batches and the remainder"
 
     def test_the_batches_form_one_chain(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(importer, "SEAL_BATCH", 2)
+        monkeypatch.setattr(importing, "SEAL_BATCH", 2)
         archive = tmp_path / "archive"
         _sources(tmp_path / "src", 4)
 
-        importer.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+        importing.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
             cas.mail_store(archive), provenance=_provenance(archive)
         )
 
@@ -250,7 +250,7 @@ class TestWhatAnImportRecords:
         archive = tmp_path / "archive"
         _sources(tmp_path / "src", 2)
 
-        result = importer.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+        result = importing.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
             cas.mail_store(archive), provenance=_provenance(archive), dry_run=True
         )
 
@@ -264,7 +264,7 @@ class TestMoveWaitsForTheLog:
     """A file whose provenance is not written down must not be the one that goes."""
 
     def test_sources_go_only_after_the_batch_is_sealed(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(importer, "SEAL_BATCH", 2)
+        monkeypatch.setattr(importing, "SEAL_BATCH", 2)
         archive = tmp_path / "archive"
         sources = _sources(tmp_path / "src", 3)
         sealed: list[int] = []
@@ -278,7 +278,7 @@ class TestMoveWaitsForTheLog:
             return real_seal(self, date)
 
         monkeypatch.setattr(metalog.LogWriter, "seal", seal)
-        importer.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+        importing.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
             cas.mail_store(archive), provenance=_provenance(archive), move=True
         )
 
@@ -293,7 +293,7 @@ class TestMoveWaitsForTheLog:
             raise OSError("no space left on device")
 
         monkeypatch.setattr(metalog.LogWriter, "seal", refuse)
-        result = importer.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+        result = importing.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
             cas.mail_store(archive), provenance=_provenance(archive), move=True
         )
 
@@ -308,7 +308,7 @@ class TestAnImportedArchiveIsWholeInItself:
     def _import(self, tmp_path, count: int = 3) -> pathlib.Path:
         archive = tmp_path / "archive"
         _sources(tmp_path / "src", count)
-        importer.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+        importing.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
             cas.mail_store(archive), provenance=_provenance(archive)
         )
         return archive
@@ -334,7 +334,7 @@ class TestAnImportedArchiveIsWholeInItself:
 
     def test_compact_moves_the_head_with_it(self, tmp_path, monkeypatch):
         """Otherwise the head names a file compact has just removed."""
-        monkeypatch.setattr(importer, "SEAL_BATCH", 1)
+        monkeypatch.setattr(importing, "SEAL_BATCH", 1)
         archive = self._import(tmp_path)
 
         metalog.compact(archive / metalog.DEFAULT_LOG_DIR, archive / heads.DEFAULT_HEADS_DIR)
@@ -362,7 +362,7 @@ def test_docuware_archive_walk(tmp_path, dummy_eml_bytes):
     eml2 = arch_dir / "large.eml"
     eml2.write_bytes(dummy_eml_bytes)
 
-    arch = importer.DocuwareMailArchive(root_dir=arch_dir)
+    arch = importing.DocuwareMailArchive(root_dir=arch_dir)
     files = list(arch.walk())
 
     # DocuwareArchive returns the largest .eml file in the directory

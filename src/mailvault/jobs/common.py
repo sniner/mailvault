@@ -1,4 +1,4 @@
-"""Errors and helpers shared across the job commands, and with the importer.
+"""Errors and helpers shared across the job commands.
 
 `seal_log` is here rather than in one of them because all three write the same
 log and owe it the same discipline: what was not recorded must not be let go of.

@@ -2,7 +2,7 @@
 
 Each `run_*` function is the dispatch target for one command group in
 `mailvault.cli.main`; the argument parsing lives there, the actual work in
-`mailvault.jobs` and `mailvault.importer`.
+`mailvault.jobs`.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import logging
 import pathlib
 import sys
 
-from mailvault import conf, importer, jobs, utils
+from mailvault import conf, jobs, utils
 from mailvault.backend import base
 from mailvault.jobs import guard
 from mailvault.store import cas, heads, marker, metalog
@@ -276,9 +276,9 @@ def run_mailbox(args: argparse.Namespace) -> int:
 # --- archive -------------------------------------------------------------------
 
 
-def _external(path: pathlib.Path, docuware: bool = False) -> importer.ExternalMailArchive:
+def _external(path: pathlib.Path, docuware: bool = False) -> jobs.ExternalMailArchive:
     """A directory of mails read from the outside, whichever layout it has."""
-    cls = importer.DocuwareMailArchive if docuware else importer.ExternalMailArchive
+    cls = jobs.DocuwareMailArchive if docuware else jobs.ExternalMailArchive
     return cls(path)
 
 
@@ -510,7 +510,7 @@ def _report_items(
 def report_import(
     source: pathlib.Path,
     destination: pathlib.Path,
-    result: importer.ImportResult,
+    result: jobs.ImportResult,
 ) -> int:
     """Say what the import did, or what it would have done.
 
@@ -898,14 +898,14 @@ def _refuse_importing_the_archive(archive: pathlib.Path, source: pathlib.Path) -
         )
 
 
-def _provenance(archive: pathlib.Path, name: str) -> importer.Provenance:
+def _provenance(archive: pathlib.Path, name: str) -> jobs.Provenance:
     """What the import records itself as, and where it writes it down.
 
     A dry run is handed one too and writes nothing with it, so that the run which
     reports what would happen is the same run in every other respect.
     """
     jobs.check_place_name(name)
-    return importer.Provenance(
+    return jobs.Provenance(
         name=name,
         log=metalog.LogWriter(
             archive / metalog.DEFAULT_LOG_DIR, archive / heads.DEFAULT_HEADS_DIR
