@@ -393,12 +393,12 @@ stores nothing twice.
 
 ```console
 $ mailvault --archive ./backup archive places
-mailbox           folder                          messages  last seen
-gmail.com         INBOX                             12,043  2026-08-12
-gmail.com         [Google Mail]/Alle Nachrichten      4,001  2026-08-12
-                  docuware-2019                       5,412  2026-08-02
-                  orphaned                              110  2026-08-13
-4 place(s), 17,455 message(s)
+mailbox    folder                   messages  last seen
+gmail.com  INBOX                      12,043  2026-08-12
+gmail.com  [Google Mail]/All Mails     4,001  2026-08-12
+           docuware-2019               5,412  2026-08-02
+           orphaned                      110  2026-08-13
+4 place(s), 17,565 message(s)
   the column adds up to more: a message can be in several places
 ```
 

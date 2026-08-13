@@ -298,9 +298,9 @@ it is the only way to ask afterwards which import a message came from. `--move`
 removes the source files, `--dry-run` only counts:
 
 ```console
-$ mailvault archive import --name docuware-2019 ./my_mails
+$ mailvault archive import --name imported-2019 ./my_mails
 20,431 message(s) read -- 38 imported, 20,393 already in /srv/archive/private
-recorded as docuware-2019 -- `mailvault db update` takes it in, then `mailvault db search --folder docuware-2019` finds them
+recorded as imported-2019 -- `mailvault db update` takes it in, then `mailvault db search --folder imported-2019` finds them
 ```
 
 **Places** lists what the archive has mail from -- every mailbox and folder, and
@@ -308,11 +308,11 @@ every import. These are the names `db search` takes:
 
 ```console
 $ mailvault archive places
-mailbox           folder                          messages  last seen
-gmail.com         INBOX                             12,043  2026-08-12
-gmail.com         [Google Mail]/Alle Nachrichten      4,001  2026-08-12
-                  docuware-2019                       5,412  2026-08-02
-4 place(s), 17,455 message(s)
+mailbox    folder                   messages  last seen
+gmail.com  INBOX                      12,043  2026-08-12
+gmail.com  [Google Mail]/All Mails     4,001  2026-08-12
+           imported-2019               5,412  2026-08-02
+3 place(s), 17,455 message(s)
   the column adds up to more: a message can be in several places
 ```
 
