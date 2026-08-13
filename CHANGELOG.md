@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- **iCloud mail can be backed up: a message is asked for the way RFC 3501 spells it.** Whole
+  messages were fetched as `RFC822`, the deprecated spelling of the same thing, and iCloud answers
+  a fetch for it by leaving the message out of its answer altogether -- every message of the run
+  failed with `b'RFC822'`, which named neither the message nor the cause. It is `BODY.PEEK[]` now,
+  which every IMAP4rev1 server has to understand, and the PEEK form of it also means a backup no
+  longer marks as read every message it reads. Where a server answers without the message anyway,
+  that one message is named and counted as lost while the rest of the batch is archived, instead
+  of the folder ending there
+
 - **A job with no password says so, instead of letting the server say something else.** A
   `password_cmd` that was not allowed to run leaves the job with an empty password, and until now
   that empty password was sent: what came back was whatever the server made of a login with

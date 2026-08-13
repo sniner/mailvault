@@ -47,6 +47,15 @@ INDEX_CHUNK_SIZE = 500
 # carrying any other kind belongs to a different backend and is read in full.
 UID_RESUME_KIND = "imap-uid"
 
+# How a whole message is asked for, and what the server calls it in the answer.
+# RFC822 is the deprecated spelling of the same thing, and iCloud answers a
+# fetch for it with a response that simply leaves it out -- the message never
+# arrives, and nothing says why. `BODY[]` is the spelling of RFC 3501, which
+# every server has to understand; the PEEK form of it also keeps a backup from
+# marking as read every message it passes over.
+WHOLE_MESSAGE_ITEM = "BODY.PEEK[]"
+WHOLE_MESSAGE_KEY = b"BODY[]"
+
 
 def _as_int(value: object) -> int | None:
     """An int, or None -- and a bool is not an int here, whatever Python says."""
@@ -270,8 +279,23 @@ class ImapClient:
             log.debug("%s::%s: fetching %s", self.job_name, folder_name, msg_ids_str)
             msg_id = None
             try:
-                for msg_id, msg_data in self.conn.fetch(msg_ids, ["RFC822"]).items():
-                    yield msg_id, msg_data[b"RFC822"]  # type: ignore
+                for msg_id, msg_data in self.conn.fetch(msg_ids, [WHOLE_MESSAGE_ITEM]).items():
+                    body = msg_data.get(WHOLE_MESSAGE_KEY)
+                    if not isinstance(body, bytes):
+                        # A FETCH the server answered without the message in it.
+                        # It is not a failure of the connection -- the rest of
+                        # the chunk arrives -- so this one message is counted
+                        # lost and named, rather than ending the folder.
+                        log.error(
+                            "%s::%s[%s]: the server sent no message body",
+                            self.job_name,
+                            folder_name,
+                            msg_id,
+                        )
+                        if result is not None:
+                            result.failed += 1
+                        continue
+                    yield msg_id, body
             except (OSError, imaplib.IMAP4.error) as exc:
                 log.exception(
                     "%s::%s[%s]: fetch failed: %s",
@@ -606,9 +630,10 @@ class ImapClient:
         with self.lock:
             self.conn.select_folder(folder_name, readonly=True)
             try:
-                msg_data = self.conn.fetch([msg_id], ["RFC822"]).get(msg_id)
-                if not msg_data or b"RFC822" not in msg_data:
+                msg_data = self.conn.fetch([msg_id], [WHOLE_MESSAGE_ITEM]).get(msg_id)
+                body = msg_data.get(WHOLE_MESSAGE_KEY) if msg_data else None
+                if not isinstance(body, bytes):
                     raise MailboxError(f"{folder_name}[{msg_id}]: message not found")
-                return msg_data[b"RFC822"]  # type: ignore[return-value]
+                return body
             finally:
                 self.conn.unselect_folder()

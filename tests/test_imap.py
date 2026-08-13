@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from mailvault import conf
-from mailvault.backend import imap
+from mailvault.backend import base, imap
 from mailvault.store import cas, metalog
 
 # ---------------------------------------------------------------------------
@@ -235,8 +235,8 @@ class TestWalkFolder:
         conn = _make_mock_conn()
         msg_date = datetime(2026, 2, 20, 12, 0, 0, tzinfo=UTC)
         conn.fetch.return_value = {
-            1: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
-            2: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
+            1: {b"BODY[]": DUMMY_EML, b"INTERNALDATE": msg_date},
+            2: {b"BODY[]": DUMMY_EML, b"INTERNALDATE": msg_date},
         }
         client = _make_client(conn=conn)
 
@@ -249,7 +249,7 @@ class TestWalkFolder:
         msg_date = datetime(2026, 2, 20, tzinfo=UTC)
 
         def fake_fetch(ids, _fields):
-            return {i: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date} for i in ids}
+            return {i: {b"BODY[]": DUMMY_EML, b"INTERNALDATE": msg_date} for i in ids}
 
         conn.fetch.side_effect = fake_fetch
         client = _make_client(conn=conn)
@@ -265,6 +265,30 @@ class TestWalkFolder:
 
         results = list(client._walk_folder("INBOX", [1, 2, 3]))
         assert results == []
+
+    def test_asks_for_the_message_without_marking_it_read(self):
+        """BODY.PEEK[]: RFC822 is deprecated, and iCloud answers it with nothing."""
+        conn = _make_mock_conn()
+        conn.fetch.return_value = {1: {b"BODY[]": DUMMY_EML}}
+        client = _make_client(conn=conn)
+
+        list(client._walk_folder("INBOX", [1]))
+
+        assert conn.fetch.call_args[0][1] == ["BODY.PEEK[]"]
+
+    def test_a_message_the_server_left_out_is_counted_and_named(self, caplog):
+        """One message missing from the answer does not take the chunk with it."""
+        conn = _make_mock_conn()
+        conn.fetch.return_value = {1: {b"SEQ": 1}, 2: {b"BODY[]": DUMMY_EML}}
+        client = _make_client(conn=conn)
+        result = base.BackupResult()
+
+        with caplog.at_level(logging.ERROR):
+            results = list(client._walk_folder("INBOX", [1, 2], result=result))
+
+        assert results == [(2, DUMMY_EML)]
+        assert result.failed == 1
+        assert "INBOX[1]: the server sent no message body" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +430,7 @@ class TestIterFolder:
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
-            1: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
+            1: {b"BODY[]": DUMMY_EML, b"INTERNALDATE": msg_date},
         }
         client = _make_client(conn=conn)
 
@@ -454,7 +478,7 @@ class TestIterFolder:
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
-            1: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
+            1: {b"BODY[]": DUMMY_EML, b"INTERNALDATE": msg_date},
         }
         client = _make_client(delete_after_export=True, conn=conn)
 
@@ -494,7 +518,7 @@ class TestFolderBackup:
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
-            1: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
+            1: {b"BODY[]": DUMMY_EML, b"INTERNALDATE": msg_date},
         }
         client = _make_client(conn=conn)
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
@@ -511,7 +535,7 @@ class TestFolderBackup:
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
-            1: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
+            1: {b"BODY[]": DUMMY_EML, b"INTERNALDATE": msg_date},
         }
         client = _make_client(conn=conn)
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
@@ -531,8 +555,8 @@ class TestFolderBackup:
         conn.select_folder.return_value = {b"EXISTS": 2}
         conn.search.return_value = [1, 2]
         conn.fetch.return_value = {
-            1: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
-            2: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
+            1: {b"BODY[]": DUMMY_EML, b"INTERNALDATE": msg_date},
+            2: {b"BODY[]": DUMMY_EML, b"INTERNALDATE": msg_date},
         }
         client = _make_client(conn=conn)
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
@@ -576,7 +600,7 @@ class TestFolderBackup:
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
-            1: {b"RFC822": journal_eml, b"INTERNALDATE": msg_date},
+            1: {b"BODY[]": journal_eml, b"INTERNALDATE": msg_date},
         }
         client = _make_client(exchange_journal=True, conn=conn)
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
@@ -592,7 +616,7 @@ class TestFolderBackup:
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
-            1: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
+            1: {b"BODY[]": DUMMY_EML, b"INTERNALDATE": msg_date},
         }
         return conn
 
@@ -681,7 +705,7 @@ class TestFolderBackup:
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
-            1: {b"RFC822": journal_eml, b"INTERNALDATE": msg_date},
+            1: {b"BODY[]": journal_eml, b"INTERNALDATE": msg_date},
         }
         client = _make_client(exchange_journal=True, delete_after_export=True, conn=conn)
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
@@ -706,7 +730,7 @@ class TestFolderBackup:
         conn.select_folder.return_value = {b"EXISTS": 1}
         conn.search.return_value = [1]
         conn.fetch.return_value = {
-            1: {b"RFC822": DUMMY_EML, b"INTERNALDATE": msg_date},
+            1: {b"BODY[]": DUMMY_EML, b"INTERNALDATE": msg_date},
         }
         client = _make_client(exchange_journal=True, delete_after_export=True, conn=conn)
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
@@ -1027,7 +1051,7 @@ class TestMessageIndex:
 class TestFetchMessage:
     def test_returns_raw_message(self):
         conn = _make_mock_conn()
-        conn.fetch.return_value = {7: {b"RFC822": DUMMY_EML}}
+        conn.fetch.return_value = {7: {b"BODY[]": DUMMY_EML}}
         client = _make_client(conn=conn)
 
         assert client.fetch_message(7, "INBOX") == DUMMY_EML
