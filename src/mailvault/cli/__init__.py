@@ -248,6 +248,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     a_import.add_argument("source", type=pathlib.Path, help="Directory to copy/move mails from")
 
+    a_adopt = asub.add_parser(
+        "adopt",
+        help="Take messages that belong to no place into one, under a name",
+        description=(
+            "Record where the messages came from that nothing records a place"
+            " for. `archive check` reports them; this takes them in under a name"
+            " you give, exactly as an import records what it brings in."
+            " The name is your statement and not the archive's: use the import"
+            " they came from if you know it, or `orphaned` to say that nobody"
+            " knows any more. Messages that already have a place are left alone."
+            " Nothing corrects the log afterwards, so try it with --dry-run"
+            " first. Where the directory an import read from still exists,"
+            " importing it again is the better move -- that records only what"
+            " really lay in it."
+        ),
+    )
+    a_adopt.add_argument(
+        "--name",
+        required=True,
+        metavar="NAME",
+        help="Record them under this name, e.g. docuware-2019 or orphaned",
+    )
+    a_adopt.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Only count what would be recorded: nothing is written",
+    )
+
     a_export = asub.add_parser(
         "export",
         help="Write out a stored message, decompressed and unchanged",

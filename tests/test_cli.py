@@ -652,6 +652,79 @@ class TestImportSource:
         assert (source / "a.eml").exists()
 
 
+class TestAdoptReport:
+    """The count is what the reader weighs: it is how many messages a run speaks for."""
+
+    @staticmethod
+    def _adopt_args(archive: pathlib.Path, name: str = "orphaned", dry_run: bool = False):
+        return argparse.Namespace(
+            command="archive",
+            archive_command="adopt",
+            archive=archive,
+            name=name,
+            dry_run=dry_run,
+        )
+
+    @staticmethod
+    def _archive_with_orphans(tmp_path: pathlib.Path, count: int = 3) -> pathlib.Path:
+        marker.write(tmp_path)
+        store = cas.mail_store(tmp_path)
+        for number in range(count):
+            store.add(f"From: a\r\nSubject: {number}\r\n\r\nbody {number}".encode())
+        return tmp_path
+
+    def test_the_dry_run_says_the_log_is_not_corrected_afterwards(self, tmp_path, capsys):
+        """That sentence is worth something only while the run can still be called off."""
+        archive = self._archive_with_orphans(tmp_path)
+
+        assert commands.run_archive(self._adopt_args(archive, dry_run=True)) == 0
+
+        out = capsys.readouterr().out
+        assert "3 message(s) belong to no place and would be recorded as orphaned" in out
+        assert "nothing corrects the log afterwards" in out
+        assert metalog.log_files(archive / metalog.DEFAULT_LOG_DIR) == []
+
+    def test_a_real_run_says_where_to_find_them_afterwards(self, tmp_path, capsys):
+        archive = self._archive_with_orphans(tmp_path)
+
+        assert commands.run_archive(self._adopt_args(archive)) == 0
+
+        out = capsys.readouterr().out
+        assert "3 message(s) belong to no place, recorded as orphaned" in out
+        assert "db search --folder orphaned" in out
+
+    def test_an_archive_that_is_whole_reads_like_a_good_outcome(self, tmp_path, capsys):
+        marker.write(tmp_path)
+
+        assert commands.run_archive(self._adopt_args(tmp_path)) == 0
+
+        assert "every message in the archive has a place" in capsys.readouterr().out
+
+    def test_a_log_that_could_not_be_written_exits_non_zero(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        archive = self._archive_with_orphans(tmp_path, count=2)
+
+        def refuse(self, date):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(metalog.LogWriter, "seal", refuse)
+
+        assert commands.run_archive(self._adopt_args(archive)) == 1
+
+        assert "2 of 2 message(s) were not recorded" in capsys.readouterr().out
+
+    def test_the_check_names_it_as_the_move(self, tmp_path, capsys):
+        """A finding that names no move is what this whole line exists against."""
+        archive = self._archive_with_orphans(tmp_path)
+
+        commands.report_check(archive, jobs.check(archive, contents=False))
+
+        out = capsys.readouterr().out
+        assert "belong to no known place" in out
+        assert "archive adopt --name NAME" in out
+
+
 class TestAnArchiveIsAMarkedDirectory:
     """`FORMAT` answers "is this an archive", the way `.git` does for a repository.
 

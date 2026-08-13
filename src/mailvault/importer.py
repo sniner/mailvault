@@ -31,17 +31,10 @@ import pathlib
 from datetime import UTC, datetime
 
 from mailvault import utils
-from mailvault.jobs.common import seal_log
+from mailvault.jobs.common import SEAL_BATCH, seal_log
 from mailvault.store import cas, metalog, zstd
 
 log = logging.getLogger(__name__)
-
-# How many messages an import records before it writes them down. The same
-# number as `db.CREATE_DB_BATCH` and for the same reason: large enough that
-# writing stops mattering next to reading, small enough that an interruption
-# leaves little to do again. Each batch is one log file, and `archive compact`
-# folds them back into one.
-SEAL_BATCH = 2000
 
 
 @dataclasses.dataclass

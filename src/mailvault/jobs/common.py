@@ -15,9 +15,36 @@ from mailvault.store import metalog
 
 log = logging.getLogger(__name__)
 
+# How many observations are collected before they are written down. Small
+# enough that an interruption leaves little to do again, large enough that
+# writing stops mattering next to reading. Each batch is one log file, and
+# `archive compact` folds them back into one.
+#
+# The same number as `db.CREATE_DB_BATCH`, arrived at for the same reason and
+# kept apart from it: one is about a transaction, this one is about a file, and
+# a shared constant would tie two decisions together that only happen to agree.
+SEAL_BATCH = 2000
+
 
 class JobError(Exception):
     pass
+
+
+def check_place_name(name: str) -> str:
+    """The name mail is recorded under, or a refusal saying what it is for.
+
+    Shared by `archive import` and `archive adopt`, which make the same
+    statement about different mail: this came from there. Nothing else is
+    checked -- a head file's readable part copes with any string, and what makes
+    a good name is the reader's business, not the program's.
+    """
+    if not name.strip():
+        raise JobError(
+            "--name: the archive records the mail under this name, so it needs"
+            " one. Anything you would recognise it by later does: the source it"
+            " came from, or the year it covers"
+        )
+    return name
 
 
 def seal_log(writer: metalog.LogWriter, date: datetime) -> bool:

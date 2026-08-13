@@ -332,6 +332,22 @@ $ mailvault archive import --name docuware-2019 ./my_mails
 recorded as docuware-2019 -- `mailvault db update` takes it in, then `mailvault db search --folder docuware-2019` finds them
 ```
 
+**Adopt** the messages that belong to no place -- what an import left behind
+before it took a `--name`, and what a lost log entry leaves behind. `archive
+check` reports them; this takes them in under a name you give:
+
+```console
+$ mailvault archive adopt --name orphaned --dry-run
+110 message(s) belong to no place and would be recorded as orphaned
+  nothing corrects the log afterwards, so the name has to be right
+  nothing was written; leave out --dry-run to record them
+```
+
+The name is your statement, not the archive's: the import they came from if you
+know it, `orphaned` to say that nobody knows any more. Messages that already have
+a place are left alone. Where the directory an import read them from still
+exists, importing it again is better -- that records only what really lay in it.
+
 **Export** a single message, exactly as it was stored, by the id the reports
 print. Name several and give `--output` a directory to get one file each:
 

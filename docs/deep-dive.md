@@ -389,6 +389,41 @@ name repairs that, and it is the only thing that does -- the archive cannot
 invent a provenance it was never told. It costs the reading of the source and
 stores nothing twice.
 
+### Taking in what belongs to no place
+
+An archive is the message store and the metadata log together: a message belongs
+to it once a log file names it. One that lies in `mail/` and is named nowhere is
+therefore not a damaged part of the archive but a file that is not part of it
+yet -- closer to a file git does not track than to anything in `lost+found`.
+`archive check` finds them, `archive adopt` takes them in:
+
+```console
+$ mailvault --archive ./backup archive adopt --name orphaned --dry-run
+110 message(s) belong to no place and would be recorded as orphaned
+  nothing corrects the log afterwards, so the name has to be right
+  nothing was written; leave out --dry-run to record them
+```
+
+**The name is the statement of whoever types it.** `--name docuware-2019` says
+"these came from that import"; `--name orphaned` says "I do not know where these
+came from, and I am saying so". Both are true when the person means them, and
+neither is one the archive could have worked out for itself -- which is why this
+is a command and not an automatic repair. It is recorded exactly the way an
+import is recorded, because it is the same statement: no mailbox, the name in
+the folder.
+
+What it cannot do is undo. The log is append-only and nothing corrects it, so a
+name given to the wrong messages stays. Hence `--dry-run`, and hence a report
+that says how many messages a run is about to speak for.
+
+Messages that already have a place are left alone -- a second place beside a real
+one would be a claim of its own, and one this command has no grounds for. Running
+it twice is therefore harmless: the second run finds nothing.
+
+Where the directory an import read from still exists, importing it again is the
+better move and this is the wrong one: an import records only what really lay in
+that directory, so it cannot be wrong about it.
+
 ### Exporting a single message
 
 Every report names a message by its id, and that id is what `archive export`
@@ -421,9 +456,9 @@ NOT sound -- 3 finding(s) above
 
 The two message counts are there to be subtracted: what lies in the archive, and
 what the log accounts for. The difference is mail whose place nothing records --
-named further down, and no cause for alarm on its own: it is what an import made
+named further down, and nothing is damaged about it: it is what an import made
 before `archive import` took a `--name` left behind, and what a lost log entry
-leaves behind.
+leaves behind. `archive adopt` takes it in.
 
 The last line is the verdict, and it says which kind of run it was:
 

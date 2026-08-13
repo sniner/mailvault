@@ -519,26 +519,68 @@ def report_import(
     return 1 if result.failed or (unrecorded and not result.dry_run) else 0
 
 
+def report_adopt(result: jobs.AdoptResult) -> int:
+    """Say what was taken into the archive, or what would have been.
+
+    The count is the whole finding, and it is what the reader has to weigh: it
+    is how many messages this run speaks for. So it comes first, the name is in
+    the same sentence, and the dry run says in as many words that the log is not
+    corrected afterwards -- that sentence has to arrive while the run can still
+    be called off, which is the only moment it is worth anything.
+
+    Nothing was found is a good outcome and reads like one. It is also the
+    outcome that says the archive is whole in itself, which is worth more than
+    "0 adopted" would be.
+    """
+    if not result.found:
+        print("every message in the archive has a place, nothing to take in")
+        return 0
+
+    if result.dry_run:
+        print(
+            f"{result.found:,} message(s) belong to no place and would be"
+            f" recorded as {result.name}"
+        )
+        print("  nothing corrects the log afterwards, so the name has to be right")
+        print("  nothing was written; leave out --dry-run to record them")
+        return 0
+
+    unrecorded = result.found - result.recorded
+    if unrecorded:
+        print(
+            f"{unrecorded:,} of {result.found:,} message(s) were not recorded --"
+            f" the metadata log could not be written. Nothing else changed, so"
+            f" the same command records them once the log can be written"
+        )
+        return 1
+    print(f"{result.found:,} message(s) belong to no place, recorded as {result.name}")
+    print(
+        f"  `mailvault db update` takes it in, then `mailvault db search"
+        f" --folder {result.name}` finds them"
+    )
+    return 0
+
+
 def _report_orphans(result: jobs.CheckResult, store_ids: list[str]) -> None:
     """Say what a message with no place recorded is, and what follows from it.
 
-    Nothing, is what follows, and that is very nearly the whole message. These
-    are archived, intact and readable; the one thing missing is the note where
-    they came from, and it is missing because it never was in the archive, not
-    because something lost it. Saying so is the finding -- a reader who is told
-    only "110 not referenced" goes looking for the repair that does not exist.
+    These are archived, intact and readable; the one thing missing is the note
+    where they came from, and it is missing because it never was in the archive,
+    not because something lost it. Saying so is the finding -- a reader who is
+    told only "110 not referenced" goes looking for a repair, and what they need
+    to know first is that there is nothing to repair.
 
-    The one move there is comes with a condition, and the condition is named
-    rather than left to be discovered: mail imported before an import took a name
-    gets its provenance from importing the same source again, and only if that
-    source is still there. It is offered second and as an "if", because for the
-    other kind -- a log entry that went missing -- there is nothing, and a hint
-    that does not lead anywhere costs more than it is worth.
+    Two moves, in the order they are worth having, and the better one second
+    because it comes with a condition. `archive adopt` always works and records
+    what the person running it says; importing the same directory again works
+    only where that directory still exists, and is better exactly there, because
+    what it records cannot be wrong. Naming it the other way round would offer a
+    move that leads nowhere for most readers, which costs more than it is worth.
 
-    So this one prints no list. A store id is the right handle for `archive
-    export` and useless to a person deciding whether their archive is all right,
-    and twenty of a hundred and ten is neither a list to work from nor short
-    enough to skim. They go to the debug log, whole.
+    This one prints no list. A store id is the right handle for `archive export`
+    and useless to a person deciding whether their archive is all right, and
+    twenty of a hundred and ten is neither a list to work from nor short enough
+    to skim. They go to the debug log, whole.
     """
     if not store_ids:
         return
@@ -550,9 +592,11 @@ def _report_orphans(result: jobs.CheckResult, store_ids: list[str]) -> None:
         "  they are found like any other message: `db create` builds a"
         " query database with sender, subject and date"
     )
+    print("  `archive adopt --name NAME` takes them into a place you name")
     print(
-        "  imported before `archive import` took a --name? importing that"
-        " source again under one records where they came from"
+        "  where an import read them from a directory that is still there,"
+        " importing it again under a --name is better: it records only what"
+        " really lay in it"
     )
     log.debug("no place recorded: %s", ", ".join(store_ids))
 
@@ -752,12 +796,7 @@ def _provenance(archive: pathlib.Path, name: str) -> importer.Provenance:
     A dry run is handed one too and writes nothing with it, so that the run which
     reports what would happen is the same run in every other respect.
     """
-    if not name.strip():
-        raise jobs.JobError(
-            "--name: the archive records the imported mail under this name, so it"
-            " needs one. Anything you would recognise it by later does: the"
-            " source it came from, or the year it covers"
-        )
+    jobs.check_place_name(name)
     return importer.Provenance(
         name=name,
         log=metalog.LogWriter(
@@ -943,6 +982,8 @@ def run_archive(args: argparse.Namespace) -> int:
                 dry_run=args.dry_run,
             ),
         )
+    elif cmd == "adopt":
+        return report_adopt(jobs.adopt(archive, args.name, dry_run=args.dry_run))
     elif cmd == "compress":
         store = cas.mail_store(archive)
         return report_conversion(

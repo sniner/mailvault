@@ -14,6 +14,16 @@
 
 ### Added
 
+- **`archive adopt --name NAME` takes in the messages that belong to no place.** An archive is
+  the message store and the metadata log together, and a message that lies in `mail/` while no log
+  file names it is not a damaged part of it but a file that is not part of it yet. `archive check`
+  reports them and now names this as the move. The name is the statement of whoever types it --
+  the import they came from, or `orphaned` to say that nobody knows any more -- and it is recorded
+  exactly the way an import is recorded, because it is the same statement. Messages that already
+  have a place are left alone, so running it twice is harmless. Nothing corrects the log
+  afterwards, which is what `--dry-run` is for and why the report says how many messages a run is
+  about to speak for. Where the directory an import read from still exists, importing it again is
+  the better move: what that records cannot be wrong
 - **An import records where its mail came from, so imported mail is no longer mail nothing knows
   anything about.** It goes into the metadata log the way a backup's observations do, with one
   difference: the mailbox stays empty, because there is no mailbox behind an import and nobody to
