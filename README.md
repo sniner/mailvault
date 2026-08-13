@@ -19,52 +19,27 @@ IMAP) and Proton Mail through the local Bridge. What people use it for:
 * **Consolidating what has piled up elsewhere.** `.eml` files from other tools
   are imported into the same archive, where duplicates recognise themselves.
 
-**The archive holds no database.** It is often the only copy of your mail, so
-the interesting question is not what happens in the good case but what happens
-when a write goes wrong — and a message file, named after its content and never
-modified, can be checked and discarded on its own, while an SQLite file that
-rewrites pages in place over SMB or NFS cannot. Everything a backup records is
-either written once or replaced atomically. To *query* the archive, a database
-is built from it on demand and thrown away afterwards: see [the optional query
-database](#the-optional-query-database).
-
-> [!IMPORTANT]
-> **0.10.0 changes where things live inside an archive**, and every command
-> refuses an archive that has not been lifted rather than looking for the mail
-> where it is not. Run `mailvault archive migrate` once per archive — nothing
-> is deleted.
->
-> **A new archive now starts with `mailvault archive init`**, the way a
-> repository starts with `git init`, and the configuration belongs *in* the
-> archive as `mailvault.toml`. No command takes the archive as a positional
-> argument any more: it is the directory you are standing in, or `--archive DIR`.
->
-> See the [CHANGELOG](https://github.com/sniner/mailvault/blob/main/CHANGELOG.md)
-> for the full list, and [Migrating an older
-> archive](https://github.com/sniner/mailvault/blob/main/docs/deep-dive.md#migrating-an-older-archive)
-> for what `migrate` does.
+**The archive holds no database.** Everything a backup writes is written once or
+replaced atomically, never rewritten in place — which is exactly what goes wrong
+over SMB or NFS, and the archive is often the only copy of your mail. To *query*
+it, a database is built on demand and can be thrown away again: [the optional
+query database](#the-optional-query-database). The reasoning is in [the deep
+dive](https://github.com/sniner/mailvault/blob/main/docs/deep-dive.md#why-an-archive-holds-no-database).
 
 
 ## Installation
 
-After years of Python packaging being an adventure in its own right --
-virtualenvs, pip, pipx, setup.py, setuptools, poetry, and whatever else came
-and went -- [uv](https://docs.astral.sh/uv/) has finally brought sanity to the
-table. The recommended way to install `mailvault` is from
-[PyPI](https://pypi.org/project/mailvault/):
+From [PyPI](https://pypi.org/project/mailvault/), with
+[uv](https://docs.astral.sh/uv/):
 
 ```console
 $ uv tool install mailvault
 ```
 
-This installs the `mailvault` command into an isolated environment and makes it
-available on your `PATH` -- no manual virtualenv juggling required. Support for
-Microsoft 365 mailboxes via MS Graph is built in; no extra is needed. If you
-prefer other tooling, `pipx install mailvault` or `pip install mailvault` work
-just as well.
-
-To pin a specific release, or to install the current development state straight
-from the repository:
+That puts the `mailvault` command on your `PATH` in an environment of its own.
+Microsoft 365 over MS Graph is built in, no extra needed. `pipx install
+mailvault` and `pip install mailvault` work just as well, and so does naming a
+particular release or the development state:
 
 ```console
 $ uv tool install mailvault==0.11.0
@@ -89,7 +64,8 @@ mailvault.toml written -- fill in your mailboxes, then back up
 ```
 
 Every other command asks first whether it is looking at an archive, and stops if
-it is not.
+it is not. An archive written before 0.10 needs `mailvault archive migrate` once
+-- the commands say so when it is due, and nothing is deleted.
 
 
 ## What goes into `mailvault.toml`
@@ -201,16 +177,13 @@ $ mailvault backup --compress             # store the messages compressed
 $ mailvault backup --full                 # re-read every folder, ignoring resume points
 ```
 
-A failed download needs no attention: a folder that ended a run with messages it
-did not deliver does not advance its resume point, and the next ordinary run
-fetches it again. Nor is such a message ever deleted from the server.
+A failed download needs no attention: that folder does not advance its resume
+point, the next ordinary run fetches it again, and nothing is deleted from the
+server that did not make it into the archive.
 
-`verify` is therefore not part of the routine either. It answers a different
-question: not whether the last run worked, but whether the archive really holds
-what the mailbox holds. That is worth asking when a message has left the archive
-*after* it was stored -- one set aside by `archive check --quarantine`, or lost
-in a copy or a restore -- because as far as the resume point is concerned that
-folder is done, and no ordinary run will ask for it again:
+`verify` is therefore not part of the routine. It answers a different question --
+whether the archive still holds what the mailbox holds -- and is worth asking
+when a message left the archive *after* it was stored:
 
 ```console
 $ mailvault verify
@@ -222,8 +195,8 @@ example.org::INBOX: 77,592 on server, 43 not archived, 43 restored
 example.org: 43 of 43 message(s) restored
 ```
 
-It compares headers rather than downloading everything, so checking a large
-mailbox takes minutes, not hours. See [Verify and
+It compares headers rather than downloading everything, so a large mailbox takes
+minutes, not hours. See [Verify and
 repair](https://github.com/sniner/mailvault/blob/main/docs/deep-dive.md#verify-and-repair).
 
 
@@ -265,13 +238,10 @@ $ mailvault db search --from example.com --ids \
     | xargs mailvault archive export --output ./invoices/
 ```
 
-`--csv` and `--json` print the whole result with the ids in full. It is an
-ordinary SQLite file too, with two views for convenience, `v_messages` and
-`v_duplicates`:
-
-```console
-$ sqlite3 index.db "SELECT date, sender, subject FROM v_messages LIMIT 5"
-```
+`--csv` and `--json` print the whole result with the ids in full. It is also an
+ordinary SQLite file, so anything that speaks SQL can read it -- [the views it
+brings
+along](https://github.com/sniner/mailvault/blob/main/docs/deep-dive.md#the-query-database-in-detail).
 
 ### Keeping it up to date
 
@@ -306,10 +276,10 @@ $ mailvault db create --force
 
 `db drop` deletes it without asking and without a `--force`, for the same reason.
 
-What it holds is the mail the archive's log accounts for. Mail imported before
-`archive import` took a `--name` has no log entry, and building the database
-again will not find it either -- give it a place with `archive adopt` first, and
-it is in like everything else.
+What it holds is the mail the archive's log accounts for. An archive filled by an
+import made before `archive import` took a `--name` has none, and
+[`archive adopt`](https://github.com/sniner/mailvault/blob/main/docs/deep-dive.md#taking-in-what-belongs-to-no-place)
+is what gives that mail a place.
 
 
 ## Working on the archive
@@ -333,9 +303,8 @@ $ mailvault archive import --name docuware-2019 ./my_mails
 recorded as docuware-2019 -- `mailvault db update` takes it in, then `mailvault db search --folder docuware-2019` finds them
 ```
 
-**Places** lists what the archive has mail from -- every mailbox and folder, every
-import, everything `archive adopt` took in. These are the names `db search`
-takes, and the ones already spoken for when you pick a new one:
+**Places** lists what the archive has mail from -- every mailbox and folder, and
+every import. These are the names `db search` takes:
 
 ```console
 $ mailvault archive places
@@ -343,31 +312,11 @@ mailbox           folder                          messages  last seen
 gmail.com         INBOX                             12,043  2026-08-12
 gmail.com         [Google Mail]/Alle Nachrichten      4,001  2026-08-12
                   docuware-2019                       5,412  2026-08-02
-                  orphaned                              110  2026-08-13
 4 place(s), 17,455 message(s)
   the column adds up to more: a message can be in several places
 ```
 
-A cell is empty where there is no name to print. No mailbox is what an import and
-an adopted place look like -- there is none behind them. No folder is a mailbox
-whose folder was never recorded, which is what an archive carried over from the
-database mailvault kept before 0.8 has.
-
-**Adopt** the messages that belong to no place -- what an import left behind
-before it took a `--name`, and what a lost log entry leaves behind. `archive
-check` reports them; this takes them in under a name you give:
-
-```console
-$ mailvault archive adopt --name orphaned --dry-run
-110 message(s) belong to no place and would be recorded as orphaned
-  nothing corrects the log afterwards, so the name has to be right
-  nothing was written; leave out --dry-run to record them
-```
-
-The name is your statement, not the archive's: the import they came from if you
-know it, `orphaned` to say that nobody knows any more. Messages that already have
-a place are left alone. Where the directory an import read them from still
-exists, importing it again is better -- that records only what really lay in it.
+An empty mailbox column is an import: there is no mailbox behind it.
 
 **Export** a single message, exactly as it was stored, by the id the reports
 print. Name several and give `--output` a directory to get one file each:
@@ -395,9 +344,11 @@ $ mailvault archive check
 sound -- every message was read and matches its checksum
 ```
 
-It repairs nothing and exits non-zero when something is off. `--quarantine`
-sets damaged messages aside so they count as missing again and can be fetched
-back by `verify --repair`.
+It repairs nothing and exits non-zero when something is off. `--quarantine` sets
+damaged messages aside so they count as missing again and can be fetched back by
+`verify --repair`. Where it reports messages that belong to no place,
+[`archive adopt`](https://github.com/sniner/mailvault/blob/main/docs/deep-dive.md#taking-in-what-belongs-to-no-place)
+takes them in under a name you give.
 
 **Compact** the metadata log now and then. Every backup writes a small file per
 folder, and over months they add up:
@@ -433,6 +384,10 @@ has what is deliberately left out above:
 * [The query database in
   detail](https://github.com/sniner/mailvault/blob/main/docs/deep-dive.md#the-query-database-in-detail)
   -- SQL, the views, and archives that predate the location record
+* [Maintaining the archive in
+  detail](https://github.com/sniner/mailvault/blob/main/docs/deep-dive.md#maintaining-the-archive-in-detail)
+  -- importing under a name, taking in what belongs to no place, compacting the
+  metadata log, quarantine
 * [What an archive looks like
   inside](https://github.com/sniner/mailvault/blob/main/docs/deep-dive.md#what-an-archive-looks-like-inside)
   -- `mail/`, `meta/`, `heads/`, `FORMAT`, and how to read them without this
