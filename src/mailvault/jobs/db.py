@@ -397,9 +397,11 @@ def refresh_db(store_path: pathlib.Path, db_path: pathlib.Path) -> RefreshResult
     not applied yet are read in, so a routine refresh after a backup costs a
     handful of small reads plus a header read for each newly archived message.
 
-    Only backups feed this: a message reaches the projection because a log file
-    records it. Mail added by `archive import`, which writes no log, is not
-    picked up here -- build it again when that matters.
+    A message reaches the projection because a log file records it, so everything
+    that writes one feeds it: a backup, `archive import`, `archive adopt`. What
+    does not is mail that no log file names at all -- what an import brought in
+    before it took a `--name`. `archive adopt` gives it a place, and then this
+    picks it up like anything else.
     """
     result = RefreshResult()
     if not db_path.exists():
