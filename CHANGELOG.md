@@ -26,6 +26,12 @@
 
 ### Added
 
+- **`db create --temp-dir DIR` builds the database somewhere else and copies it in when it is
+  done.** For an archive on a network share: even written once, a database is written in scattered
+  pages, and every one of them is a round trip. Building it on a local disk leaves a single
+  sequential copy to go over the wire. It takes a directory rather than working one out, because
+  where there is somewhere fast with room is not something the program can know -- and on a local
+  archive the detour would only cost a copy, so the default is unchanged
 - **`archive places` lists what the archive has mail from.** Every mailbox and folder, every
   import, and everything `archive adopt` took in, with how many messages each holds and when it
   was last written to. These are the names `db search --mailbox` and `--folder` take, and the ones
@@ -66,6 +72,13 @@
 
 ### Changed
 
+- **Building the query database writes about a ninth of what it used to.** SQLite's page cache
+  holds two megabytes by default, which a build overruns within its first few thousand messages;
+  from there on it keeps evicting the pages a growing B-tree is about to touch again, and writes
+  each of them over and over. Measured on 30,000 messages and an 18.4 MiB database: 166.8 MiB
+  written before, 18.7 MiB now -- the file once instead of nine times. On a local disk this makes
+  no difference to the clock, because the operating system absorbs it; over a network share it was
+  the reason a build got steadily slower the longer it ran
 - **`db update` says how many locations it recorded, not only how many messages were new.** A log
   file about mail the database already had -- what `archive adopt` writes, or a folder read in full
   a second time -- records locations and adds no message, and "0 message(s) added" on its own read

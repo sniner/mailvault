@@ -39,6 +39,21 @@ from mailvault.store.sqlite import DatabaseConnection, connect
 # Raise this whenever the schema changes in a way a reader would notice.
 SCHEMA_VERSION = 1
 
+# How much page cache a connection that fills a database in one go may use, in
+# KiB. SQLite's default is two megabytes, and a build overruns that within the
+# first few thousand messages: from then on it evicts pages it is about to touch
+# again, because a B-tree being filled keeps coming back to the same interior
+# nodes. What that costs is not memory but *writes*, and it grows with the file.
+#
+# Measured on 30,000 messages, an 18.4 MiB database: 166.8 MiB written with the
+# default cache, 18.7 MiB with this one -- nine times the traffic against once.
+# On a local disk it makes no difference in time, because the page cache of the
+# operating system absorbs it; over a network share it is the difference between
+# writing the database once and writing it nine times.
+#
+# Allocated on demand, so a build that stays small never takes it.
+BULK_CACHE_KIB = 65536
+
 
 class IndexDatabase:
     """Open the projection as a context manager, creating its schema on entry.
@@ -55,13 +70,16 @@ class IndexDatabase:
     made once and never again, over a projection that is still wrong.
     """
 
-    def __init__(self, path: pathlib.Path | str):
+    def __init__(self, path: pathlib.Path | str, bulk: bool = False):
         self.dbconn: sqlite3.Connection | None = None
         self.client: IndexDatabaseConnection | None = None
         self.path = path
+        self.bulk = bulk
 
     def __enter__(self) -> IndexDatabaseConnection:
         self.dbconn = connect(self.path)
+        if self.bulk:
+            self.dbconn.execute(f"PRAGMA cache_size = -{BULK_CACHE_KIB}")
         self.client = IndexDatabaseConnection(self.dbconn)
         if not self.client.outdated:
             self.client.setup()

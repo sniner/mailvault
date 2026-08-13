@@ -20,10 +20,14 @@ missing or unreadable, it is simply rebuilt.
 
 from __future__ import annotations
 
+import collections.abc
+import contextlib
 import dataclasses
 import logging
 import pathlib
+import shutil
 import sqlite3
+import tempfile
 
 from mailvault import mailutils, utils
 from mailvault.jobs.common import JobError
@@ -355,10 +359,64 @@ def _fold_log_file(
     return applied, unknown
 
 
+@contextlib.contextmanager
+def _building(
+    db_path: pathlib.Path, temp_dir: pathlib.Path | None
+) -> collections.abc.Iterator[pathlib.Path]:
+    """Yield the file to build into, and put it in place if the build succeeds.
+
+    Beside the target by default, because a rename is only atomic within one
+    filesystem and the database has to appear whole or not at all.
+
+    `temp_dir` builds it somewhere else and copies it over at the end, which is
+    for one case: a database on a network share. Even with the page cache a build
+    is given (`index_db.BULK_CACHE_KIB`), SQLite writes a database in scattered
+    pages, and every one of them is a round trip over a share. Building elsewhere
+    turns the whole thing into one sequential copy at the end.
+
+    Not decided by the program, because deciding it needs two things only the
+    person running it knows: whether the target is slow, and where there is
+    somewhere fast with room. `TMPDIR` is memory on some systems, and filling it
+    with a database nobody asked to put there is the kind of surprise this
+    program does not spring.
+
+    The copy lands beside the target under the transient name and is renamed from
+    there, so the last step is the same atomic rename either way and an existing
+    database survives every failure before it.
+    """
+    if temp_dir is None:
+        tmp_path = db_path.with_name(db_path.name + "._tmp_")
+        tmp_path.unlink(missing_ok=True)
+        try:
+            yield tmp_path
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
+        tmp_path.replace(db_path)
+        return
+
+    if not temp_dir.is_dir():
+        raise JobError(f"{temp_dir}: --temp-dir has to be a directory that is there")
+    workspace = pathlib.Path(tempfile.mkdtemp(dir=temp_dir, prefix="mailvault-db-"))
+    try:
+        built = workspace / db_path.name
+        yield built
+        # Copied first and renamed second: the rename is within the target's own
+        # filesystem and therefore atomic, which a copy across two never is.
+        staged = db_path.with_name(db_path.name + "._tmp_")
+        staged.unlink(missing_ok=True)
+        log.info("%s: built, copying it into the archive", built.name)
+        shutil.copyfile(built, staged)
+        staged.replace(db_path)
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
 def create_db(
     store_path: pathlib.Path,
     db_path: pathlib.Path,
     force: bool = False,
+    temp_dir: pathlib.Path | None = None,
 ) -> RebuildResult:
     """Build a queryable database from the archive's metadata log.
 
@@ -387,22 +445,17 @@ def create_db(
     run stay even when the archive no longer yields them, and a correction to how
     a header is read would never reach them.
 
-    Built through a temporary file beside the target and renamed at the end, the
-    same discipline the archive uses. An interrupted run leaves no half-built
-    database where a whole one is expected, and the previous one survives it.
+    Built through a temporary file and renamed into place at the end, the same
+    discipline the archive uses. An interrupted run leaves no half-built database
+    where a whole one is expected, and the previous one survives it. `temp_dir`
+    says where to build it; see `_building` for the one case that is worth it.
     """
     if db_path.exists() and not force:
         raise JobError(f"{db_path}: already exists, use --force to replace it")
     store = cas.mail_store(store_path)
     result = RebuildResult()
-    tmp_path = db_path.with_name(db_path.name + "._tmp_")
-    tmp_path.unlink(missing_ok=True)
-    try:
-        _build_db(store, store_path, tmp_path, result)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
-    tmp_path.replace(db_path)
+    with _building(db_path, temp_dir) as build_path:
+        _build_db(store, store_path, build_path, result)
     return result
 
 
@@ -414,7 +467,7 @@ def _build_db(
 ) -> None:
     """Fill a fresh database from the archive's log and the messages it names."""
     log_root = store_path / metalog.DEFAULT_LOG_DIR
-    with index_db.IndexDatabase(path=db_path) as db:
+    with index_db.IndexDatabase(path=db_path, bulk=True) as db:
         _ensure_bookkeeping(db)
         rows = _Rows(db, store)
         for logfile in metalog.read_all(log_root):

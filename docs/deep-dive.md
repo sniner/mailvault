@@ -618,6 +618,29 @@ reason for the second:
   longer happen. What is left is one open per message, which is the work itself.
   On a network share that was 16 of the 33 minutes a build took
 
+**Building it on a network share.** Two things decide how long a build takes, and
+only one of them is the mail. The other is the database file itself: SQLite
+writes it in scattered pages, and a build is given a large page cache so it
+writes each page about once instead of about nine times -- with the default two
+megabytes it spends the whole run evicting pages a growing B-tree is about to
+touch again. That is fixed and needs no option.
+
+What is left is that those pages land on the share. `--temp-dir DIR` builds the
+database under `DIR` and copies it into the archive when it is done, which turns
+the scattered writes into one sequential copy:
+
+```console
+$ mailvault db create --force --temp-dir /var/tmp
+```
+
+It takes a directory rather than working one out. Whether the target is slow, and
+where there is somewhere fast with room, are both things the person running it
+knows and the program does not -- and `TMPDIR` is memory on some systems, which
+is not a place to put a database nobody asked to put there. On a local archive
+the detour buys nothing and costs a copy, so without the option the database is
+built beside its target as before. Either way the last step is the same atomic
+rename, and an existing database survives every failure before it.
+
 **A message with an unreadable Date header matches neither `--since` nor
 `--until`.** Its date is unknown, not old.
 

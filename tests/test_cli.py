@@ -1016,6 +1016,7 @@ class TestDbCommands:
             ids=False,
             csv=False,
             json=False,
+            temp_dir=None,
         )
         defaults.update(overrides)
         return argparse.Namespace(**defaults)

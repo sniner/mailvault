@@ -420,6 +420,18 @@ def build_db_parser(sub: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Build it again from scratch even if there is one, replacing it",
     )
+    d_create.add_argument(
+        "--temp-dir",
+        type=pathlib.Path,
+        metavar="DIR",
+        help=(
+            "Build the database under DIR and copy it in when it is done."
+            " Worth it when the archive is on a network share, where writing the"
+            " database as it grows costs more than reading the mail; on a local"
+            " disk it is not. Named rather than guessed, because where there is"
+            " somewhere fast with room is not something this program can know"
+        ),
+    )
 
     dsub.add_parser(
         "update",

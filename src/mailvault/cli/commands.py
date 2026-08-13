@@ -985,7 +985,7 @@ def run_db(args: argparse.Namespace) -> int:
             )
         return report_create_db(
             db_path,
-            jobs.create_db(archive, db_path, force=True),
+            jobs.create_db(archive, db_path, force=True, temp_dir=args.temp_dir),
         )
     elif cmd == "update":
         return report_update_db(db_path, jobs.refresh_db(archive, db_path))

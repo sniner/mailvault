@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import pathlib
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -12,6 +13,7 @@ import pytest
 
 from mailvault import conf, jobs, mailutils
 from mailvault.backend import base
+from mailvault.jobs import db as db_module
 from mailvault.jobs import migration
 from mailvault.jobs.db import DEFAULT_QUERY_DB_NAME, freshness, refresh_db
 from mailvault.jobs.reconcile import archived_message_counts, places_from_log
@@ -1385,6 +1387,93 @@ class TestMigration:
 
         assert result.needed is False
         assert not metalog.has_logs(tmp_path / "meta")
+
+
+def _recording_build(monkeypatch) -> list[pathlib.Path]:
+    """Stand in for the build, noting where it was told to build and touching it."""
+    seen: list[pathlib.Path] = []
+
+    def build(_store, _store_path, path, _result):
+        seen.append(path)
+        path.touch()
+
+    monkeypatch.setattr(db_module, "_build_db", build)
+    return seen
+
+
+class TestWhereTheDatabaseIsBuilt:
+    """Beside the target, or somewhere fast and copied in when it is done."""
+
+    @staticmethod
+    def _archive(tmp_path) -> pathlib.Path:
+        archive = tmp_path / "archive"
+        _archive_message(archive, "job", "INBOX", _eml("<a@example.com>"))
+        return archive
+
+    def test_beside_the_target_by_default(self, tmp_path, monkeypatch):
+        archive = self._archive(tmp_path)
+        seen = _recording_build(monkeypatch)
+
+        jobs.create_db(archive, archive / "index.db")
+
+        assert seen == [archive / "index.db._tmp_"]
+
+    def test_under_the_named_directory_when_there_is_one(self, tmp_path, monkeypatch):
+        archive = self._archive(tmp_path)
+        elsewhere = tmp_path / "fast"
+        elsewhere.mkdir()
+        seen = _recording_build(monkeypatch)
+
+        jobs.create_db(archive, archive / "index.db", temp_dir=elsewhere)
+
+        (built,) = seen
+        assert built.parent.parent == elsewhere, "in a directory of its own under it"
+        assert built.name == "index.db"
+
+    def test_and_the_database_arrives_all_the_same(self, tmp_path):
+        archive = self._archive(tmp_path)
+        elsewhere = tmp_path / "fast"
+        elsewhere.mkdir()
+
+        result = jobs.create_db(archive, archive / "index.db", temp_dir=elsewhere)
+
+        assert result.messages == 1
+        with index_db.IndexDatabase(archive / "index.db") as db:
+            assert len(db.store_id_map()) == 1
+
+    def test_nothing_is_left_lying_around(self, tmp_path):
+        archive = self._archive(tmp_path)
+        elsewhere = tmp_path / "fast"
+        elsewhere.mkdir()
+
+        jobs.create_db(archive, archive / "index.db", temp_dir=elsewhere)
+
+        assert list(elsewhere.iterdir()) == [], "the workspace is removed"
+        assert not (archive / "index.db._tmp_").exists()
+
+    def test_a_failed_build_leaves_the_previous_database_alone(self, tmp_path, monkeypatch):
+        archive = self._archive(tmp_path)
+        elsewhere = tmp_path / "fast"
+        elsewhere.mkdir()
+        target = archive / "index.db"
+        jobs.create_db(archive, target)
+        before = target.read_bytes()
+
+        def fail(*_a, **_kw):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(db_module, "_build_db", fail)
+        with pytest.raises(OSError):
+            jobs.create_db(archive, target, force=True, temp_dir=elsewhere)
+
+        assert target.read_bytes() == before
+        assert list(elsewhere.iterdir()) == []
+
+    def test_a_directory_that_is_not_there_is_refused(self, tmp_path):
+        archive = self._archive(tmp_path)
+
+        with pytest.raises(jobs.JobError, match="--temp-dir"):
+            jobs.create_db(archive, archive / "index.db", temp_dir=tmp_path / "nowhere")
 
 
 class TestRebuildWithLog:
