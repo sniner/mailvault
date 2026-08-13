@@ -159,17 +159,6 @@ def _ensure_bookkeeping(db: index_db.IndexDatabaseConnection) -> None:
         db.execute(_HEAD_INDEX_DDL)
 
 
-def _place_name(mailbox: str | None, folder: str | None) -> str:
-    """How a place is written for somebody to read.
-
-    A place with no mailbox is what an import writes, and `None::docuware-2019`
-    is not a line for people.
-    """
-    if mailbox is None:
-        return folder or "?"
-    return f"{mailbox}::{folder}" if folder is not None else mailbox
-
-
 def _archive_heads(heads_root: pathlib.Path) -> dict[tuple[str | None, str | None], str | None]:
     """The chain head of every place, as the archive currently has it."""
     return {(head.job, head.folder): head.log for head in heads.read_all(heads_root)}
@@ -232,7 +221,7 @@ def freshness(store_path: pathlib.Path, db_path: pathlib.Path) -> Freshness:
 
     for place, head_log in _archive_heads(heads_root).items():
         if folded.get(place, _MISSING) != head_log:
-            result.behind.append(_place_name(*place))
+            result.behind.append(heads.place_name(*place))
     result.behind.sort()
     return result
 

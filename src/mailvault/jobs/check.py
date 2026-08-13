@@ -104,8 +104,9 @@ class CheckResult:
 
         A foreign file and an orphan are deliberately not among them. Neither
         says anything is wrong with the archive: somebody put a file in a
-        directory, and an imported message has no log entry because an import
-        writes none.
+        directory, and a message can be in the archive with nothing recording
+        where it came from -- everything imported before an import took a name,
+        and everything a lost log entry used to account for.
 
         A log file no chain reaches is not among them either, for the same
         reason: it is still read, because the glob and not the chain is what
@@ -220,7 +221,7 @@ def _read_log(
         if logfile is None:
             continue
         chain[logfile.hashval] = logfile
-        where = f"{logfile.mailbox}::{logfile.folder}"
+        where = heads.place_name(logfile.mailbox, logfile.folder)
         places.add(where)
         for store_id in logfile.store_ids:
             result.observations += 1
@@ -260,7 +261,7 @@ def _walk_chains(
 
     reached: set[str] = set()
     for head in heads.read_all(heads_root):
-        where = f"{head.job}::{head.folder}"
+        where = heads.place_name(head.job, head.folder)
         hashval = head.log
         while hashval is not None and hashval not in reached:
             logfile = chain.get(hashval)

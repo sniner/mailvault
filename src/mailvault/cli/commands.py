@@ -388,8 +388,8 @@ def report_create_db(target: pathlib.Path, result: jobs.RebuildResult) -> int:
                 f"not in the archive, ignored"
             )
     else:
-        # Not a failure, and the reason matters: mail brought in with `archive
-        # import` writes no log, so an archive built that way has nothing here.
+        # Not a failure, and the reason matters: an archive can be built entirely
+        # out of imports made before an import recorded what it brought in.
         print("no metadata log found -- no message has a mailbox or folder in it")
     print(f"{target.name}: written")
     return 0
@@ -484,6 +484,12 @@ def report_import(
     there" is what tells a dry run apart from a disaster: a source that has been
     through a converter on its way here looks exactly like a source full of new
     mail, and the difference only shows in the ratio.
+
+    The name is said back for the same reason it is asked for: it is the only
+    handle these messages have afterwards, and a line that names it also names
+    where to type it. Where fewer were recorded than read, that is the finding
+    and it goes first -- the mail is in the archive either way, and it is what
+    the archive knows about it that fell short.
     """
     total = result.stored + result.present
     verb = "would be imported" if result.dry_run else "imported"
@@ -491,20 +497,43 @@ def report_import(
         f"{total:,} message(s) read -- {result.stored:,} {verb},"
         f" {result.present:,} already in {destination}"
     )
+    # An import with no name records nothing and falls short of nothing.
+    unrecorded = total - result.recorded if result.name is not None else 0
+    if total and result.name is not None:
+        if result.dry_run:
+            print(f"they would be recorded as {result.name}")
+        elif unrecorded:
+            print(
+                f"{unrecorded:,} of them are in the archive with nothing recording"
+                f" where they came from -- the metadata log could not be written."
+                f" Import the same source again under {result.name} to record them"
+            )
+        else:
+            print(
+                f"recorded as {result.name} -- `mailvault db update` takes it in,"
+                f" then `mailvault db search --folder {result.name}` finds them"
+            )
     _report_items(
         "message(s) could not be read", [utils.under(source, p) for p in result.failed]
     )
-    return 1 if result.failed else 0
+    return 1 if result.failed or (unrecorded and not result.dry_run) else 0
 
 
 def _report_orphans(result: jobs.CheckResult, store_ids: list[str]) -> None:
     """Say what a message with no place recorded is, and what follows from it.
 
-    Nothing, is what follows, and that is the whole message. These are archived,
-    intact and readable; the one thing missing is the note which folder they came
-    from, and no command can put it back, because it never was in the archive.
-    Saying so is the finding -- a reader who is told only "110 not referenced"
-    goes looking for the repair that does not exist.
+    Nothing, is what follows, and that is very nearly the whole message. These
+    are archived, intact and readable; the one thing missing is the note where
+    they came from, and it is missing because it never was in the archive, not
+    because something lost it. Saying so is the finding -- a reader who is told
+    only "110 not referenced" goes looking for the repair that does not exist.
+
+    The one move there is comes with a condition, and the condition is named
+    rather than left to be discovered: mail imported before an import took a name
+    gets its provenance from importing the same source again, and only if that
+    source is still there. It is offered second and as an "if", because for the
+    other kind -- a log entry that went missing -- there is nothing, and a hint
+    that does not lead anywhere costs more than it is worth.
 
     So this one prints no list. A store id is the right handle for `archive
     export` and useless to a person deciding whether their archive is all right,
@@ -515,13 +544,16 @@ def _report_orphans(result: jobs.CheckResult, store_ids: list[str]) -> None:
         return
     print(
         f"{len(store_ids):,} message(s) belong to no known place -- stored and"
-        " intact, but nothing records which folder they came from"
+        " intact, but nothing records where they came from"
     )
     print(
         "  they are found like any other message: `db create` builds a"
         " query database with sender, subject and date"
     )
-    print("  mail brought in with `archive import` is always like this")
+    print(
+        "  imported before `archive import` took a --name? importing that"
+        " source again under one records where they came from"
+    )
     log.debug("no place recorded: %s", ", ".join(store_ids))
 
 
@@ -714,6 +746,26 @@ def _refuse_importing_the_archive(archive: pathlib.Path, source: pathlib.Path) -
         )
 
 
+def _provenance(archive: pathlib.Path, name: str) -> importer.Provenance:
+    """What the import records itself as, and where it writes it down.
+
+    A dry run is handed one too and writes nothing with it, so that the run which
+    reports what would happen is the same run in every other respect.
+    """
+    if not name.strip():
+        raise jobs.JobError(
+            "--name: the archive records the imported mail under this name, so it"
+            " needs one. Anything you would recognise it by later does: the"
+            " source it came from, or the year it covers"
+        )
+    return importer.Provenance(
+        name=name,
+        log=metalog.LogWriter(
+            archive / metalog.DEFAULT_LOG_DIR, archive / heads.DEFAULT_HEADS_DIR
+        ),
+    )
+
+
 # How much of a message id a table shows. The full value is 96 characters and
 # would be three lines of terminal for a column nobody reads across -- it is
 # there to be recognised, not typed. Every machine-readable format prints it
@@ -884,7 +936,12 @@ def run_archive(args: argparse.Namespace) -> int:
         return report_import(
             args.source,
             archive,
-            source.archive_to_cas(destination, move=args.move, dry_run=args.dry_run),
+            source.archive_to_cas(
+                destination,
+                provenance=_provenance(archive, args.name),
+                move=args.move,
+                dry_run=args.dry_run,
+            ),
         )
     elif cmd == "compress":
         store = cas.mail_store(archive)

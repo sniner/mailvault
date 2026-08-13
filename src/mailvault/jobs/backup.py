@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 
 from mailvault import conf, mailutils, utils
 from mailvault.backend import base, session
-from mailvault.jobs.common import _seal_log
+from mailvault.jobs.common import seal_log
 from mailvault.jobs.db import DEFAULT_QUERY_DB_NAME, refresh_db
 from mailvault.jobs.migration import migrate_archive
 from mailvault.jobs.reconcile import ArchivedPlaces, reconcile_folder
@@ -208,7 +208,7 @@ def _backup_folder(
     # The seal date stamps the log with when the folder was read, which is a
     # fact about the run and stays the wall clock. Where the *next* run resumes
     # is a claim about coverage, and that one comes back from the backend.
-    sealed = _seal_log(log_writer, observed_at)
+    sealed = seal_log(log_writer, observed_at)
     resume: dict | None = None
     if result.complete and sealed:
         resume = result.resume

@@ -76,6 +76,53 @@ class TestPlacesThatWouldCollide:
         assert heads._identity("job", "INBOX/Sent") != heads._identity("job", "INBOX.Sent")
 
 
+class TestAPlaceWithNoJob:
+    """What `archive import` writes: a name, and no mailbox behind it."""
+
+    def test_it_is_named_by_its_folder_alone(self):
+        assert heads.head_name(None, "docuware-2019").startswith("docuware_2019.")
+
+    def test_it_cannot_be_reached_by_naming_a_job(self):
+        """A mailbox called like the personalisation must not land on it."""
+        person = heads._NO_JOB.decode()
+
+        assert heads.head_name(None, "INBOX") != heads.head_name(person, "INBOX")
+        assert heads._identity(None, "INBOX") != heads._identity(person, "INBOX")
+        assert heads._identity(None, "INBOX") != heads._identity("", "INBOX")
+
+    def test_it_is_told_apart_from_a_job_of_that_name(self):
+        """Both read `docuware_2019`; only the identity separates them."""
+        jobless = heads.head_name(None, "docuware-2019")
+        job = heads.head_name("docuware-2019", None)
+
+        assert jobless.rpartition(".")[0] == job.rpartition(".")[0]
+        assert jobless != job
+
+    def test_a_place_with_a_job_keeps_the_name_it_has_always_had(self):
+        """Existing archives must not have their heads renamed under them.
+
+        The value is the one the module docstring has named since `heads/`
+        existed, which is what makes it evidence rather than a copy of whatever
+        the code does today.
+        """
+        assert heads.head_name("gmail.com", "INBOX") == "gmail_com-INBOX.1c0a75d8"
+
+    def test_it_survives_being_written_and_read(self, tmp_path):
+        heads.write(tmp_path, heads.Head(job=None, folder="docuware-2019", log="a" * 96))
+
+        head = heads.read(tmp_path, None, "docuware-2019")
+
+        assert head is not None
+        assert (head.job, head.folder, head.log) == (None, "docuware-2019", "a" * 96)
+
+    def test_it_is_not_one_of_the_archive_mailboxes(self, tmp_path):
+        """The guard asks who has written here, and an import is not an answer."""
+        heads.write(tmp_path, heads.Head(job=None, folder="docuware-2019"))
+        heads.write(tmp_path, heads.Head(job="gmail.com", folder="INBOX"))
+
+        assert heads.mailboxes(tmp_path) == {"gmail.com"}
+
+
 class TestNamesAtTheEdges:
     def test_a_place_without_any_alphanumerics_still_gets_a_name(self):
         name = heads.head_name("→", "...")

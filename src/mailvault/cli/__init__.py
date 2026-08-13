@@ -209,8 +209,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     a_import = asub.add_parser(
         "import",
-        help="Import emails from another archive",
-        description="Import emails from a source archive into the destination archive.",
+        help="Take a directory of mail into the archive under a name",
+        description=(
+            "Take mail into the archive from somewhere that is not a mailbox: a"
+            " directory of .eml files, or a Docuware export. The name is what the"
+            " archive records the mail under, and it is the answer to a question"
+            " nothing else can answer afterwards -- which import a message came"
+            " from. `mailvault db search --folder NAME` finds them again."
+            " Importing the same source twice costs nothing but the reading: the"
+            " archive holds each message once."
+        ),
+    )
+    a_import.add_argument(
+        "--name",
+        required=True,
+        metavar="NAME",
+        help="Record the imported mail under this name, e.g. docuware-2019",
     )
     a_import.add_argument(
         "--docuware",

@@ -306,9 +306,9 @@ $ mailvault db create --force
 ```
 
 `db drop` deletes it without asking and without a `--force`, for the same
-reason. Note that mail added by `archive import` writes no log entry and so is
-not picked up by an update; `db create --force` reads the archive again and
-finds it.
+reason. Mail imported before `archive import` took a `--name` has no log entry
+and so is not picked up by an update; `db create --force` reads the archive again
+and finds it.
 
 
 ## Working on the archive
@@ -322,13 +322,14 @@ $ mailvault archive stats
 ```
 
 **Import** existing `.eml` files -- from another tool, an old backup, a Docuware
-export with `--docuware`. `--move` removes the source files afterwards,
-`--dry-run` only counts:
+export with `--docuware`. `--name` is what the archive records them under, and
+it is the only way to ask afterwards which import a message came from. `--move`
+removes the source files, `--dry-run` only counts:
 
 ```console
-$ mailvault archive import ./my_mails
-$ mailvault archive import --dry-run ./my_mails
-./my_mails: 20,431 message(s) read -- 38 would be imported, 20,393 already in /srv/archive/private
+$ mailvault archive import --name docuware-2019 ./my_mails
+20,431 message(s) read -- 38 imported, 20,393 already in /srv/archive/private
+recorded as docuware-2019 -- `mailvault db update` takes it in, then `mailvault db search --folder docuware-2019` finds them
 ```
 
 **Export** a single message, exactly as it was stored, by the id the reports

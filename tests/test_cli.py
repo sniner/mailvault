@@ -529,16 +529,23 @@ class TestImportSource:
     """An import reads from somewhere else -- that is what makes it an import."""
 
     @staticmethod
-    def _import_args(archive: pathlib.Path, source: pathlib.Path, move: bool = True):
+    def _import_args(
+        archive: pathlib.Path,
+        source: pathlib.Path,
+        move: bool = True,
+        name: str = "docuware-2019",
+        dry_run: bool = False,
+    ):
         return argparse.Namespace(
             command="archive",
             archive_command="import",
             archive=archive,
             source=source,
+            name=name,
             docuware=False,
             move=move,
             compress=False,
-            dry_run=False,
+            dry_run=dry_run,
         )
 
     def test_the_archive_itself_is_refused(self, tmp_path):
@@ -583,6 +590,66 @@ class TestImportSource:
         assert commands.run_archive(self._import_args(archive, source, move=True)) == 0
         assert len(list((archive / "mail").rglob("*.eml"))) == 1
         assert not (source / "a.eml").exists()
+
+    def test_the_name_is_what_the_mail_is_recorded_under(self, tmp_path):
+        source = tmp_path / "elsewhere"
+        source.mkdir()
+        (source / "a.eml").write_bytes(b"Message-Id: <a@example.com>\r\n\r\nbody\r\n")
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        marker.write(archive)
+
+        commands.run_archive(self._import_args(archive, source, move=False))
+
+        (path,) = metalog.log_files(archive / metalog.DEFAULT_LOG_DIR)
+        logfile = metalog.read_log(path)
+        assert logfile is not None
+        assert (logfile.mailbox, logfile.folder) == (None, "docuware-2019")
+
+    def test_a_name_of_nothing_is_refused_before_anything_is_read(self, tmp_path):
+        """It is the only handle the mail has afterwards, so it has to be one."""
+        source = tmp_path / "elsewhere"
+        source.mkdir()
+        (source / "a.eml").write_bytes(b"Message-Id: <a@example.com>\r\n\r\nbody\r\n")
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        marker.write(archive)
+
+        with pytest.raises(jobs.JobError, match="--name"):
+            commands.run_archive(self._import_args(archive, source, name="   "))
+
+        assert list((archive / "mail").rglob("*.eml")) == []
+
+    def test_the_report_says_the_name_and_where_to_type_it(self, tmp_path, capsys):
+        source = tmp_path / "elsewhere"
+        source.mkdir()
+        (source / "a.eml").write_bytes(b"Message-Id: <a@example.com>\r\n\r\nbody\r\n")
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        marker.write(archive)
+
+        commands.run_archive(self._import_args(archive, source, move=False))
+
+        out = capsys.readouterr().out
+        assert "recorded as docuware-2019" in out
+        assert "db search --folder docuware-2019" in out
+
+    def test_a_dry_run_says_what_it_would_be_called(self, tmp_path, capsys):
+        source = tmp_path / "elsewhere"
+        source.mkdir()
+        (source / "a.eml").write_bytes(b"Message-Id: <a@example.com>\r\n\r\nbody\r\n")
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        marker.write(archive)
+
+        assert (
+            commands.run_archive(self._import_args(archive, source, move=True, dry_run=True))
+            == 0
+        )
+
+        assert "would be recorded as docuware-2019" in capsys.readouterr().out
+        assert metalog.log_files(archive / metalog.DEFAULT_LOG_DIR) == []
+        assert (source / "a.eml").exists()
 
 
 class TestAnArchiveIsAMarkedDirectory:

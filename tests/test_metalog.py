@@ -522,11 +522,25 @@ class TestTheChain:
         assert path is not None
         assert _read_log(path).prev is None
 
-    def test_a_place_without_a_mailbox_carries_no_chain(self, tmp_path):
+    def test_a_place_without_a_mailbox_gets_a_head_all_the_same(self, tmp_path):
+        """What an import writes: a name in the folder, no mailbox behind it."""
+        root = tmp_path / "meta"
+        writer = metalog.LogWriter(root, _heads(root))
+        writer.add(None, ["docuware-2019"], STORE_ID)
+
+        (path,) = writer.seal(WHEN)
+
+        head = heads.read(_heads(root), None, "docuware-2019")
+        assert head is not None
+        assert head.job is None
+        assert head.log == _read_log(path).hashval
+        assert head.resume is None
+
+    def test_a_place_that_is_neither_carries_no_chain(self, tmp_path):
         """The type allows it, so it is answered rather than assumed away."""
         root = tmp_path / "meta"
         writer = metalog.LogWriter(root, _heads(root))
-        writer.add(None, ["INBOX"], STORE_ID)
+        writer.add(None, [], STORE_ID)
 
         (path,) = writer.seal(WHEN)
 

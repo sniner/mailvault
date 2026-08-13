@@ -20,9 +20,10 @@ writing is checked.
 An archive that knows no mailboxes at all is the case that needs care, because
 "no names" and "nothing here" are not the same thing. A fresh archive accepts
 anything, rightly: there is nothing to contaminate, and every archive has to
-start somewhere. But an archive filled by `archive import` holds mail and no
-names whatsoever -- an import writes messages, not a metadata log, because
-nobody told it which mailbox and folder they came from. Reading that as "empty"
+start somewhere. But an archive filled by `archive import` holds mail under no
+mailbox name whatsoever -- an import records what it brought in under a name of
+its own, and deliberately not as a mailbox, because there is no mailbox behind it
+and nothing here could be held against a configuration. Reading that as "empty"
 waved every configuration through into an archive that was anything but, and
 with `delete_after_export` the server copies went afterwards.
 

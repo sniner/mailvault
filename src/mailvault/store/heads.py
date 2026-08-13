@@ -13,6 +13,12 @@ canonical labels of a message (`\\Sent`) where the configured folder name is a
 localised view of the same thing (`[Google Mail]/Gesendet`). So a place may have
 a resume point, or a chain head, or both.
 
+A place need not have a mailbox. `archive import` records what it brings in under
+the name it was given, and there is no mailbox behind that name and nobody to ask
+about it again -- so its head carries a chain and never a resume point. Which is
+also what keeps that name from colliding with a job's: a job always has one, so
+having none cannot be mistaken for one.
+
 This replaces the single `state.json` that used to hold the resume points, for
 two reasons that are about reading rather than writing.
 
@@ -79,6 +85,10 @@ EMPTY_PART = "_"
 # Runs of these make up the readable part; everything else separates them.
 _ALNUM = re.compile(r"[A-Za-z0-9]+")
 
+# What separates the identity of a place that belongs to no job from one that
+# does -- see `_identity`. Any value would do; this one says what it is for.
+_NO_JOB = b"jobless-place"
+
 # What a head file is called: a readable part, a dot, and eight hex characters.
 # Used to enumerate them, which is why it has to exclude the transient file of
 # an interrupted write -- that one ends in `._tmp_` and does not match.
@@ -96,7 +106,7 @@ def _slug(text: str) -> str:
     return "_".join(parts) if parts else EMPTY_PART
 
 
-def _identity(job: str, folder: str | None) -> str:
+def _identity(job: str | None, folder: str | None) -> str:
     """Eight hex characters that tell two places apart, whatever they are called.
 
     The slug is lossy and its collisions are not contrived: `INBOX/Sent` and
@@ -125,13 +135,26 @@ def _identity(job: str, folder: str | None) -> str:
     to think about later; and it is visibly not the sha384 of a store id, so no
     error message can be misread as naming one. Four bytes are generous for a
     value that only has to separate places sharing a slug, realistically two.
+
+    A place that names **no job at all** -- an import, which belongs to no
+    mailbox because there is nobody to ask about it again -- is separated by
+    personalising the hash rather than by anything in the input. `person` is not
+    part of the message: it goes into blake2b's parameter block and is mixed into
+    the initial state before the first byte of input is touched, which makes it a
+    different hash function rather than a different input. So no job name can
+    reach that value, not even one spelt exactly like `_NO_JOB` -- where the same
+    trick spelt as a prefix or a separator would only be as safe as the promise
+    that a job name is never empty, and nothing enforces that.
     """
     tail = "\0" if folder is None else folder
-    raw = f"{job}\0{tail}".encode()
-    return hashlib.blake2b(raw, digest_size=4).hexdigest()
+    raw = f"{'' if job is None else job}\0{tail}".encode()
+    # The default is all zeros, so a place that has a job keeps the name it has
+    # always had -- nothing in an existing archive moves.
+    person = _NO_JOB if job is None else b""
+    return hashlib.blake2b(raw, digest_size=4, person=person).hexdigest()
 
 
-def head_name(job: str, folder: str | None) -> str:
+def head_name(job: str | None, folder: str | None) -> str:
     """The file name a place is recorded under: readable part, dot, identity.
 
     The readable part is a reading aid and may be cut; the eight hex characters
@@ -142,8 +165,19 @@ def head_name(job: str, folder: str | None) -> str:
     all**: `gmail_com.3f9a1c2b`. The shape says so by itself, and no folder name
     can produce it, because a folder always yields a part, if only the `_`
     placeholder.
+
+    A place with no job is named by its folder alone, and there is nothing else
+    to name it by. That makes it look like a place with no folder, and only in
+    the readable part: the import `docuware-2019` is `docuware_2019.919e3231`
+    and a job of that name is `docuware_2019.c94770be`. The identity is what
+    keeps the two apart, which is what it is for.
     """
-    slug = _slug(job) if folder is None else f"{_slug(job)}-{_slug(folder)}"
+    if job is None:
+        slug = EMPTY_PART if folder is None else _slug(folder)
+    elif folder is None:
+        slug = _slug(job)
+    else:
+        slug = f"{_slug(job)}-{_slug(folder)}"
     if len(slug) > SLUG_LIMIT:
         # Cutting can leave a trailing separator or a run of underscores, which
         # says nothing and reads like a mistake.
@@ -161,9 +195,26 @@ def where(path: pathlib.Path) -> str:
     return utils.under_dir(DEFAULT_HEADS_DIR, path)
 
 
-def head_path(root: pathlib.Path, job: str, folder: str | None) -> pathlib.Path:
+def head_path(root: pathlib.Path, job: str | None, folder: str | None) -> pathlib.Path:
     """Where the head of one place lives."""
     return root / head_name(job, folder)
+
+
+def place_name(job: str | None, folder: str | None) -> str:
+    """How a place is written for somebody to read: `gmail.com::INBOX`.
+
+    What is not known is left out rather than printed as `None`. A place with no
+    job is what an import writes and is named by its own name; a place whose
+    folder was never recorded is named by its mailbox. `None::docuware-2019` is
+    not a line for people.
+
+    Lives here because this is the module both the log and the reports can reach.
+    The log header calls the first half a mailbox and this one calls it a job; it
+    is the same value, and `backup` puts the job's name into both.
+    """
+    if job is None:
+        return folder or "?"
+    return f"{job}::{folder}" if folder is not None else job
 
 
 @dataclasses.dataclass
@@ -175,9 +226,14 @@ class Head:
     as no resume point at all. That is what makes a slug collision expensive but
     never wrong -- the worst case degenerates to two folders quietly
     invalidating each other, instead of one resuming from the other's position.
+
+    `job` is None for a place that belongs to no job: what `archive import`
+    brings in, which is named but has no mailbox behind it and nobody to ask
+    about it again. Such a place carries a log chain and never a resume point --
+    there is no server to carry on from.
     """
 
-    job: str
+    job: str | None
     folder: str | None
     last_run: str | None = None
     resume: dict | None = None
@@ -232,6 +288,20 @@ def _is_usable_resume(value: object) -> bool:
     return isinstance(kind, str) and bool(kind)
 
 
+def _names_a_place(job: object, folder: object) -> bool:
+    """Whether a payload's two halves identify a place at all.
+
+    Either may be null and mean it: no job is what an import writes, no folder is
+    a mailbox whose folder was never recorded. Both null names nothing, and a
+    file that names nothing cannot be the head of anything.
+    """
+    if not (job is None or isinstance(job, str)):
+        return False
+    if not (folder is None or isinstance(folder, str)):
+        return False
+    return job is not None or folder is not None
+
+
 def _decode(path: pathlib.Path, payload: object) -> Head | None:
     """Turn a decoded payload into a Head, or None when it cannot be trusted.
 
@@ -249,7 +319,7 @@ def _decode(path: pathlib.Path, payload: object) -> Head | None:
         return None
     job = payload.get("job")
     folder = payload.get("folder")
-    if not isinstance(job, str) or not (folder is None or isinstance(folder, str)):
+    if not _names_a_place(job, folder):
         log.warning("%s: does not say which place it belongs to, ignoring it", where(path))
         return None
 
@@ -293,7 +363,7 @@ def read_file(path: pathlib.Path) -> Head | None:
     return _decode(path, payload)
 
 
-def read(root: pathlib.Path, job: str, folder: str | None) -> Head | None:
+def read(root: pathlib.Path, job: str | None, folder: str | None) -> Head | None:
     """The head of one place, or None to read that folder in full.
 
     A file whose `job`/`folder` do not match what was asked for is a slug
@@ -323,7 +393,7 @@ def write(root: pathlib.Path, head: Head) -> None:
     """Replace the head of a place, atomically."""
     body = json.dumps(head.to_payload(), indent=2, sort_keys=True, ensure_ascii=False) + "\n"
     atomic.write_text(head_path(root, head.job, head.folder), body)
-    log.debug("%s::%s: resume point written", head.job, head.folder)
+    log.debug("%s: head written", place_name(head.job, head.folder))
 
 
 def head_files(root: pathlib.Path) -> list[pathlib.Path]:
@@ -352,5 +422,9 @@ def mailboxes(root: pathlib.Path) -> set[str]:
     identity is a hash, so neither can be turned back into a job name. The
     files themselves are asked instead, which is cheap -- there are as many as
     there are folders, not as there are messages.
+
+    A place with no job is not one of them, and that is what the guard needs: an
+    archive built from imports alone answers this with nothing, so it still
+    counts as an archive nobody's configuration can be held against.
     """
     return {head.job for head in read_all(root) if head.job}

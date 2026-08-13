@@ -342,6 +342,26 @@ message and the server's journal envelope carry different `Message-ID`s.
 archive. `--move` removes the source files after import, `--compress` stores them
 compressed, and `--docuware` reads a Docuware email archive as the source.
 
+`--name` is required, and it is what the archive records the mail under:
+
+```console
+$ mailvault --archive ./backup archive import --name docuware-2019 /mnt/export/docuware
+```
+
+That name answers a question nothing else can answer afterwards -- which import a
+message came from -- and it is written where every other location is written, in
+the metadata log. With one difference that decides the rest: **the mailbox stays
+empty.** There is no mailbox behind an import and nobody to ask about it again,
+so the name lives in the folder field, and `mailvault db search --folder
+docuware-2019` is how you get those messages back. It also keeps the name clear
+of your job names by construction: a job always has one, so having none cannot be
+mistaken for one.
+
+Importing the same source twice under the same name costs nothing but the
+reading -- the archive holds each message once, and the second run records the
+same place a second time, which `archive compact` folds back together. Two
+different names keep two imports apart.
+
 The source has to lie outside the archive, and naming the archive itself is
 refused. With `--move` it would find every message already stored, answer each
 with EXISTS, and then delete it from the source -- which is the archive.
@@ -362,10 +382,12 @@ different name, and afterwards nothing tells it apart from one that really is
 new. If almost everything counts as new when you expected almost nothing to,
 that is what happened.
 
-Imported mail writes no metadata-log entry, because nothing knows which mailbox
-and folder it came from. That has one consequence worth remembering: `db update`
-will not pick it up, and `archive check` will count it among the messages the log
-does not account for.
+Mail imported before `archive import` took a name has no metadata-log entry at
+all: `db update` does not pick it up, and `archive check` counts it among the
+messages the log does not account for. Importing the same source again under a
+name repairs that, and it is the only thing that does -- the archive cannot
+invent a provenance it was never told. It costs the reading of the source and
+stores nothing twice.
 
 ### Exporting a single message
 
@@ -399,8 +421,9 @@ NOT sound -- 3 finding(s) above
 
 The two message counts are there to be subtracted: what lies in the archive, and
 what the log accounts for. The difference is mail whose place nothing records --
-listed further down, and no cause for alarm on its own, since `archive import`
-writes no log.
+named further down, and no cause for alarm on its own: it is what an import made
+before `archive import` took a `--name` left behind, and what a lost log entry
+leaves behind.
 
 The last line is the verdict, and it says which kind of run it was:
 

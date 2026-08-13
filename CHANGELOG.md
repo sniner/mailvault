@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- **`archive import` now requires `--name`.** The name is what the archive records the imported
+  mail under, and it is the answer to a question nothing else could answer afterwards: which
+  import a message came from. Existing command lines have to add it --
+  `archive import --name docuware-2019 /mnt/export`. A name you would recognise later is the whole
+  requirement; the same name twice is how two runs from the same source are kept together, two
+  names is how they are kept apart. It is required for `--dry-run` too, so that the run which
+  reports what would happen is the same run in every other respect
+
+### Added
+
+- **An import records where its mail came from, so imported mail is no longer mail nothing knows
+  anything about.** It goes into the metadata log the way a backup's observations do, with one
+  difference: the mailbox stays empty, because there is no mailbox behind an import and nobody to
+  ask about it again. The name lives in the folder field, which is where `mailvault db search
+  --folder docuware-2019` finds it, and which keeps it clear of your job names by construction --
+  a job always has a name, so having none cannot be mistaken for one. `archive check` no longer
+  counts imported mail among the messages nothing records a place for: an archive built from
+  imports used to report a number the size of itself
+- **Mail imported by an earlier version can be given its provenance after the fact.** Import the
+  same source again under a name: every message is recorded, whether the archive already holds it
+  or not, and nothing is stored twice. It costs the reading of the source and is the only thing
+  that repairs this -- an archive cannot invent a provenance it was never told
+- **What an import has recorded is written down as it goes**, in batches rather than once at the
+  end, and `--move` removes a source file only after the batch it belongs to is written. An
+  interrupted import of 100,000 messages no longer costs the provenance of everything it had read
+  so far, and a log that cannot be written holds the source files back entirely
+
 ### Changed
 
 - **Stored messages and metadata log files are written read-only.** An entry is named after the

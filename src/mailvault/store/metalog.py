@@ -59,6 +59,12 @@ That happens when importing from a database written before this log existed,
 where the pairing was never recorded. It is deliberately representable rather
 than guessed -- an archive should not invent a location it cannot know.
 
+`mailbox` may be null too, and it means something else: there is no mailbox, not
+that it was forgotten. That is what `archive import` writes -- the name it was
+given goes in `folder`, and the empty mailbox is what says this mail came from
+somewhere nobody can be asked about again. It also keeps that name out of the way
+of every reader that looks a mailbox up by a job's name: a job always has one.
+
 A torn write costs the last line of one file, which is skipped on read. A file
 whose header is unreadable costs that one place of that one run.
 """
@@ -214,6 +220,23 @@ def _chain(head: heads.Head | None) -> str | None:
     return None if head is None else head.log
 
 
+def _head_of(
+    heads_root: pathlib.Path, mailbox: str | None, folder: str | None
+) -> heads.Head | None:
+    """The head of a place, or None where there cannot be one.
+
+    A place has a head as soon as it can be told apart from another, and one
+    half is enough for that: a mailbox whose folder was never recorded has one,
+    and so does an import, which names a folder and no mailbox because there is
+    no mailbox behind it. Only an entry that names *neither* has nothing to be
+    the head of. That never comes from a backup -- the job name is always there
+    -- and the type allows it, so it is answered rather than assumed away.
+    """
+    if mailbox is None and folder is None:
+        return None
+    return heads.read(heads_root, mailbox, folder) or heads.Head(job=mailbox, folder=folder)
+
+
 def _move_head(heads_root: pathlib.Path, head: heads.Head | None, hashval: str) -> None:
     """Point a place's head at the file that now holds it.
 
@@ -234,7 +257,11 @@ def _move_head(heads_root: pathlib.Path, head: heads.Head | None, hashval: str) 
     try:
         heads.write(heads_root, head)
     except OSError as exc:
-        log.error("%s::%s: log chain head not written: %s", head.job, head.folder, exc)
+        log.error(
+            "%s: log chain head not written: %s",
+            heads.place_name(head.job, head.folder),
+            exc,
+        )
 
 
 class LogWriter:
@@ -311,31 +338,20 @@ class LogWriter:
             self._places.items(),
             key=lambda item: (item[0][0] or "", item[0][1] or ""),
         ):
-            head = self._head_of(mailbox, folder)
+            head = _head_of(self.heads_root, mailbox, folder)
             _status, hashval, path = store.add(
                 _serialize(mailbox, folder, date.isoformat(), store_ids, prev=_chain(head))
             )
             log.debug(
-                "%s: %s message(s) in %s::%s", where(path), len(store_ids), mailbox, folder
+                "%s: %s message(s) in %s",
+                where(path),
+                len(store_ids),
+                heads.place_name(mailbox, folder),
             )
             _move_head(self.heads_root, head, hashval)
             written.append(path)
         self._places = {}
         return written
-
-    def _head_of(self, mailbox: str | None, folder: str | None) -> heads.Head | None:
-        """The head of a place, or None where there cannot be one.
-
-        A log entry may name no mailbox at all; a head is keyed by one, so such
-        a place simply carries no chain. It never happens from a backup -- the
-        job name is always there -- and the type allows it, so it is answered
-        rather than assumed away.
-        """
-        if mailbox is None:
-            return None
-        return heads.read(self.heads_root, mailbox, folder) or heads.Head(
-            job=mailbox, folder=folder
-        )
 
 
 def _parse_store_id(path: pathlib.Path, number: int, line: str) -> str | None:
@@ -595,13 +611,7 @@ def compact(root: pathlib.Path, heads_root: pathlib.Path) -> CompactResult:
     # a head still naming a file that has just been deleted is the one state
     # worth avoiding here.
     for (mailbox, folder), hashval in roots:
-        head = (
-            None
-            if mailbox is None
-            else heads.read(heads_root, mailbox, folder)
-            or heads.Head(job=mailbox, folder=folder)
-        )
-        _move_head(heads_root, head, hashval)
+        _move_head(heads_root, _head_of(heads_root, mailbox, folder), hashval)
 
     # Drop the originals we consolidated, but never one byte-identical to a file
     # just written (an already-compact place produces the same hash).

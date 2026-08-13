@@ -481,7 +481,7 @@ class TestCatchUp:
         self._archive_with(tmp_path, "a")
         client = self._client(["a", "b"])
 
-        with patch("mailvault.jobs.reconcile._seal_log", return_value=False):
+        with patch("mailvault.jobs.reconcile.seal_log", return_value=False):
             with caplog.at_level(logging.WARNING):
                 self._run(_make_job(folders=["INBOX"]), client, tmp_path)
 
@@ -2180,7 +2180,7 @@ class TestTheArchiveIsNamedOnce:
     """No log line of a run repeats the path of the archive it is working on.
 
     The rule is old (`ca95ece`, `0230a82`) and was enforced line by line, which is
-    why a new one slipped back in: `_seal_log` printed the absolute path of
+    why a new one slipped back in: `seal_log` printed the absolute path of
     `meta/` on every folder that recorded anything. Over a share that prefix is
     routinely longer than the sentence behind it, and it says nothing the line
     above it did not already say.

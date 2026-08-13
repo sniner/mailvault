@@ -1,5 +1,12 @@
-from mailvault import importer
-from mailvault.store import cas
+from __future__ import annotations
+
+import pathlib
+
+import pytest
+
+from mailvault import conf, importer, jobs
+from mailvault.jobs import guard
+from mailvault.store import cas, heads, metalog
 
 
 def test_mail_archive_walk(tmp_path, dummy_eml_bytes):
@@ -130,6 +137,219 @@ def test_an_unreadable_message_is_named_rather_than_counted(tmp_path, monkeypatc
 
     assert result.failed == [broken]
     assert (result.stored, result.present) == (0, 0)
+
+
+def _provenance(archive: pathlib.Path, name: str = "docuware-2019") -> importer.Provenance:
+    """What the CLI hands the importer: a name and the log to write it in."""
+    return importer.Provenance(
+        name=name,
+        log=metalog.LogWriter(
+            archive / metalog.DEFAULT_LOG_DIR, archive / heads.DEFAULT_HEADS_DIR
+        ),
+    )
+
+
+def _sources(root: pathlib.Path, count: int) -> list[pathlib.Path]:
+    root.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for number in range(count):
+        path = root / f"{number}.eml"
+        path.write_bytes(f"From: someone\r\n\r\nmessage {number}".encode())
+        paths.append(path)
+    return paths
+
+
+class TestWhatAnImportRecords:
+    """Which import a message came from is in no `.eml`, so it is written down."""
+
+    def test_the_name_is_recorded_as_a_place_with_no_mailbox(self, tmp_path):
+        archive = tmp_path / "archive"
+        _sources(tmp_path / "src", 2)
+        store = cas.mail_store(archive)
+
+        importer.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+            store, provenance=_provenance(archive)
+        )
+
+        (path,) = metalog.log_files(archive / metalog.DEFAULT_LOG_DIR)
+        logfile = metalog.read_log(path)
+        assert logfile is not None
+        assert logfile.mailbox is None, "there is no mailbox behind an import"
+        assert logfile.folder == "docuware-2019"
+        assert len(logfile.store_ids) == 2
+
+    def test_the_place_gets_a_head_and_a_chain(self, tmp_path):
+        archive = tmp_path / "archive"
+        _sources(tmp_path / "src", 1)
+
+        importer.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+            cas.mail_store(archive), provenance=_provenance(archive)
+        )
+
+        head = heads.read(archive / heads.DEFAULT_HEADS_DIR, None, "docuware-2019")
+        assert head is not None
+        assert head.job is None
+        assert head.resume is None, "there is no server to carry on from"
+        (path,) = metalog.log_files(archive / metalog.DEFAULT_LOG_DIR)
+        assert head.log == path.name.removesuffix(".jsonl")
+
+    def test_mail_the_archive_already_holds_is_recorded_too(self, tmp_path, dummy_eml_bytes):
+        """Importing again under a name is how older imports get their provenance."""
+        archive = tmp_path / "archive"
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "known.eml").write_bytes(dummy_eml_bytes)
+        store = cas.mail_store(archive)
+        store.add(dummy_eml_bytes)
+
+        result = importer.ExternalMailArchive(root_dir=src).archive_to_cas(
+            store, provenance=_provenance(archive)
+        )
+
+        assert (result.stored, result.present) == (0, 1)
+        assert result.recorded == 1, "that it lay in this import is true either way"
+
+    def test_it_is_written_down_in_batches(self, tmp_path, monkeypatch):
+        """A batch is what `--move` may let go of, so it must reach the log first."""
+        monkeypatch.setattr(importer, "SEAL_BATCH", 2)
+        archive = tmp_path / "archive"
+        _sources(tmp_path / "src", 5)
+
+        result = importer.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+            cas.mail_store(archive), provenance=_provenance(archive)
+        )
+
+        assert result.recorded == 5
+        files = metalog.log_files(archive / metalog.DEFAULT_LOG_DIR)
+        assert len(files) == 3, "two full batches and the remainder"
+
+    def test_the_batches_form_one_chain(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(importer, "SEAL_BATCH", 2)
+        archive = tmp_path / "archive"
+        _sources(tmp_path / "src", 4)
+
+        importer.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+            cas.mail_store(archive), provenance=_provenance(archive)
+        )
+
+        head = heads.read(archive / heads.DEFAULT_HEADS_DIR, None, "docuware-2019")
+        assert head is not None
+        store = metalog.open_store(archive / metalog.DEFAULT_LOG_DIR)
+        walked = 0
+        hashval = head.log
+        while hashval is not None:
+            path = store.locate(hashval)
+            assert path is not None, "the chain names a file that is not there"
+            logfile = metalog.read_log(path)
+            assert logfile is not None
+            walked += 1
+            hashval = logfile.prev
+        assert walked == 2
+
+    def test_a_dry_run_records_nothing(self, tmp_path):
+        archive = tmp_path / "archive"
+        _sources(tmp_path / "src", 2)
+
+        result = importer.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+            cas.mail_store(archive), provenance=_provenance(archive), dry_run=True
+        )
+
+        assert result.name == "docuware-2019", "it still says what it would be called"
+        assert result.recorded == 0
+        assert metalog.log_files(archive / metalog.DEFAULT_LOG_DIR) == []
+        assert heads.head_files(archive / heads.DEFAULT_HEADS_DIR) == []
+
+
+class TestMoveWaitsForTheLog:
+    """A file whose provenance is not written down must not be the one that goes."""
+
+    def test_sources_go_only_after_the_batch_is_sealed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(importer, "SEAL_BATCH", 2)
+        archive = tmp_path / "archive"
+        sources = _sources(tmp_path / "src", 3)
+        sealed: list[int] = []
+
+        real_seal = metalog.LogWriter.seal
+
+        def seal(self, date):
+            # What is on disk at the moment of the seal: the sources of the
+            # batch being written must all still be there.
+            sealed.append(sum(path.exists() for path in sources))
+            return real_seal(self, date)
+
+        monkeypatch.setattr(metalog.LogWriter, "seal", seal)
+        importer.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+            cas.mail_store(archive), provenance=_provenance(archive), move=True
+        )
+
+        assert sealed == [3, 1], "nothing removed before its seal, everything after"
+        assert not any(path.exists() for path in sources)
+
+    def test_a_failed_seal_leaves_the_sources_alone(self, tmp_path, monkeypatch):
+        archive = tmp_path / "archive"
+        sources = _sources(tmp_path / "src", 2)
+
+        def refuse(self, date):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(metalog.LogWriter, "seal", refuse)
+        result = importer.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+            cas.mail_store(archive), provenance=_provenance(archive), move=True
+        )
+
+        assert result.recorded == 0
+        assert (result.stored, result.present) == (2, 0), "the mail is in the archive"
+        assert all(path.exists() for path in sources), "and its source is still there"
+
+
+class TestAnImportedArchiveIsWholeInItself:
+    """The payoff: what an import brings in is no longer an archive full of orphans."""
+
+    def _import(self, tmp_path, count: int = 3) -> pathlib.Path:
+        archive = tmp_path / "archive"
+        _sources(tmp_path / "src", count)
+        importer.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+            cas.mail_store(archive), provenance=_provenance(archive)
+        )
+        return archive
+
+    def test_check_finds_no_orphans_and_nothing_wrong(self, tmp_path):
+        archive = self._import(tmp_path)
+
+        result = jobs.check(archive)
+
+        assert result.orphans == []
+        assert result.referenced == 3
+        assert result.places == 1
+        assert result.sound, f"findings: {result.missing} {result.broken_chains}"
+
+    def test_the_place_reads_as_its_name(self, tmp_path):
+        """`None::docuware-2019` is not a line for people."""
+        archive = self._import(tmp_path, count=1)
+
+        result = jobs.check(archive)
+
+        assert list(result.missing.values()) == []
+        assert heads.place_name(None, "docuware-2019") == "docuware-2019"
+
+    def test_compact_moves_the_head_with_it(self, tmp_path, monkeypatch):
+        """Otherwise the head names a file compact has just removed."""
+        monkeypatch.setattr(importer, "SEAL_BATCH", 1)
+        archive = self._import(tmp_path)
+
+        metalog.compact(archive / metalog.DEFAULT_LOG_DIR, archive / heads.DEFAULT_HEADS_DIR)
+        result = jobs.check(archive)
+
+        assert result.broken_chains == []
+        assert result.unchained == []
+        assert len(metalog.log_files(archive / metalog.DEFAULT_LOG_DIR)) == 1
+
+    def test_the_guard_still_refuses_a_configuration_it_cannot_check(self, tmp_path):
+        """An import records no mailbox, so there is still nothing to compare against."""
+        archive = self._import(tmp_path)
+
+        with pytest.raises(jobs.JobError, match="records no mailbox"):
+            guard.check_jobs(archive, [conf.JobConfig(name="whoever")])
 
 
 def test_docuware_archive_walk(tmp_path, dummy_eml_bytes):

@@ -51,7 +51,7 @@ from datetime import UTC, datetime
 
 from mailvault import mailutils
 from mailvault.backend import base
-from mailvault.jobs.common import _seal_log
+from mailvault.jobs.common import seal_log
 from mailvault.jobs.ledger import Claim, MessageIdLedger
 from mailvault.store import cas, metalog
 
@@ -320,7 +320,7 @@ def reconcile_folder(
 
     # Whether the locations reached disk is the caller's business: a pass that
     # fetched every message and could not write down where any of them belongs
-    # must not move a resume point past them. `_seal_log` reports that through
+    # must not move a resume point past them. `seal_log` reports that through
     # its return value and nowhere else.
-    result.sealed = _seal_log(log_writer, datetime.now(UTC))
+    result.sealed = seal_log(log_writer, datetime.now(UTC))
     return result
