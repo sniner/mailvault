@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A job with no password says so, instead of letting the server say something else.** A
+  `password_cmd` that was not allowed to run leaves the job with an empty password, and until now
+  that empty password was sent: what came back was whatever the server made of a login with
+  nothing in it -- iCloud, for one, answers with a recital of the LOGIN syntax, which names
+  neither the account nor the cause. The login is now refused before the connection is opened,
+  naming the job's user and the two ways to give it a password
+
 ## 0.12.0 (2026-08-13)
 
 ### Breaking changes

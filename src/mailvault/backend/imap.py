@@ -176,6 +176,17 @@ class ImapClient:
         server said what was wrong -- and the caller reports them as one line
         rather than a traceback through `imapclient`.
         """
+        # An empty password is never a credential worth trying, and it is what
+        # a `password_cmd` leaves behind when it was not allowed to run. Sending
+        # it produces whatever the server makes of a login with nothing in it --
+        # iCloud answers with its LOGIN syntax, which says nothing about the
+        # cause. So the cause is named here instead.
+        if not job.password:
+            raise MailboxError(
+                f"no password for '{job.username}': set 'password' in the job, "
+                f"or pass --allow-exec so 'password_cmd' may run"
+            )
+
         if job.tls:
             tls_context = ssl.create_default_context()
             if not job.tls_check_hostname:

@@ -136,6 +136,15 @@ class TestConnect:
         mock_conn.shutdown.assert_called_once()
 
     @patch("mailvault.backend.imap.imapclient.IMAPClient")
+    def test_an_empty_password_names_the_cause(self, mock_imap_cls):
+        """A `password_cmd` that never ran leaves nothing to log in with."""
+        with pytest.raises(imap.MailboxError, match="no password for 'user'.*--allow-exec"):
+            imap.ImapClient.connect(_make_job(password=""))
+
+        # And it costs no connection to find that out.
+        mock_imap_cls.assert_not_called()
+
+    @patch("mailvault.backend.imap.imapclient.IMAPClient")
     def test_an_unreachable_server_names_host_and_port(self, mock_imap_cls):
         mock_imap_cls.side_effect = OSError("connection refused")
 
