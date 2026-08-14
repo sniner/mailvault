@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`docs/providers.md`: what a particular mailbox wants in `mailvault.toml`.** One page, one
+  `[[job]]` to copy per provider, and the things nobody guesses: Gmail's labels are folders and
+  `All Mail` is the only one worth backing up, Microsoft 365 takes no password but an Azure app
+  registration whose permission covers every mailbox in the tenant, the Proton Bridge reports its
+  folders as empty until the first sync has finished, and iCloud lives at `imap.mail.me.com`.
+  Linked from the README and the deep dive
+
 ## 0.12.2 (2026-08-14)
 
 ### Changed

@@ -1,8 +1,9 @@
 # mailvault deep dive
 
-The [README](../README.md) shows what to type. This is the reasoning behind it:
-why the archive is shaped the way it is, what every option does, and what
-happens in the cases the short version leaves out.
+The [README](../README.md) shows what to type, and
+[Providers](providers.md) what a particular mailbox wants. This is the reasoning
+behind both: why the archive is shaped the way it is, what every option does, and
+what happens in the cases the short version leaves out.
 
 * [Why an archive holds no database](#why-an-archive-holds-no-database)
 * [Where the archive is, and which file describes it](#where-the-archive-is-and-which-file-describes-it)

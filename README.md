@@ -108,6 +108,11 @@ client_secret_cmd = "pass show m365/client-secret"
 username = "john.doe@example.com"
 ```
 
+What a particular provider wants -- Gmail's labels, the app registration behind
+Microsoft 365, the Proton Bridge, iCloud's unguessable hostname -- is one page
+of its own: [Providers](https://github.com/sniner/mailvault/blob/main/docs/providers.md),
+with a `[[job]]` to copy for each.
+
 A few settings apply to the whole run rather than to one mailbox and go into a
 `[global]` section:
 
@@ -367,6 +372,10 @@ $ mailvault archive migrate
 
 
 ## Further reading
+
+[Providers](https://github.com/sniner/mailvault/blob/main/docs/providers.md) is
+the practical one: what plain IMAP, Gmail, Microsoft 365, Proton Mail and iCloud
+each want in `mailvault.toml`, and what each of them does that the others do not.
 
 The [deep dive](https://github.com/sniner/mailvault/blob/main/docs/deep-dive.md)
 has what is deliberately left out above:
