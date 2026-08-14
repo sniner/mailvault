@@ -13,9 +13,12 @@
 
 - **`docs/usecases.md`: whole recipes for situations that take more than one option.** The
   first one is rolling old mail off a mailbox that is filling up -- a folder the old mail is
-  moved into, plus a job of its own with `delete_after_export`, which needs nothing that is not
-  already there. It also says why there is no `older_than` option and why there will not be one:
-  a run that skips the newest mail cannot also record that it is done with the folder
+  moved into, plus a second `[[job]]` over that folder with `delete_after_export`, carrying the
+  same `name` as the mailbox's ordinary job so both stay one mailbox in the archive. That makes
+  the two share a resume point per folder, so their `folders` must not overlap: the page says
+  what silently goes wrong when they do, and what to do instead where a job cannot name its
+  folders at all. It also says why there is no `older_than` option and why there will not be
+  one: a run that skips the newest mail cannot also record that it is done with the folder
 
 ## 0.12.2 (2026-08-14)
 

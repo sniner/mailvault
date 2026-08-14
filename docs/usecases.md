@@ -29,11 +29,19 @@ filter. It is a folder.
 1. Make a folder in the mailbox -- say `To Archive`.
 2. Let old mail move into it: a server-side rule, a scheduled task, an Outlook
    rule, a Sieve script, or by hand. This is the step that decides what is old.
-3. Give that folder a job of its own, with `delete_after_export`:
+3. Give that folder a job of its own, with `delete_after_export` -- under the
+   *same* `name` as the job that already backs up this mailbox:
 
 ```toml
 [[job]]
-name = "example.org-sweep"
+name = "example.org"
+server = "imap.example.org"
+username = "john.doe@example.org"
+password_cmd = "pass show email/example.org"
+folders = ["INBOX", "Archive", "Sent"]
+
+[[job]]
+name = "example.org"
 server = "imap.example.org"
 username = "john.doe@example.org"
 password_cmd = "pass show email/example.org"
@@ -41,10 +49,10 @@ folders = ["To Archive"]
 delete_after_export = true
 ```
 
-4. Run it -- on its own schedule, separately from the nightly backup:
+4. Run the backup as usual:
 
 ```console
-$ mailvault backup --job example.org-sweep --allow-exec
+$ mailvault backup --allow-exec
 ```
 
 Everything sitting in the folder is archived and then removed from the server.
@@ -58,13 +66,41 @@ before the record of where it was seen is safely written down.
 > Adding `delete_after_export` to a job that also backs up `INBOX` empties your
 > inbox into the archive as well.
 
-**A new job name needs saying so once.** mailvault refuses a job that has never
-written into this archive before -- that is the check that catches the wrong
-configuration against the wrong archive. The first run of the new job wants
-`--allow-new-mailbox`; after that it is a familiar name and the flag is not
-needed again. (Reusing the existing job's `name` avoids both the flag and a
-second entry in `archive places`. Then `--job` selects the two jobs together,
-which is the reason not to.)
+**Two jobs, one name.** Nothing stops two `[[job]]` entries from carrying the
+same `name`, and here that is the point: the name is the mailbox name in the
+archive, so both jobs write into one mailbox. One entry in `archive places`, one
+name to search under, and no `--allow-new-mailbox` -- the name has written here
+before.
+
+> [!IMPORTANT]
+> **Then the two jobs must not read the same folder.** A job's name is also half
+> of what a resume point belongs to: the archive remembers how far it got per
+> *place*, and a place is a job name plus a folder. Two jobs of the same name
+> share the resume point of every folder they both read -- so their `folders`
+> lists have to be disjoint, with the sweep folder in exactly one of them.
+>
+> What goes wrong otherwise is quiet. The ordinary job reads `To Archive` first,
+> archives what is in it and moves the shared resume point past it. The sweep job
+> follows, finds nothing new, and a message it never fetched is not a message it
+> may delete -- so the folder is never emptied. Nothing is lost, the mail is in
+> the archive, but the deleting silently stops happening.
+
+**Unless the ordinary job cannot name its folders.** Leaving `folders` out means
+*all* folders, `To Archive` among them -- that is the recommended setting for
+[iCloud](providers.md#icloud-apple-mail), which has no folder that holds
+everything. Two ways out. Exclude the sweep folder there:
+
+```toml
+ignore_folder_names = ["To Archive"]
+```
+
+Or give the sweep job a name of its own, say `example.org-sweep`. A different
+name is a different mailbox, with resume points of its own, so an overlap costs
+nothing but the ordinary job reading a folder that is about to be emptied. It
+does cost `--allow-new-mailbox` on the first run -- mailvault refuses a job that
+has never written into this archive, which is the check that catches the wrong
+configuration against the wrong archive -- and a second entry in `archive
+places`, and mail under two names to search under.
 
 **What "removed from the server" means depends on the provider.** On plain IMAP
 the message is gone. On Gmail it moves to the trash and on Microsoft 365 into
@@ -82,9 +118,10 @@ folder still looking two years old -- but it is new *to that folder*, and that
 is what a backup run goes by. It is picked up on the next run like anything
 else that arrives there.
 
-**Your ordinary backup can stay as it is.** Run the complete mailbox backup
-alongside; a message that both jobs see is stored once and recorded in both
-places. And once it is archived, the archive is where you ask for it:
+**Your ordinary backup carries on unchanged**, apart from the one folder it now
+leaves to the sweep. A message that both jobs do see is stored once all the same
+-- the archive keeps one copy and writes down each place it was seen. And once it
+is archived, the archive is where you ask for it:
 
 ```console
 $ mailvault db search --until 2024-01-01 --mailbox example.org
