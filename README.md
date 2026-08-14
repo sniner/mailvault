@@ -377,6 +377,10 @@ $ mailvault archive migrate
 the practical one: what plain IMAP, Gmail, Microsoft 365, Proton Mail and iCloud
 each want in `mailvault.toml`, and what each of them does that the others do not.
 
+[Use cases](https://github.com/sniner/mailvault/blob/main/docs/usecases.md) is
+the other practical one: whole recipes for situations that take more than one
+option -- rolling old mail off a mailbox that is filling up, to begin with.
+
 The [deep dive](https://github.com/sniner/mailvault/blob/main/docs/deep-dive.md)
 has what is deliberately left out above:
 

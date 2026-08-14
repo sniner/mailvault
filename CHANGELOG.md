@@ -11,6 +11,12 @@
   folders as empty until the first sync has finished, and iCloud lives at `imap.mail.me.com`.
   Linked from the README and the deep dive
 
+- **`docs/usecases.md`: whole recipes for situations that take more than one option.** The
+  first one is rolling old mail off a mailbox that is filling up -- a folder the old mail is
+  moved into, plus a job of its own with `delete_after_export`, which needs nothing that is not
+  already there. It also says why there is no `older_than` option and why there will not be one:
+  a run that skips the newest mail cannot also record that it is done with the folder
+
 ## 0.12.2 (2026-08-14)
 
 ### Changed
