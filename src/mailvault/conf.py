@@ -15,6 +15,8 @@ import pathlib
 import re
 import subprocess
 import tomllib
+import types
+import typing
 
 log = logging.getLogger(__name__)
 
@@ -207,6 +209,7 @@ class JobConfig:
         unknown = set(resolved.keys()) - fields
         if unknown:
             log.warning("Unknown config fields in '%s': %s", name, ", ".join(sorted(unknown)))
+        _check_types(name, known, typing.get_type_hints(cls))
         return cls(name=name, **known)
 
     @staticmethod
@@ -250,17 +253,109 @@ def _job_tables(data: dict) -> list[dict]:
     return section
 
 
+# What a thing is called in a TOML file, by its Python type. `_named` asks it
+# about a value that was found, `_expected` about the field it was written into,
+# and both answer in the same words so the two halves of a message fit together.
+_TYPE_WORDS: dict[object, str] = {
+    bool: "a boolean",
+    int: "a number",
+    float: "a number",
+    str: "a string",
+    list: "a list",
+    dict: "a table",
+}
+
+
 def _named(value: object) -> str:
     """What a TOML value is, in the words the file uses for it."""
-    names = {
-        bool: "a boolean",
-        int: "a number",
-        float: "a number",
-        str: "a string",
-        list: "a list",
-        dict: "a table",
-    }
-    return names.get(type(value), f"a {type(value).__name__}")
+    return _TYPE_WORDS.get(type(value), f"a {type(value).__name__}")
+
+
+def _fits(value: object, hint: object) -> bool:
+    """Whether a value out of the file is what its field is annotated to hold.
+
+    `bool` is asked about before `int` because in Python a bool *is* an int:
+    without that, `port = true` would pass for a number.
+    """
+    if typing.get_origin(hint) is types.UnionType:
+        return any(_fits(value, arg) for arg in typing.get_args(hint))
+    if hint is type(None):
+        return value is None
+    if typing.get_origin(hint) is list:
+        args = typing.get_args(hint)
+        return isinstance(value, list) and all(_fits(v, args[0]) for v in value)
+    if hint is int:
+        return isinstance(value, int) and not isinstance(value, bool)
+    return isinstance(value, typing.cast(type, hint))
+
+
+def _expected(hint: object) -> str:
+    """What a field is annotated to hold, in the same words `_named` uses."""
+    if typing.get_origin(hint) is types.UnionType:
+        # None is what a field is *without*, not something to write into the
+        # file: "a string or nothing" would read as if there were a third option.
+        return " or ".join(
+            _expected(arg) for arg in typing.get_args(hint) if arg is not type(None)
+        )
+    if typing.get_origin(hint) is list:
+        (item,) = typing.get_args(hint)
+        return {str: "a list of strings", int: "a list of numbers"}.get(item, "a list")
+    return _TYPE_WORDS.get(hint, f"a {getattr(hint, '__name__', hint)}")
+
+
+def _check_types(where: str, data: dict, hints: dict[str, object]) -> None:
+    """Refuse a value whose type is not the one its field holds.
+
+    Dataclasses check nothing, and neither did `validate` -- it asks which
+    options are there and whether they go together, never what they are. So a
+    quoted number reached `imapclient` and failed there, `tls = "yes"` was right
+    by accident (a non-empty string is true, and so is `"no"`), and the worst of
+    them, `folders = "INBOX"`, iterated the string: mailvault went looking for
+    the folders `I`, `N`, `B`, `O` and `X` and reported five times that the
+    server did not have them. Everything about that reads like a server problem.
+
+    The field is named, and so is what belongs in it.
+    """
+    for key, value in data.items():
+        hint = hints.get(key)
+        if hint is None or _fits(value, hint):
+            continue
+        raise ConfigError(_type_error(where, key, value, hint))
+
+
+def _list_hint(hint: object) -> object | None:
+    """The `list[...]` an annotation holds, whether or not it is optional."""
+    if typing.get_origin(hint) is list:
+        return hint
+    if typing.get_origin(hint) is types.UnionType:
+        return next(
+            (arg for arg in typing.get_args(hint) if typing.get_origin(arg) is list), None
+        )
+    return None
+
+
+def _type_error(where: str, key: str, value: object, hint: object) -> str:
+    """Say what belongs in a field, and what was found there instead.
+
+    The list cases get a sentence of their own because both are somebody one
+    keystroke short of right, and neither is obvious from the general wording: a
+    single folder written without its brackets, and one wrong entry in a list
+    that is otherwise fine.
+    """
+    listed = _list_hint(hint)
+    if listed is not None and isinstance(value, list):
+        (item,) = typing.get_args(listed)
+        wrong = next(v for v in value if not _fits(v, item))
+        return (
+            f"{where}: '{key}' must be {_expected(hint)},"
+            f" but one of them is {_named(wrong)}: {wrong!r}"
+        )
+    if listed is not None and isinstance(value, str):
+        return (
+            f"{where}: '{key}' must be {_expected(hint)}, not {_named(value)}"
+            f' -- a single one goes in brackets too: {key} = ["{value}"]'
+        )
+    return f"{where}: '{key}' must be {_expected(hint)}, not {_named(value)}"
 
 
 @dataclasses.dataclass
@@ -281,10 +376,13 @@ class Config:
         unknown_global = set(global_data.keys()) - fields
         if unknown_global:
             log.warning("Unknown global config fields: %s", ", ".join(sorted(unknown_global)))
+        _check_types("[global]", known_global, typing.get_type_hints(cls))
 
         jobs = []
         for job_data in _job_tables(data):
             name = job_data.get("name", ".")
+            if not isinstance(name, str):
+                raise ConfigError(f"a job's 'name' must be a string, not {_named(name)}")
             jobs.append(
                 JobConfig.from_dict(
                     name,

@@ -318,6 +318,73 @@ class TestTomlConfig:
         assert config.jobs == []
 
 
+class TestAValueMustBeWhatTheFieldHolds:
+    """`validate` asks which options are there, never what they are."""
+
+    @staticmethod
+    def _load(tmp_path, body: str):
+        toml_file = tmp_path / "test.toml"
+        toml_file.write_text(body)
+        return conf.load(toml_file)
+
+    def test_a_single_folder_without_brackets_is_named(self, tmp_path):
+        # The worst of them: the string is iterated, and mailvault goes looking
+        # for the folders I, N, B, O and X -- which reads like a server problem.
+        with pytest.raises(conf.ConfigError) as exc:
+            self._load(tmp_path, '[[job]]\nname = "j"\nfolders = "INBOX"\n')
+        assert 'folders = ["INBOX"]' in str(exc.value)
+
+    def test_one_wrong_entry_in_a_list_is_named(self, tmp_path):
+        with pytest.raises(conf.ConfigError, match="one of them is a number: 3"):
+            self._load(tmp_path, '[[job]]\nname = "j"\nfolders = ["INBOX", 3]\n')
+
+    def test_a_quoted_port_is_refused_here_and_not_in_imapclient(self, tmp_path):
+        with pytest.raises(conf.ConfigError, match="'port' must be a number, not a string"):
+            self._load(tmp_path, '[[job]]\nname = "j"\nport = "993"\n')
+
+    def test_a_quoted_boolean_is_refused_rather_than_right_by_accident(self, tmp_path):
+        # A non-empty string is true, so `tls = "yes"` worked -- and so did
+        # `tls = "no"`, which is the same value with the opposite meaning.
+        with pytest.raises(conf.ConfigError, match="'tls' must be a boolean"):
+            self._load(tmp_path, '[[job]]\nname = "j"\ntls = "no"\n')
+
+    def test_a_boolean_is_not_a_number(self, tmp_path):
+        # In Python a bool is an int, so `port = true` would pass unnoticed.
+        with pytest.raises(conf.ConfigError, match="'port' must be a number, not a boolean"):
+            self._load(tmp_path, '[[job]]\nname = "j"\nport = true\n')
+
+    def test_a_global_option_is_checked_too(self, tmp_path):
+        with pytest.raises(conf.ConfigError, match=r"\[global\]: 'compress' must be a boolean"):
+            self._load(tmp_path, '[global]\ncompress = "yes"\n')
+
+    def test_a_job_name_that_is_not_a_string_is_named(self, tmp_path):
+        with pytest.raises(conf.ConfigError, match="'name' must be a string, not a number"):
+            self._load(tmp_path, "[[job]]\nname = 3\n")
+
+    def test_an_optional_field_left_out_is_still_fine(self, tmp_path):
+        config = self._load(tmp_path, '[[job]]\nname = "j"\nserver = "s"\n')
+        assert config.jobs[0].folders is None
+        assert config.jobs[0].trash_folder is None
+
+    def test_the_types_a_configuration_actually_uses_pass(self, tmp_path):
+        config = self._load(
+            tmp_path,
+            "[global]\n"
+            "compress = true\n"
+            "\n"
+            "[[job]]\n"
+            'name = "j"\n'
+            'server = "imap.example.com"\n'
+            "port = 993\n"
+            "tls = true\n"
+            'folders = ["INBOX", "Sent"]\n'
+            'ignore_folder_flags = ["noselect"]\n'
+            "max_retries = 3\n",
+        )
+        assert config.jobs[0].folders == ["INBOX", "Sent"]
+        assert config.jobs[0].max_retries == 3
+
+
 class TestTheJobSectionIsAList:
     """`[job]` for `[[job]]` is the commonest TOML mistake, and it parses."""
 

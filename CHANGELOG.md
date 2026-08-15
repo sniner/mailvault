@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- **A configuration value of the wrong type is refused, naming the option and what belongs in
+  it.** Nothing checked them: `validate` asks which options are there and whether they go
+  together, never what they are, and a dataclass takes whatever it is handed. So `port = "993"`
+  failed deep inside `imapclient`, `tls = "yes"` was right by accident -- a non-empty string is
+  true, and so is `"no"` -- and `folders = "INBOX"` was iterated letter by letter, sending
+  mailvault after the folders `I`, `N`, `B`, `O` and `X` and reporting five times that the server
+  did not have them. Every option now says what it holds: `'folders' must be a list of strings,
+  not a string -- a single one goes in brackets too: folders = ["INBOX"]`, and one wrong entry in
+  an otherwise good list is named as well. A configuration that carries a quoted number or a
+  quoted boolean stops the run now where it used to start it, which is the point
+
 - **`[job]` where `[[job]]` was meant is now said in those words.** Both spellings are valid
   TOML, and the single brackets make one table where mailvault expects a list of them -- so the
   configuration parsed, and what came out was `'str' object has no attribute 'get'` and a
