@@ -55,7 +55,11 @@ class ImportResult:
     """What an import did, or what it would have done.
 
     `failed` holds paths rather than a count, because a count alone does not
-    tell anyone which file to look at.
+    tell anyone which file to look at. `undeleted` is the other half of that and
+    deliberately not the same list: those messages are in the archive and their
+    provenance is written, and all that is left of them is a source file that
+    `--move` could not remove. Counting them as failures would say the import
+    fell short where only the tidying up did.
 
     `recorded` is what the log has taken and made durable, and it is not the same
     as `stored + present`: a seal that fails leaves the messages in the archive
@@ -69,6 +73,7 @@ class ImportResult:
     name: str | None = None
     dry_run: bool = False
     failed: list[pathlib.Path] = dataclasses.field(default_factory=list)
+    undeleted: list[pathlib.Path] = dataclasses.field(default_factory=list)
 
 
 # Suffixes an archived email can carry: plain and zstd-compressed.
@@ -99,6 +104,13 @@ def _record(
     A seal that fails keeps the sources too. What was observed stays in the
     writer and goes out with the next batch, so nothing has to be repeated by
     hand; what has not been written down must not be let go of in the meantime.
+
+    A file that will not go is noted and stepped over. `remove_file` raises on
+    purpose -- a caller meaning to be rid of a file has to hear that it is still
+    there -- but here the message behind it is already stored and already
+    recorded, and letting the error out ended the whole import: no report, no
+    further batch, over one file somebody had open or a directory with the wrong
+    write bit.
     """
     if provenance is not None:
         observed = len(provenance.log)
@@ -106,9 +118,14 @@ def _record(
             return
         result.recorded += observed
     for path in pending:
-        # The source may be another mailvault archive, whose entries carry a
-        # write protection of their own.
-        utils.remove_file(path)
+        try:
+            # The source may be another mailvault archive, whose entries carry a
+            # write protection of their own.
+            utils.remove_file(path)
+        except OSError as exc:
+            log.error("%s: file not deleted: %s", path, exc)
+            result.undeleted.append(path)
+            continue
         log.debug("%s: file deleted", path)
     pending.clear()
 

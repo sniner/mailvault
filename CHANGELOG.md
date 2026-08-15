@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- **`archive import --move` steps over a source file it cannot delete, instead of ending
+  there.** One file somebody had open, or a directory with the wrong write bit, took the whole
+  import down: the error came out of the deletion, past the point where the mail was stored and
+  its provenance sealed, and what was lost was the rest of the run and the report with it. The
+  file is named and the import carries on. It is reported apart from the messages that could not
+  be read, because it is a different outcome -- that mail is in the archive and recorded, and only
+  the tidying up fell short. Importing the same source again is harmless and takes the leftovers
+  with it
+
 - **An environment variable that is not set is named, instead of being handed on in braces.** A
   `${VAR}` nothing answers is written out as it stands, so `password = "${MAILVAULT_PASS}"` with
   the variable unset sends `${MAILVAULT_PASS}` to the server -- and what comes back is whatever

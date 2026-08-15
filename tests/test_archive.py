@@ -301,6 +301,32 @@ class TestMoveWaitsForTheLog:
         assert (result.stored, result.present) == (2, 0), "the mail is in the archive"
         assert all(path.exists() for path in sources), "and its source is still there"
 
+    def test_one_file_that_will_not_go_does_not_end_the_import(self, tmp_path, monkeypatch):
+        # The message behind it is stored and recorded; letting the OSError out
+        # ended the run there -- no report, no further batch, over one file.
+        archive = tmp_path / "archive"
+        sources = _sources(tmp_path / "src", 3)
+        stubborn = sources[1]
+
+        real_remove = importing.utils.remove_file
+
+        def remove(path, missing_ok=False):
+            if path == stubborn:
+                raise PermissionError("still open elsewhere")
+            real_remove(path, missing_ok=missing_ok)
+
+        monkeypatch.setattr(importing.utils, "remove_file", remove)
+        result = importing.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+            cas.mail_store(archive), provenance=_provenance(archive), move=True
+        )
+
+        assert result.stored == 3, "every message was archived"
+        assert result.recorded == 3, "and every one of them recorded"
+        assert result.undeleted == [stubborn]
+        assert result.failed == [], "not a failure: nothing about the import fell short"
+        assert stubborn.exists()
+        assert not any(path.exists() for path in sources if path != stubborn)
+
 
 class TestAnImportedArchiveIsWholeInItself:
     """The payoff: what an import brings in is no longer an archive full of orphans."""

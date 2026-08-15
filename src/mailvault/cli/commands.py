@@ -550,7 +550,18 @@ def report_import(
     _report_items(
         [utils.under(source, p) for p in result.failed], "message", "could not be read"
     )
-    return 1 if result.failed or (unrecorded and not result.dry_run) else 0
+    # Said apart from the failures above, because it is a different outcome: the
+    # mail is in the archive and recorded, and what is left over is the source
+    # file --move was asked to take away. Importing the same source again is
+    # harmless and deletes them, which is why the line says so.
+    _report_items(
+        [utils.under(source, p) for p in result.undeleted],
+        "source file",
+        "could not be deleted, the mail is archived --"
+        " import the same source again to be rid of them",
+    )
+    shortfall = result.failed or result.undeleted
+    return 1 if shortfall or (unrecorded and not result.dry_run) else 0
 
 
 # How wide the two name columns may get before they are cut. A mailbox is a host
