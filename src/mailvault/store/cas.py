@@ -538,7 +538,16 @@ class ContentAddressedStorage:
                 # Deliberately broad: a codec error is not an OSError, and one
                 # damaged entry must not stop a pass over a whole archive. The
                 # file is named in the result, so the caller can still tell.
-                log.error(f"{self.where(path)}: {operation} failed: {exc}")
+                # A refused file says so in a line; anything else brings its
+                # stack, because that is what tells a damaged entry apart from a
+                # codec this program is holding wrong.
+                log.error(
+                    "%s: %s failed: %s",
+                    self.where(path),
+                    operation,
+                    exc,
+                    exc_info=not isinstance(exc, OSError),
+                )
                 result.failed.append(path)
             else:
                 result.converted += 1

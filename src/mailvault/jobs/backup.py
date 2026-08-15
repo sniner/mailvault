@@ -142,7 +142,17 @@ def _backup_to_log(
         except Exception as exc:
             # One folder that cannot be read must not cost the remaining ones;
             # its snapshot simply does not advance and the next run tries again.
-            log.error("%s::%s: backup failed: %s", job.name, folder, exc)
+            # A diagnosed failure -- the server said what was wrong -- is one
+            # line. Anything else brings its stack: this catch is wide enough to
+            # swallow a bug in this program, and then the line alone says
+            # "backup failed: list index out of range" and nothing about where.
+            log.error(
+                "%s::%s: backup failed: %s",
+                job.name,
+                folder,
+                exc,
+                exc_info=not isinstance(exc, base.MailboxError),
+            )
     _empty_trash(mb, job)
 
 

@@ -53,9 +53,23 @@ class DatabaseConnection:
                 yield self
                 if outer:
                     self.dbconn.commit()
-            except Exception as exc:
-                log.error("Transaction failed: %s", exc)
+            except RollbackException:
+                # Not a failure and not reported as one: `rollback()` is how a
+                # caller asks for the block to be undone, and raising is how it
+                # asks. What stood here was three ERROR lines for a deliberate
+                # abort -- one per nesting level -- each of them saying
+                # "Transaction failed:" and then nothing, because the exception
+                # carries no message.
                 if outer:
+                    self.dbconn.rollback()
+                raise
+            except Exception:
+                # Once, from the outermost block, and with the stack: an inner
+                # block that re-raises would otherwise report the same failure
+                # again at every level on the way out, and for an exception
+                # nobody has diagnosed the traceback is the only clue there is.
+                if outer:
+                    log.exception("Transaction failed")
                     self.dbconn.rollback()
                 raise
             finally:

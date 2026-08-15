@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime
 
 import pytest
@@ -219,6 +220,32 @@ def test_index_db_transaction_rollback(tmp_path):
         # BeforeRollback should still exist
         row = db.execute("SELECT name FROM mailbox WHERE name='BeforeRollback'").fetchone()
         assert row is not None
+
+
+def test_a_deliberate_rollback_reports_nothing(tmp_path, caplog):
+    # It used to log ERROR once per nesting level, each line reading
+    # "Transaction failed:" and then nothing -- the exception carries no
+    # message, and the operation is not a failure to begin with.
+    db_path = tmp_path / "test.db"
+    with index_db.IndexDatabase(db_path) as db, caplog.at_level(logging.DEBUG):
+        with pytest.raises(sqlite.RollbackException):
+            with db.transaction(), db.transaction(), db.transaction():
+                db.execute("INSERT OR IGNORE INTO mailbox(name) VALUES (?)", ("RolledBack",))
+                db.rollback()
+
+        assert caplog.text == ""
+        assert db.execute("SELECT name FROM mailbox WHERE name='RolledBack'").fetchone() is None
+
+
+def test_a_real_failure_is_reported_once_and_with_its_stack(tmp_path, caplog):
+    db_path = tmp_path / "test.db"
+    with index_db.IndexDatabase(db_path) as db, caplog.at_level(logging.ERROR):
+        with pytest.raises(ValueError):
+            with db.transaction(), db.transaction():
+                raise ValueError("something nobody diagnosed")
+
+    assert caplog.text.count("Transaction failed") == 1
+    assert "ValueError: something nobody diagnosed" in caplog.text, "the stack came with it"
 
 
 def test_index_db_v_messages_view(tmp_path):
