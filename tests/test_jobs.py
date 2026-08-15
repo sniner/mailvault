@@ -2214,6 +2214,30 @@ class TestRefreshDb:
         with index_db.IndexDatabase(db_path) as db:
             assert len(db.store_id_map()) == 1
 
+    def test_a_log_is_marked_applied_durably_and_not_by_luck(self, tmp_path):
+        """`execute` does not commit, so the mark needs a transaction of its own.
+
+        It used to be written outside one and became durable only because
+        `_record_heads` happened to open a transaction afterwards. Here nothing
+        follows: the connection is closed straight after, which is what a run
+        cut short does too.
+        """
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+        store = cas.mail_store(tmp_path)
+
+        with index_db.IndexDatabase(db_path) as db:
+            db.setup()
+            db_module._apply_new_logs(
+                db,
+                store,
+                tmp_path / metalog.DEFAULT_LOG_DIR,
+                db_module.RefreshResult(),
+            )
+
+        with index_db.IndexDatabase(db_path) as db:
+            assert db.execute("SELECT count(*) FROM applied_log").fetchone()[0] == 1
+
     def test_a_full_build_says_why_before_it_starts(self, tmp_path, caplog):
         """Reading every message is worth minutes; nobody should have to guess why."""
         _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))

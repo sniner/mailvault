@@ -580,10 +580,23 @@ def _apply_new_logs(
             # repaired file is retried rather than skipped for good.
             continue
         result.files += 1
-        folded, unknown = _fold_log_file(db, rows, logfile)
+        # One transaction over both, and the inner one in `_fold_log_file` joins
+        # it: what the file said and the note that the file was read are one
+        # step, so neither can be on disk without the other. The note used to be
+        # written on its own, outside any transaction -- `execute` does not
+        # commit, and it only became durable because `_record_heads` happened to
+        # open a transaction afterwards. Harmless as long as it held (the file
+        # would simply be read again, `INSERT OR IGNORE` sees to the rest), but
+        # it is the same pattern `add_message_sender` was already repaired for,
+        # where the rows written last, with nothing following, were lost.
+        with db.transaction():
+            folded, unknown = _fold_log_file(db, rows, logfile)
+            db.execute(
+                "INSERT OR IGNORE INTO applied_log (hash) VALUES (?)",
+                (_log_hash(path),),
+            )
         result.applied += folded
         result.unknown += unknown
-        db.execute("INSERT OR IGNORE INTO applied_log (hash) VALUES (?)", (_log_hash(path),))
     result.messages = rows.created
 
 
