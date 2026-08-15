@@ -47,12 +47,40 @@ def _expand_env(value: str) -> str:
     return re.sub(r"\$\{([^}]+)\}", _replace, value)
 
 
-def _resolve_values(data: dict, allow_exec: bool = False) -> dict:
+# What is left of a `${VAR}` that no environment variable answered. A `${VAR:-…}`
+# never survives expansion -- it has a default to fall back on -- so anything
+# still in braces here is a variable nobody set.
+_UNSET_VAR = re.compile(r"\$\{([^}:]+)\}")
+
+
+def _report_unset_vars(where: str, key: str, value: str) -> None:
+    """Say which environment variable was not set, rather than passing it on.
+
+    An unexpanded `${VAR}` is used as it stands, and what that looks like
+    depends on where it landed: as a password it is sent to the server, which
+    answers with whatever it makes of a wrong one -- and that answer names
+    neither the variable nor the fact that a variable was meant. Same reasoning
+    as the empty password refused before the connection is opened: the cause is
+    known here, and nowhere after here.
+    """
+    for var in _UNSET_VAR.findall(value):
+        log.warning(
+            "%s: '%s' uses ${%s}, which is not set -- writing it out as it stands."
+            " Set the variable, or give it a default with ${%s:-...}",
+            where,
+            key,
+            var,
+            var,
+        )
+
+
+def _resolve_values(where: str, data: dict, allow_exec: bool = False) -> dict:
     """Expand environment variables in string values and resolve *_cmd fields."""
     resolved = {}
     for key, value in data.items():
         if isinstance(value, str):
             value = _expand_env(value)
+            _report_unset_vars(where, key, value)
         resolved[key] = value
 
     cmd_keys = [k for k in resolved if k.endswith("_cmd")]
@@ -202,7 +230,7 @@ class JobConfig:
 
     @classmethod
     def from_dict(cls, name: str, data: dict, allow_exec: bool = False) -> JobConfig:
-        resolved = _resolve_values(data, allow_exec=allow_exec)
+        resolved = _resolve_values(name, data, allow_exec=allow_exec)
         resolved = cls._drop_retired_fields(name, resolved)
         fields = {f.name for f in dataclasses.fields(cls)}
         known = {k: v for k, v in resolved.items() if k in fields}

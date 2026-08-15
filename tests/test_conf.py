@@ -1,3 +1,4 @@
+import logging
 import sys
 
 import pytest
@@ -78,6 +79,45 @@ def test_expand_env_unset_no_default(monkeypatch):
 
 def test_expand_env_no_pattern():
     assert conf._expand_env("plain string") == "plain string"
+
+
+def test_an_unset_variable_is_named_rather_than_used(tmp_path, monkeypatch, caplog):
+    # The value is used as it stands, so `${NO_SUCH_VAR}` becomes the password
+    # and the server answers with what it makes of a wrong one -- which names
+    # neither the variable nor the fact that a variable was meant.
+    monkeypatch.delenv("NO_SUCH_VAR", raising=False)
+    toml_file = tmp_path / "test.toml"
+    toml_file.write_text('[[job]]\nname = "j"\npassword = "${NO_SUCH_VAR}"\n')
+
+    with caplog.at_level(logging.WARNING):
+        config = conf.load(toml_file)
+
+    assert config.jobs[0].password == "${NO_SUCH_VAR}"
+    assert "NO_SUCH_VAR" in caplog.text
+    assert "'password'" in caplog.text
+
+
+def test_a_variable_with_a_default_says_nothing(tmp_path, monkeypatch, caplog):
+    monkeypatch.delenv("NO_SUCH_VAR", raising=False)
+    toml_file = tmp_path / "test.toml"
+    toml_file.write_text('[[job]]\nname = "j"\nserver = "${NO_SUCH_VAR:-imap.example.com}"\n')
+
+    with caplog.at_level(logging.WARNING):
+        config = conf.load(toml_file)
+
+    assert config.jobs[0].server == "imap.example.com"
+    assert caplog.text == ""
+
+
+def test_a_variable_that_is_set_says_nothing(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("TEST_PASS", "s3cret")
+    toml_file = tmp_path / "test.toml"
+    toml_file.write_text('[[job]]\nname = "j"\npassword = "${TEST_PASS}"\n')
+
+    with caplog.at_level(logging.WARNING):
+        conf.load(toml_file)
+
+    assert caplog.text == ""
 
 
 def _write_job(tmp_path, body: str):

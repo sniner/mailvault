@@ -926,6 +926,12 @@ server = "${IMAP_SERVER:-imap.example.org}"
 username = "${IMAP_USER}"
 ```
 
+A variable that is not set and has no default is written out as it stands --
+`${IMAP_USER}` becomes the user name, and the server answers with whatever it
+makes of it. mailvault says so when it reads the configuration, naming the
+option and the variable, because nothing after that point can tell that a
+variable was meant.
+
 Additionally, any string field can be replaced by a `_cmd` variant that
 runs a shell command and uses its output as the value. This works for
 any field, not just passwords:

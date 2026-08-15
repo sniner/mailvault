@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **An environment variable that is not set is named, instead of being handed on in braces.** A
+  `${VAR}` nothing answers is written out as it stands, so `password = "${MAILVAULT_PASS}"` with
+  the variable unset sends `${MAILVAULT_PASS}` to the server -- and what comes back is whatever
+  that server makes of a wrong password, which names neither the variable nor the fact that a
+  variable was meant. Reading the configuration now says which option uses which variable, and
+  that `${VAR:-default}` is the way to give it a fallback. The value is still used as it stands:
+  this says what happened, it does not decide for anyone
+
 - **A configuration value of the wrong type is refused, naming the option and what belongs in
   it.** Nothing checked them: `validate` asks which options are there and whether they go
   together, never what they are, and a dataclass takes whatever it is handed. So `port = "993"`
