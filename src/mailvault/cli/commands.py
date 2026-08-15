@@ -358,11 +358,11 @@ def _report_rest(source: pathlib.Path, result: jobs.MigrationResult) -> int:
     """The steps after the two older formats gave up what they held."""
     print(f"{utils.counted(result.shards_moved, 'shard')} moved into {cas.MAIL_DIR}/")
     if result.consolidated is not None:
-        report_compact(source, result.consolidated)
-    return _report_generation(source, result)
+        report_compact(result.consolidated)
+    return _report_generation(source)
 
 
-def _report_generation(source: pathlib.Path, result: jobs.MigrationResult) -> int:
+def _report_generation(source: pathlib.Path) -> int:
     """Say what the archive says about itself now, or why it says nothing yet.
 
     The mark is the verdict, and that is why it is also the exit code: it is
@@ -445,7 +445,7 @@ def report_update_db(target: pathlib.Path, result: jobs.RefreshResult) -> int:
     return 0
 
 
-def report_compact(source: pathlib.Path, result: metalog.CompactResult) -> int:
+def report_compact(result: metalog.CompactResult) -> int:
     """Say how much the log shrank and how many duplicate entries went.
 
     Non-zero when the consolidated files did not verify: the log is unchanged
@@ -669,7 +669,7 @@ def report_adopt(result: jobs.AdoptResult) -> int:
     return 0
 
 
-def _report_orphans(result: jobs.CheckResult, store_ids: list[str]) -> None:
+def _report_orphans(store_ids: list[str]) -> None:
     """Say what a message with no place recorded is, and what follows from it.
 
     These are archived, intact and readable; the one thing missing is the note
@@ -774,7 +774,7 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
         "file in the archive that is not a message",
         plural="files in the archive that are not messages",
     )
-    _report_orphans(result, ids(result.orphans))
+    _report_orphans(ids(result.orphans))
     if result.quarantined_before:
         aside = utils.counted(result.quarantined_before, "message")
         print(f"{aside} set aside by an earlier run")
@@ -1119,10 +1119,10 @@ def run_archive(args: argparse.Namespace) -> int:
         return report_migration(archive, jobs.migrate_archive(archive))
     elif cmd == "compact":
         return report_compact(
-            archive,
             metalog.compact(
-                archive / metalog.DEFAULT_LOG_DIR, archive / heads.DEFAULT_HEADS_DIR
-            ),
+                archive / metalog.DEFAULT_LOG_DIR,
+                archive / heads.DEFAULT_HEADS_DIR,
+            )
         )
     elif cmd == "check":
         return report_check(

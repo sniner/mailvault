@@ -492,7 +492,6 @@ class MSGraphClient:
 
     def _iter_messages(
         self,
-        folder_name: str,
         folder_id: str,
         select: str = "id,receivedDateTime",
         page_size: int = 50,
@@ -595,7 +594,6 @@ class MSGraphClient:
         """List the folder's messages by Message-ID only, without fetching bodies."""
         folder_id = self._resolve_folder(folder_name)
         for item in self._iter_messages(
-            folder_name,
             folder_id,
             select="id,internetMessageId,receivedDateTime",
             page_size=INDEX_PAGE_SIZE,
