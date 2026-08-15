@@ -62,6 +62,7 @@ class DatabaseConnection:
                 # carries no message.
                 if outer:
                     self.dbconn.rollback()
+                    self._rolled_back()
                 raise
             except Exception:
                 # Once, from the outermost block, and with the stack: an inner
@@ -71,9 +72,18 @@ class DatabaseConnection:
                 if outer:
                     log.exception("Transaction failed")
                     self.dbconn.rollback()
+                    self._rolled_back()
                 raise
             finally:
                 self._transaction -= 1
+
+    def _rolled_back(self) -> None:
+        """Called once an outermost block has actually been rolled back.
+
+        For a subclass that keeps anything derived from rows written inside the
+        block. Those rows are gone, and whatever was remembered about them is a
+        claim about a database that no longer says so.
+        """
 
     def execute(self, statement: str, *args: Any) -> sqlite3.Cursor:
         with self.lock:

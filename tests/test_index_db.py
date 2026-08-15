@@ -237,6 +237,25 @@ def test_a_deliberate_rollback_reports_nothing(tmp_path, caplog):
         assert db.execute("SELECT name FROM mailbox WHERE name='RolledBack'").fetchone() is None
 
 
+def test_a_rollback_takes_the_interned_ids_with_it(tmp_path):
+    # The id is cached as soon as the row was inserted, and the insert can sit
+    # inside a larger block that is undone afterwards. Keeping it would hand out
+    # a foreign key to a row that is not there.
+    db_path = tmp_path / "test.db"
+    with index_db.IndexDatabase(db_path) as db:
+        with pytest.raises(sqlite.RollbackException):
+            with db.transaction():
+                db.add_mailbox("RolledBack")
+                db.rollback()
+
+        assert db.execute("SELECT name FROM mailbox WHERE name='RolledBack'").fetchone() is None
+        # Asked again: the answer has to come from the table, not from what the
+        # cache remembers about a row that was undone.
+        again = db.add_mailbox("RolledBack")
+        row = db.execute("SELECT mailbox_id FROM mailbox WHERE name='RolledBack'").fetchone()
+        assert row is not None and row[0] == again
+
+
 def test_a_real_failure_is_reported_once_and_with_its_stack(tmp_path, caplog):
     db_path = tmp_path / "test.db"
     with index_db.IndexDatabase(db_path) as db, caplog.at_level(logging.ERROR):

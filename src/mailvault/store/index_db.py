@@ -153,6 +153,23 @@ class IndexDatabaseConnection(DatabaseConnection):
         cache[value] = row_id
         return row_id
 
+    def _rolled_back(self) -> None:
+        """Forget the interned ids: the rows they name went with the rollback.
+
+        The id is cached as soon as its row *was* inserted, and the insert may
+        well be inside a larger block that is undone afterwards. What is left
+        then is an id for a row that is not there, handed out as a foreign key
+        to everything written next -- and nothing about the database would look
+        wrong until something followed one.
+        """
+        for cache in (
+            self._mailbox_ids,
+            self._folder_ids,
+            self._address_ids,
+            self._subject_ids,
+        ):
+            cache.clear()
+
     def setup(self) -> None:
         with self.transaction():
             self.execute("""
