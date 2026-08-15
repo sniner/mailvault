@@ -30,8 +30,19 @@ if sys.version_info >= (3, 14):
 
         if hasattr(imapclient.imap4.IMAP4WithTimeout, "open"):
             del imapclient.imap4.IMAP4WithTimeout.open
-    except Exception:
-        pass
+    except Exception as _patch_exc:
+        # Said out loud, quietly. The patch is tied to one version of one
+        # library: a moved module or a renamed class makes it miss, and what
+        # follows is a connection that fails much later with something that
+        # sounds like a server problem. `log` does not exist yet at import time,
+        # and the version goes with it because that is the first thing anyone
+        # would ask for.
+        logging.getLogger(__name__).debug(
+            "imapclient %s: the 3.14 open() patch did not apply (%s);"
+            " connecting may fail on this combination",
+            getattr(imapclient, "__version__", "of unknown version"),
+            _patch_exc,
+        )
 
 from mailvault import conf, mailutils, utils
 from mailvault.backend import base
