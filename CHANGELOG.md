@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Gmail's trash is emptied after the mail has been deleted, not before.** A job with
+  `trash_folder` frees the quota it was set up to free: Gmail answers an expunge by moving the
+  message into the trash, where it goes on counting against the mailbox, and emptying that folder
+  is what finishes the deletion. It ran at the end of each folder's *read* pass, which since the
+  deletion moved behind the metadata seal is one station too early -- it cleared what the previous
+  run had left and let this run's mail settle in behind it, so a mailbox that was filling up was
+  only ever half emptied, always one run behind. The trash is now emptied once per job, after the
+  last folder has been purged. Nothing to change in the configuration; a run over an archive whose
+  trash still holds an earlier run's mail clears it out on the way
+
 ### Added
 
 - **`docs/providers.md`: what a particular mailbox wants in `mailvault.toml`.** One page, one

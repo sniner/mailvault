@@ -698,6 +698,14 @@ class MSGraphClient:
             dest_folder,
         )
 
+    def empty_trash(self) -> None:
+        """Nothing to finish off: Graph deletes where the deletion is decided.
+
+        `permanent_delete` is passed to the delete call itself, so a message is
+        either gone by the time `purge` returns or it is in Deleted Items on
+        purpose. There is no folder here that this job filled and left behind.
+        """
+
     def purge(self, folder_name: str, msg_ids: collections.abc.Sequence[str]) -> None:
         """Delete the given messages from the mailbox, softly or for good.
 

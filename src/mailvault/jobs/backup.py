@@ -143,6 +143,27 @@ def _backup_to_log(
             # One folder that cannot be read must not cost the remaining ones;
             # its snapshot simply does not advance and the next run tries again.
             log.error("%s::%s: backup failed: %s", job.name, folder, exc)
+    _empty_trash(mb, job)
+
+
+def _empty_trash(mb: base.MailboxClient, job: conf.JobConfig) -> None:
+    """Finish off the deletions of this job, once every folder has been purged.
+
+    Here and not in the folder loop: what a provider like Gmail keeps in its
+    trash folder only arrives there during `purge`, which runs per folder after
+    the seal. Emptying it any earlier -- as this did while it sat at the end of
+    the read-only pass -- clears what an earlier run left and keeps what this one
+    just deleted, so the mailbox the job was meant to free stays full.
+
+    A failure costs nothing but server space: the messages are archived and their
+    locations durable, and the next run empties the folder again.
+    """
+    if not job.delete_after_export:
+        return
+    try:
+        mb.empty_trash()
+    except Exception as exc:
+        log.error("%s: trash not emptied: %s", job.name, exc)
 
 
 def _backup_folder(

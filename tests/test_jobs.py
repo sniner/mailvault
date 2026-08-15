@@ -919,6 +919,49 @@ class TestDeleteAfterExport:
         # A message must never leave the server when its location was not written.
         mock_client.purge.assert_not_called()
 
+    def test_the_trash_is_emptied_after_the_last_purge(self, tmp_path):
+        # The ordering the README's "getting mail out of a mailbox that is
+        # filling up" rests on: Gmail moves a purged message into the trash, so
+        # emptying it before the purge frees the previous run's quota and leaves
+        # this run's mail sitting there.
+        job = _make_job(folders=["INBOX", "Sent"], delete_after_export=True)
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = self._backup_with_deletable(
+            "aaa",
+            deletable=[1, 2],
+        )
+
+        order: list[str] = []
+        mock_client.purge.side_effect = lambda folder, ids: order.append(f"purge:{folder}")
+        mock_client.empty_trash.side_effect = lambda: order.append("empty_trash")
+
+        self._run(job, mock_client, tmp_path)
+
+        assert order == ["purge:INBOX", "purge:Sent", "empty_trash"]
+
+    def test_the_trash_is_left_alone_without_delete_after_export(self, tmp_path):
+        job = _make_job(folders=["INBOX"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = base.BackupResult(total=1, stored=1)
+
+        self._run(job, mock_client, tmp_path)
+
+        mock_client.empty_trash.assert_not_called()
+
+    def test_a_trash_that_will_not_empty_does_not_fail_the_job(self, tmp_path, caplog):
+        job = _make_job(folders=["INBOX"], delete_after_export=True)
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = self._backup_with_deletable(
+            "aaa",
+            deletable=[1],
+        )
+        mock_client.empty_trash.side_effect = OSError("connection reset")
+
+        with caplog.at_level(logging.ERROR):
+            self._run(job, mock_client, tmp_path)
+
+        assert "trash not emptied" in caplog.text
+
     def test_does_not_purge_without_delete_after_export(self, tmp_path):
         # The caller-side gate: a populated deletable list is ignored when the
         # job does not delete after export.

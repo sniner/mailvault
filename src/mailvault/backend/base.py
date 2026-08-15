@@ -132,6 +132,21 @@ class MailboxClient(Protocol):
         """
         ...
 
+    def empty_trash(self) -> None:
+        """Finish off what the purges of this job left behind.
+
+        Some providers do not remove a deleted message at all, they move it into
+        a trash folder -- so `purge` alone frees no quota, and the mailbox the
+        job was meant to make room in is exactly as full as before. Emptying that
+        folder is what completes the deletion.
+
+        Called once, after the *last* folder of the job has been purged, and that
+        ordering is the whole point: a message reaches the trash during `purge`,
+        so anything emptied before that belongs to some earlier pass, not to this
+        one. A backend whose deletions leave nothing behind does nothing here.
+        """
+        ...
+
     def message_index(
         self,
         folder_name: str,

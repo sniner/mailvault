@@ -544,8 +544,6 @@ class ImapClient:
                 result.deletable.append(msg_id)
         if self.error_folder:
             self._relocate(folder_name, non_journal, self.error_folder)
-        if self.gmail and self.trash_folder:
-            self._clear_folder(self.trash_folder)
         if watermark.lost:
             return BackupResult(resume_lost=True)
         result.resume = watermark.token()
@@ -569,6 +567,24 @@ class ImapClient:
                 self.conn.expunge()
             finally:
                 self.conn.unselect_folder()
+
+    def empty_trash(self) -> None:
+        """Empty the trash folder, where Gmail keeps what `purge` deleted.
+
+        Gmail answers an EXPUNGE by moving the message to its trash folder rather
+        than removing it, and the quota counts it there just the same. So the
+        deletion this job asked for is only finished once that folder is emptied,
+        and `trash_folder` is how the owner names it -- the name is localised, so
+        only they know it.
+
+        This ran per folder once, at the end of the read-only pass, back when
+        `folder_backup` did the deleting itself. Since the purge moved behind the
+        seal, that spot empties the trash *before* the folder's own messages
+        arrive in it: every run then cleared the previous run's remains and left
+        its own. Hence once per job, after the last purge.
+        """
+        if self.gmail and self.trash_folder:
+            self._clear_folder(self.trash_folder)
 
     def resume_point(self, folder_name: str) -> dict | None:
         """The folder's current UID watermark, without fetching anything."""

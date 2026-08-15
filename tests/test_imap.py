@@ -740,7 +740,10 @@ class TestFolderBackup:
         assert result.deletable == []
         conn.delete_messages.assert_not_called()
 
-    def test_gmail_clears_trash(self, tmp_path):
+    def test_the_read_only_pass_leaves_the_trash_alone(self, tmp_path):
+        # The pass reads; the trash is emptied by `empty_trash` once the job's
+        # last purge has put this run's messages into it. Doing it here would
+        # empty the folder before they arrive.
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
         conn.select_folder.return_value = {b"EXISTS": 0}
         conn.search.return_value = []
@@ -748,16 +751,62 @@ class TestFolderBackup:
         client = _make_client(
             conn=conn,
             trash_folder="[Google Mail]/Trash",
+            delete_after_export=True,
         )
 
         store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
         client.folder_backup("INBOX", store)
 
-        # Trash folder should have been selected for clearing
-        assert any(
+        assert not any(
             c == call("[Google Mail]/Trash", readonly=False)
             for c in conn.select_folder.call_args_list
         )
+
+
+# ---------------------------------------------------------------------------
+# empty_trash
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyTrash:
+    def test_gmail_empties_the_trash_folder(self):
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
+        conn.search.return_value = [1, 2]
+        client = _make_client(
+            conn=conn,
+            trash_folder="[Google Mail]/Trash",
+            delete_after_export=True,
+        )
+
+        client.empty_trash()
+
+        conn.select_folder.assert_called_with("[Google Mail]/Trash", readonly=False)
+        conn.delete_messages.assert_called_once()
+        assert list(conn.delete_messages.call_args.args[0]) == [1, 2]
+        conn.expunge.assert_called_once()
+
+    def test_without_a_trash_folder_nothing_happens(self):
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
+        client = _make_client(conn=conn, delete_after_export=True)
+
+        client.empty_trash()
+
+        conn.select_folder.assert_not_called()
+
+    def test_on_a_plain_imap_server_nothing_happens(self):
+        # Deleting really deletes there, so there is nothing left behind -- and a
+        # folder named in the config must not be emptied on a server where the
+        # option means nothing.
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1"])
+        client = _make_client(
+            conn=conn,
+            trash_folder="Trash",
+            delete_after_export=True,
+        )
+
+        client.empty_trash()
+
+        conn.select_folder.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
