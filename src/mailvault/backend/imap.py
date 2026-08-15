@@ -347,20 +347,35 @@ class ImapClient:
         )
 
     def _clear_folder(self, folder_name: str) -> None:
+        """Delete everything in a folder and expunge it, whatever goes wrong.
+
+        Every step is answered for on its own. The EXPUNGE is in the `finally`
+        because whatever was flagged should still go when the pass over the
+        batches broke off half way; the UNSELECT is guarded apart from it,
+        because an EXPUNGE the server refuses used to take the UNSELECT with it
+        -- and a connection handed back with a folder still selected makes the
+        *next* SELECT look like the thing that failed.
+        """
         with self.lock:
             try:
                 self.conn.select_folder(folder_name, readonly=False)
-                try:
-                    message_ids = self.conn.search()
-                    for msg_ids in utils.batched(message_ids, 10):
-                        self.conn.delete_messages(msg_ids)
-                except Exception as exc:
-                    log.error("%s::%s: %s", self.job_name, folder_name, exc)
-                finally:
-                    self.conn.expunge()
-                    self.conn.unselect_folder()
             except Exception as exc:
                 log.error("%s::%s: %s", self.job_name, folder_name, exc)
+                return
+            try:
+                for msg_ids in utils.batched(self.conn.search(), 10):
+                    self.conn.delete_messages(msg_ids)
+            except Exception as exc:
+                log.error("%s::%s: %s", self.job_name, folder_name, exc)
+            finally:
+                try:
+                    self.conn.expunge()
+                except Exception as exc:
+                    log.error("%s::%s: not expunged: %s", self.job_name, folder_name, exc)
+                try:
+                    self.conn.unselect_folder()
+                except Exception as exc:
+                    log.error("%s::%s: not unselected: %s", self.job_name, folder_name, exc)
 
     def _search_folder(self, above_uid: int | None = None) -> list[int]:
         """Search the selected folder, from a UID watermark where there is one."""

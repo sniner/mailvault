@@ -996,6 +996,40 @@ class TestClearFolder:
         # Should not raise
         client._clear_folder("NonExistent")
 
+    def test_an_expunge_that_fails_does_not_cost_the_unselect(self):
+        # Otherwise the connection goes back with the folder still selected, and
+        # the next SELECT is the one that looks like the problem.
+        conn = _make_mock_conn()
+        conn.search.return_value = [1]
+        conn.expunge.side_effect = Exception("server said no")
+        client = _make_client(conn=conn)
+
+        client._clear_folder("Trash")
+
+        conn.unselect_folder.assert_called_once()
+
+    def test_a_folder_that_breaks_half_way_is_still_expunged_and_unselected(self):
+        # Whatever was flagged should still go, and the folder must not stay open.
+        conn = _make_mock_conn()
+        conn.search.return_value = [1, 2]
+        conn.delete_messages.side_effect = Exception("connection reset")
+        client = _make_client(conn=conn)
+
+        client._clear_folder("Trash")
+
+        conn.expunge.assert_called_once()
+        conn.unselect_folder.assert_called_once()
+
+    def test_a_folder_that_will_not_open_is_not_unselected(self):
+        conn = _make_mock_conn()
+        conn.select_folder.side_effect = Exception("folder not found")
+        client = _make_client(conn=conn)
+
+        client._clear_folder("NonExistent")
+
+        conn.expunge.assert_not_called()
+        conn.unselect_folder.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Gmail detection
