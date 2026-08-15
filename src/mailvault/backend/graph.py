@@ -22,6 +22,10 @@ log = logging.getLogger(__name__)
 GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 GRAPH_SCOPE = ["https://graph.microsoft.com/.default"]
 
+# The one host this client may carry its access token to. Taken from the base
+# URL rather than written out again, so there is nothing to keep in step.
+GRAPH_HOST = urllib.parse.urlsplit(GRAPH_BASE_URL).hostname or ""
+
 # Transient failures: throttling and gateway/backend hiccups. Graph produces
 # these regularly during long-running bulk exports, so they must be retried
 # rather than silently skipped.
@@ -79,6 +83,31 @@ class _DeltaExpired(Exception):
     """Graph refused the delta link it gave us; the round cannot be continued."""
 
 
+def _host_of(url: str) -> str:
+    """The host a URL names, for a message that must not repeat the URL itself.
+
+    A delta link carries a continuation token in its query string, so it does
+    not belong in a log line. The host is the part worth reading anyway.
+    """
+    return urllib.parse.urlsplit(url).netloc or "nowhere in particular"
+
+
+def _is_graph_url(url: str) -> bool:
+    """Whether a URL may be requested with this client's access token.
+
+    The token sits on the `httpx.Client`, not on the individual call, so every
+    request carries it to whatever host the URL names. Nearly all of them are
+    built from `GRAPH_BASE_URL` and are therefore safe by construction -- but
+    two are not. `@odata.nextLink` comes out of a response body, and the delta
+    link comes back out of a head file, which lives in the archive: on a network
+    share, per the README, opened by more than one installation. A head file
+    somebody edited would hand this mailbox's OAuth token to a server of their
+    choosing, and the request would look entirely ordinary from here.
+    """
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme == "https" and (parts.hostname or "").lower() == GRAPH_HOST
+
+
 def _delta_point(resume: dict | None) -> tuple[str, datetime | None] | None:
     """Read this backend's own resume point, or None for anything else.
 
@@ -94,6 +123,16 @@ def _delta_point(resume: dict | None) -> tuple[str, datetime | None] | None:
     link = resume.get("delta_link")
     if not isinstance(link, str) or not link:
         log.warning("resume point %r has no usable delta link, reading in full", resume)
+        return None
+    if not _is_graph_url(link):
+        # Refused here rather than at the request, so it takes the path a
+        # worthless resume point already has: read the folder in full. Nothing
+        # is lost but a round of downloading.
+        log.warning(
+            "resume point names %s and not %s, reading in full",
+            _host_of(link),
+            GRAPH_HOST,
+        )
         return None
     return link, _parse_graph_datetime(resume.get("issued"))
 
@@ -250,7 +289,18 @@ class MSGraphClient:
         Connection/timeout errors and the status codes in RETRY_STATUS are retried
         with exponential backoff, up to `max_retries` times. A 401 triggers a single
         token refresh which does not count against the retry budget.
+
+        Every URL passes `_is_graph_url` first. The check belongs here because
+        this is the one place all of them come together -- the ones built from
+        `GRAPH_BASE_URL`, the `@odata.nextLink` out of a response, and the delta
+        link out of a head file -- and the access token is on the client, so it
+        would go wherever any of them pointed.
         """
+        if not _is_graph_url(url):
+            raise base.MailboxError(
+                f"refusing to send the access token to {_host_of(url)}:"
+                f" mail is only ever asked of {GRAPH_HOST}"
+            )
         attempt = 0
         refreshed = False
         while True:

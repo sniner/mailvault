@@ -13,6 +13,10 @@ import pytest
 
 from mailvault.backend import base, graph
 
+# Every URL these tests hand to the client has to be one it may carry the
+# access token to -- the client refuses anything else, and so does Graph.
+GRAPH = graph.GRAPH_BASE_URL
+
 
 @dataclasses.dataclass
 class _Harness:
@@ -113,47 +117,47 @@ class TestRequestRetry:
             monkeypatch,
             [httpx.Response(504), httpx.Response(200, json={"ok": True})],
         )
-        resp = h.client._request("GET", "https://example.invalid/msg")
+        resp = h.client._request("GET", f"{GRAPH}/msg")
         assert resp.status_code == 200
         assert h.request.call_count == 2
 
     @pytest.mark.parametrize("status", sorted(graph.RETRY_STATUS))
     def test_all_transient_states_are_retried(self, monkeypatch, status):
         h = _make_client(monkeypatch, [httpx.Response(status), httpx.Response(200)])
-        assert h.client._request("GET", "https://example.invalid/msg").status_code == 200
+        assert h.client._request("GET", f"{GRAPH}/msg").status_code == 200
         assert h.request.call_count == 2
 
     def test_permanent_error_is_not_retried(self, monkeypatch):
         h = _make_client(monkeypatch, [httpx.Response(404), httpx.Response(200)])
-        assert h.client._request("GET", "https://example.invalid/msg").status_code == 404
+        assert h.client._request("GET", f"{GRAPH}/msg").status_code == 404
         assert h.request.call_count == 1
 
     def test_retries_are_limited(self, monkeypatch):
         h = _make_client(monkeypatch, [httpx.Response(504)] * 5, max_retries=2)
-        resp = h.client._request("GET", "https://example.invalid/msg")
+        resp = h.client._request("GET", f"{GRAPH}/msg")
         # The caller sees the last failure and can raise_for_status() on it.
         assert resp.status_code == 504
         assert h.request.call_count == 3
 
     def test_no_retries_when_disabled(self, monkeypatch):
         h = _make_client(monkeypatch, [httpx.Response(504)], max_retries=0)
-        assert h.client._request("GET", "https://example.invalid/msg").status_code == 504
+        assert h.client._request("GET", f"{GRAPH}/msg").status_code == 504
         assert h.request.call_count == 1
 
     def test_transport_error_is_retried(self, monkeypatch):
         h = _make_client(monkeypatch, [httpx.ConnectTimeout("timed out"), httpx.Response(200)])
-        assert h.client._request("GET", "https://example.invalid/msg").status_code == 200
+        assert h.client._request("GET", f"{GRAPH}/msg").status_code == 200
         assert h.request.call_count == 2
 
     def test_transport_error_propagates_after_last_attempt(self, monkeypatch):
         h = _make_client(monkeypatch, [httpx.ConnectTimeout("timed out")] * 4, max_retries=2)
         with pytest.raises(httpx.ConnectTimeout):
-            h.client._request("GET", "https://example.invalid/msg")
+            h.client._request("GET", f"{GRAPH}/msg")
         assert h.request.call_count == 3
 
     def test_unauthorized_triggers_single_refresh(self, monkeypatch):
         h = _make_client(monkeypatch, [httpx.Response(401), httpx.Response(200)])
-        assert h.client._request("GET", "https://example.invalid/msg").status_code == 200
+        assert h.client._request("GET", f"{GRAPH}/msg").status_code == 200
         h.refresh.assert_called_once()
 
     def test_refresh_does_not_consume_retry_budget(self, monkeypatch):
@@ -168,13 +172,13 @@ class TestRequestRetry:
             ],
             max_retries=2,
         )
-        assert h.client._request("GET", "https://example.invalid/msg").status_code == 200
+        assert h.client._request("GET", f"{GRAPH}/msg").status_code == 200
         assert h.request.call_count == 4
 
     def test_repeated_unauthorized_is_returned(self, monkeypatch):
         # A second 401 means the fresh token is not the problem: give up.
         h = _make_client(monkeypatch, [httpx.Response(401), httpx.Response(401)])
-        assert h.client._request("GET", "https://example.invalid/msg").status_code == 401
+        assert h.client._request("GET", f"{GRAPH}/msg").status_code == 401
         assert h.request.call_count == 2
 
 
@@ -187,7 +191,7 @@ def _json(status: int, payload: dict) -> httpx.Response:
     """A JSON response that survives raise_for_status(), which needs its request."""
     return httpx.Response(
         status,
-        request=httpx.Request("GET", "https://graph.test"),
+        request=httpx.Request("GET", GRAPH),
         json=payload,
     )
 
@@ -200,12 +204,12 @@ class TestDeltaPoint:
         point = graph._delta_point(
             {
                 "kind": graph.DELTA_RESUME_KIND,
-                "delta_link": "https://graph.test/delta?$deltatoken=abc",
+                "delta_link": f"{GRAPH}/delta?$deltatoken=abc",
                 "issued": issued.isoformat(),
             }
         )
 
-        assert point == ("https://graph.test/delta?$deltatoken=abc", issued)
+        assert point == (f"{GRAPH}/delta?$deltatoken=abc", issued)
 
     def test_a_point_from_another_backend_is_refused(self, caplog):
         with caplog.at_level(logging.INFO):
@@ -221,20 +225,75 @@ class TestDeltaPoint:
         point = graph._delta_point(
             {
                 "kind": graph.DELTA_RESUME_KIND,
-                "delta_link": "https://graph.test/d",
+                "delta_link": f"{GRAPH}/d",
                 "issued": "yesterday",
             }
         )
 
-        assert point == ("https://graph.test/d", None)
+        assert point == (f"{GRAPH}/d", None)
 
     def test_a_point_without_an_issue_time_still_works(self):
         """Only the log line about a rejected token needs it."""
         point = graph._delta_point(
-            {"kind": graph.DELTA_RESUME_KIND, "delta_link": "https://graph.test/d"}
+            {"kind": graph.DELTA_RESUME_KIND, "delta_link": f"{GRAPH}/d"}
         )
 
-        assert point == ("https://graph.test/d", None)
+        assert point == (f"{GRAPH}/d", None)
+
+    def test_a_point_naming_another_host_is_refused(self, caplog):
+        # The point comes out of a head file, and a head file lives in the
+        # archive -- on a share, opened by more than one installation. The
+        # access token is on the client, so it goes wherever the URL points.
+        with caplog.at_level(logging.WARNING):
+            point = graph._delta_point(
+                {
+                    "kind": graph.DELTA_RESUME_KIND,
+                    "delta_link": "https://mail.example.com/collect?$deltatoken=abc",
+                }
+            )
+
+        assert point is None, "and the folder is read in full instead"
+        assert "mail.example.com" in caplog.text
+        assert "$deltatoken=abc" not in caplog.text, "the token itself is not logged"
+
+
+class TestOnlyGraphIsAskedForMail:
+    """The bearer token is on the client, so every URL decides where it goes."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            f"{GRAPH}/users/u/messages",
+            "https://graph.microsoft.com/beta/users/u/messages",
+            "https://GRAPH.microsoft.com/v1.0/x",
+        ],
+    )
+    def test_graph_itself_is_fine(self, url):
+        assert graph._is_graph_url(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://mail.example.com/v1.0/x",
+            # The host is what counts, not what the string starts with.
+            "https://graph.microsoft.com.example.com/v1.0/x",
+            # Everything before the @ is userinfo; the host is example.com.
+            "https://graph.microsoft.com@example.com/v1.0/x",
+            "http://graph.microsoft.com/v1.0/x",
+            "not a url at all",
+            "",
+        ],
+    )
+    def test_anything_else_is_not(self, url):
+        assert graph._is_graph_url(url) is False
+
+    def test_a_request_elsewhere_is_refused_before_it_is_sent(self, monkeypatch):
+        h = _make_client(monkeypatch, [_json(200, {})])
+
+        with pytest.raises(base.MailboxError, match="refusing to send the access token"):
+            h.client._request("GET", "https://mail.example.com/collect")
+
+        h.request.assert_not_called()
 
 
 class TestDeltaToken:
@@ -245,17 +304,17 @@ class TestDeltaToken:
 
     def test_an_incremental_round_records_even_when_nothing_changed(self):
         """The server says "caught up"; walking the folder again would be waste."""
-        token = _delta_token_for("https://graph.test/new", previous=("old", None), stored=0)
+        token = _delta_token_for(f"{GRAPH}/new", previous=("old", None), stored=0)
 
         assert token is not None
-        assert token["delta_link"] == "https://graph.test/new"
+        assert token["delta_link"] == f"{GRAPH}/new"
 
     def test_a_first_round_that_archived_nothing_earns_nothing(self):
         """The Proton Bridge shape, in Graph terms: no mail shown, no claim made."""
-        assert _delta_token_for("https://graph.test/new", previous=None, stored=0) is None
+        assert _delta_token_for(f"{GRAPH}/new", previous=None, stored=0) is None
 
     def test_a_first_round_that_archived_something_records(self):
-        token = _delta_token_for("https://graph.test/new", previous=None, stored=1)
+        token = _delta_token_for(f"{GRAPH}/new", previous=None, stored=1)
 
         assert token is not None
         assert token["kind"] == graph.DELTA_RESUME_KIND
@@ -279,7 +338,7 @@ class TestDeltaRound:
     def test_the_opening_request_carries_the_query_options(self, monkeypatch):
         harness = self._client(
             monkeypatch,
-            [_json(200, {"value": [], "@odata.deltaLink": "https://graph.test/d"})],
+            [_json(200, {"value": [], "@odata.deltaLink": f"{GRAPH}/d"})],
         )
 
         harness.client._delta_round("INBOX", "folder-id", None)
@@ -293,13 +352,13 @@ class TestDeltaRound:
         """Graph encodes the query options into the token, so nothing is re-added."""
         harness = self._client(
             monkeypatch,
-            [_json(200, {"value": [], "@odata.deltaLink": "https://graph.test/d2"})],
+            [_json(200, {"value": [], "@odata.deltaLink": f"{GRAPH}/d2"})],
         )
 
-        harness.client._delta_round("INBOX", "folder-id", ("https://graph.test/d1", None))
+        harness.client._delta_round("INBOX", "folder-id", (f"{GRAPH}/d1", None))
 
         call = harness.request.call_args
-        assert call.args[1] == "https://graph.test/d1"
+        assert call.args[1] == f"{GRAPH}/d1"
         assert call.kwargs["params"] is None
 
     def test_pages_are_followed_until_the_delta_link(self, monkeypatch):
@@ -308,11 +367,11 @@ class TestDeltaRound:
             [
                 _json(
                     200,
-                    {"value": [{"id": "a"}], "@odata.nextLink": "https://graph.test/p2"},
+                    {"value": [{"id": "a"}], "@odata.nextLink": f"{GRAPH}/p2"},
                 ),
                 _json(
                     200,
-                    {"value": [{"id": "b"}], "@odata.deltaLink": "https://graph.test/d"},
+                    {"value": [{"id": "b"}], "@odata.deltaLink": f"{GRAPH}/d"},
                 ),
             ],
         )
@@ -320,7 +379,7 @@ class TestDeltaRound:
         items, link = harness.client._delta_round("INBOX", "folder-id", None)
 
         assert [i["id"] for i in items] == ["a", "b"]
-        assert link == "https://graph.test/d"
+        assert link == f"{GRAPH}/d"
 
     def test_removed_entries_are_skipped(self, monkeypatch):
         """They arrive for a deletion *or a move out*, asked for or not."""
@@ -334,7 +393,7 @@ class TestDeltaRound:
                             {"id": "a"},
                             {"id": "b", "@removed": {"reason": "deleted"}},
                         ],
-                        "@odata.deltaLink": "https://graph.test/d",
+                        "@odata.deltaLink": f"{GRAPH}/d",
                     },
                 )
             ],
@@ -357,7 +416,7 @@ class TestDeltaRound:
             harness.client._delta_round(
                 "INBOX",
                 "folder-id",
-                ("https://graph.test/stale", issued),
+                (f"{GRAPH}/stale", issued),
             )
 
         assert "delta token rejected (HTTP 410)" in caplog.text
@@ -376,7 +435,7 @@ class TestDeltaRound:
             MagicMock(),
             resume={
                 "kind": graph.DELTA_RESUME_KIND,
-                "delta_link": "https://graph.test/stale",
+                "delta_link": f"{GRAPH}/stale",
             },
         )
 
@@ -395,7 +454,7 @@ class TestDeltaRound:
             harness.client._delta_round(
                 "INBOX",
                 "folder-id",
-                ("https://graph.test/stale", None),
+                (f"{GRAPH}/stale", None),
             )
 
         assert "HTTP 404" in caplog.text
@@ -411,7 +470,7 @@ class TestDeltaRound:
             harness.client._delta_round(
                 "INBOX",
                 "folder-id",
-                ("https://graph.test/stale", None),
+                (f"{GRAPH}/stale", None),
             )
 
     def test_a_point_from_another_backend_is_a_lost_point(self, monkeypatch):
@@ -439,7 +498,7 @@ class TestDeltaRound:
 
 def _resp(status: int, **kwargs) -> httpx.Response:
     """A response that survives raise_for_status(), which needs its request."""
-    return httpx.Response(status, request=httpx.Request("POST", "https://graph.test"), **kwargs)
+    return httpx.Response(status, request=httpx.Request("POST", GRAPH), **kwargs)
 
 
 # ---------------------------------------------------------------------------

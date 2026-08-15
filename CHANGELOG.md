@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- **The Microsoft 365 access token only ever goes to Graph.** A URL is checked against Graph's
+  own host before the request is sent. Two of them do not come from mailvault: `@odata.nextLink`
+  arrives in a response body, and the delta link that resumes a folder comes back out of a head
+  file in the archive -- which the README puts on a network share, opened by more than one
+  installation. The bearer token sits on the HTTP client and therefore travels to whatever host a
+  URL names, so an edited head file could have pointed this mailbox's OAuth token at a server of
+  someone else's choosing. Such a resume point is now treated as worthless and the folder is read
+  in full, which is a path that already existed; a request anywhere else is refused outright. The
+  log line names the host and not the link, because the link carries a token of its own
+
 - **`archive import --move` steps over a source file it cannot delete, instead of ending
   there.** One file somebody had open, or a directory with the wrong write bit, took the whole
   import down: the error came out of the deletion, past the point where the mail was stored and
