@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **`[job]` where `[[job]]` was meant is now said in those words.** Both spellings are valid
+  TOML, and the single brackets make one table where mailvault expects a list of them -- so the
+  configuration parsed, and what came out was `'str' object has no attribute 'get'` and a
+  traceback that named neither the file nor the bracket. It is a `ConfigError` now, saying which
+  bracket to write and that there is one section per mailbox. A `job` key holding a value rather
+  than a section is named the same way
+
 - **Gmail's trash is emptied after the mail has been deleted, not before.** A job with
   `trash_folder` frees the quota it was set up to free: Gmail answers an expunge by moving the
   message into the trash, where it goes on counting against the mailbox, and emptying that folder

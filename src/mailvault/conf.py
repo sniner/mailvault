@@ -224,6 +224,45 @@ class JobConfig:
         return remaining
 
 
+def _job_tables(data: dict) -> list[dict]:
+    """The `[[job]]` sections of a configuration, or an error naming the bracket.
+
+    `[job]` where `[[job]]` was meant is the commonest mistake TOML has to offer,
+    and nothing about it looks wrong: both spellings parse. The single brackets
+    make one table instead of a list of them, iterating a table hands out its
+    *keys*, and what arrived here was the string `server` -- which failed with
+    `'str' object has no attribute 'get'`, naming neither the file nor the
+    bracket that caused it.
+    """
+    section = data.get("job", [])
+    if isinstance(section, dict):
+        raise ConfigError(
+            "'[job]' is a single table, but a configuration holds a list of jobs -- "
+            "write '[[job]]' with double brackets, once per mailbox"
+        )
+    if not isinstance(section, list):
+        raise ConfigError(f"'job' must be a list of '[[job]]' sections, not {_named(section)}")
+    for entry in section:
+        if not isinstance(entry, dict):
+            raise ConfigError(
+                f"a job must be a '[[job]]' section, but one of them is {_named(entry)}"
+            )
+    return section
+
+
+def _named(value: object) -> str:
+    """What a TOML value is, in the words the file uses for it."""
+    names = {
+        bool: "a boolean",
+        int: "a number",
+        float: "a number",
+        str: "a string",
+        list: "a list",
+        dict: "a table",
+    }
+    return names.get(type(value), f"a {type(value).__name__}")
+
+
 @dataclasses.dataclass
 class Config:
     jobs: list[JobConfig] = dataclasses.field(default_factory=list)
@@ -244,7 +283,7 @@ class Config:
             log.warning("Unknown global config fields: %s", ", ".join(sorted(unknown_global)))
 
         jobs = []
-        for job_data in data.get("job", []):
+        for job_data in _job_tables(data):
             name = job_data.get("name", ".")
             jobs.append(
                 JobConfig.from_dict(

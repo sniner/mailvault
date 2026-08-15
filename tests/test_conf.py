@@ -318,6 +318,28 @@ class TestTomlConfig:
         assert config.jobs == []
 
 
+class TestTheJobSectionIsAList:
+    """`[job]` for `[[job]]` is the commonest TOML mistake, and it parses."""
+
+    def test_single_brackets_name_the_bracket(self, tmp_path):
+        toml_file = tmp_path / "test.toml"
+        toml_file.write_text('[job]\nname = "gmail"\nserver = "imap.gmail.com"\n')
+        with pytest.raises(conf.ConfigError, match=r"\[\[job\]\]"):
+            conf.load(toml_file)
+
+    def test_a_job_that_is_not_a_table_is_named_too(self, tmp_path):
+        toml_file = tmp_path / "test.toml"
+        toml_file.write_text('job = ["gmail"]\n')
+        with pytest.raises(conf.ConfigError, match="a string"):
+            conf.load(toml_file)
+
+    def test_a_job_key_that_is_a_value_is_named_too(self, tmp_path):
+        toml_file = tmp_path / "test.toml"
+        toml_file.write_text("job = 3\n")
+        with pytest.raises(conf.ConfigError, match="a number"):
+            conf.load(toml_file)
+
+
 def test_a_retired_option_is_reported_rather_than_ignored(tmp_path, caplog):
     """A dropped field is otherwise indistinguishable from a typo."""
     path = tmp_path / "old.toml"
