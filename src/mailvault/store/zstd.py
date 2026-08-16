@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import shutil
 import sys
+import types
 import typing
 
 _zstd: typing.Any
@@ -43,6 +44,53 @@ else:
         _BACKEND = None
 
 
+class ByteReader(typing.Protocol):
+    """What the store needs of a reader, and nothing more.
+
+    Narrower than `BinaryIO` on purpose, because the two backends have nothing
+    wider in common: `compression.zstd.ZstdFile` is a full file object, while
+    `zstandard`'s `stream_reader` is an object of its own that happens to read.
+    A plain `open(..., "rb")` handle satisfies this as well, which is what lets
+    the store hold a compressed and an uncompressed entry in the same variable.
+
+    Without it the whole read path was `Any` -- `reading`, `_open_entry`,
+    `read_header_of`, and therefore every database build -- and a checker had
+    nothing to say about any of it.
+    """
+
+    def read(self, size: int = ..., /) -> bytes: ...
+
+    def close(self) -> None: ...
+
+    def __enter__(self) -> ByteReader: ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: types.TracebackType | None,
+        /,
+    ) -> object: ...
+
+
+class ByteWriter(typing.Protocol):
+    """The writing half of `ByteReader`, for the same reason."""
+
+    def write(self, data: bytes, /) -> object: ...
+
+    def close(self) -> None: ...
+
+    def __enter__(self) -> ByteWriter: ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: types.TracebackType | None,
+        /,
+    ) -> object: ...
+
+
 def available() -> bool:
     """True when some zstd implementation is importable."""
     return _BACKEND is not None
@@ -60,7 +108,7 @@ def require() -> None:
         )
 
 
-def open_writer(fileobj: typing.BinaryIO) -> typing.Any:
+def open_writer(fileobj: typing.BinaryIO) -> ByteWriter:
     """A context-managed writer that compresses into an already-open file object.
 
     ``closefd=False`` keeps the package backend from closing the caller's file
@@ -72,7 +120,7 @@ def open_writer(fileobj: typing.BinaryIO) -> typing.Any:
     return _zstd.ZstdCompressor().stream_writer(fileobj, closefd=False)
 
 
-def open_reader(fileobj: typing.BinaryIO) -> typing.Any:
+def open_reader(fileobj: typing.BinaryIO) -> ByteReader:
     """A context-managed reader that decompresses from an already-open file object."""
     require()
     if _BACKEND == "stdlib":

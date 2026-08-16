@@ -16,6 +16,7 @@ import re
 import ssl
 import sys
 import threading
+import typing
 from typing import Any
 
 import imapclient
@@ -390,12 +391,26 @@ class ImapClient:
                 except Exception as exc:
                     log.error("%s::%s: not unselected: %s", self.job_name, folder_name, exc)
 
+    def _search(self, criteria: list[str]) -> list[int]:
+        """Run one SEARCH, and get the UIDs back as the numbers they are.
+
+        `imapclient.search` carries no annotations at all, so a checker infers
+        `criteria: str` from its `"ALL"` default and `list[int] | list[bytes]`
+        for what comes back. Neither is the contract: the library's own
+        docstring asks for a sequence of criteria items, and bytes come back
+        only from a MODSEQ search, which this never asks for.
+
+        Both answered here, once, and each says which complaint it answers --
+        a bare ignore would also silence the next, unrelated one.
+        """
+        found = self.conn.search(criteria)  # type: ignore[arg-type]
+        return typing.cast(list[int], found)
+
     def _search_folder(self, above_uid: int | None = None) -> list[int]:
         """Search the selected folder, from a UID watermark where there is one."""
         if above_uid is None:
-            return self.conn.search(["NOT", "DELETED"])  # type: ignore
-        criteria = ["NOT", "DELETED", "UID", f"{above_uid + 1}:*"]
-        found: list[int] = self.conn.search(criteria)  # type: ignore
+            return self._search(["NOT", "DELETED"])
+        found = self._search(["NOT", "DELETED", "UID", f"{above_uid + 1}:*"])
         # RFC 3501 makes a UID range unordered, and says so explicitly: the last
         # message is included even when its UID is below the lower bound. So
         # `4711:*` on a folder whose newest message is 4700 comes back with 4700.

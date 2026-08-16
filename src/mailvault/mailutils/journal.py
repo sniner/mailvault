@@ -9,20 +9,21 @@ such.
 
 from __future__ import annotations
 
-import email.parser
+import collections.abc
+import email.message
 import email.policy
-import io
 import logging
+import typing
 
-from mailvault.mailutils.reading import mail_reader
+from mailvault.mailutils.reading import decode_email
 
 log = logging.getLogger(__name__)
 
 
-def unwrap_exchange_journal_item(msg: io.IOBase | bytes) -> bytes | None:
+def unwrap_exchange_journal_item(msg: typing.BinaryIO | bytes) -> bytes | None:
     """Returns None if not a journal item. Binary RFC822 message otherwise."""
 
-    def as_bytes(m):
+    def as_bytes(m: email.message.Message) -> bytes | None:
         """The attached message written back out, or None if it cannot be.
 
         Both attempts are the same one twice, once with a policy that may hold
@@ -41,14 +42,21 @@ def unwrap_exchange_journal_item(msg: io.IOBase | bytes) -> bytes | None:
             log.debug("as_bytes: email.policy.SMTPUTF8 failed")
         return None
 
-    def rfc822_attachment(parts, idx):
-        submsgs = [as_bytes(m) for m in parts[idx].get_payload()]
+    def rfc822_attachment(
+        parts: collections.abc.Sequence[email.message.Message],
+        idx: int,
+    ) -> bytes | None:
+        # `get_payload()` returns the parts of a multipart, the string of a
+        # simple body, or None -- which of them depends on the message. This
+        # one is a `message/rfc822` part, whose payload is always the single
+        # message inside it.
+        payload = typing.cast(list[email.message.Message], parts[idx].get_payload())
+        submsgs = [as_bytes(m) for m in payload]
         if len(submsgs) == 1:
             return submsgs[0]
         return None
 
-    reader = mail_reader(msg)
-    cover = email.parser.BytesParser(policy=email.policy.default).parse(reader)  # type: ignore
+    cover = decode_email(msg)
     parts = [part for part in cover.walk() if part.get_content_type() == "message/rfc822"]
 
     # WORKAROUND: Microsoft Exchange sends journal messages using the original
@@ -66,5 +74,5 @@ def unwrap_exchange_journal_item(msg: io.IOBase | bytes) -> bytes | None:
             submsg = rfc822_attachment(parts, 1)
             if submsg:
                 log.warning("Message was rescued from 'Undeliverable' stupidity")
-        return submsg  # type: ignore
+        return submsg
     return None

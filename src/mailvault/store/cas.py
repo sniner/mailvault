@@ -35,7 +35,7 @@ import os
 import pathlib
 import re
 import time
-from typing import Any
+import typing
 
 from mailvault import utils
 from mailvault.store import atomic, zstd
@@ -288,15 +288,27 @@ class ContentAddressedStorage:
     def _path(self, hashval: str) -> pathlib.Path:
         return pathlib.Path(self.root_dir, *self._subdirs(hashval))
 
-    def _reader(self, data: io.IOBase | bytes) -> io.IOBase:
+    def _reader(self, data: io.IOBase | bytes) -> io.BufferedIOBase:
+        """A rewindable stream of bytes over whatever was handed in.
+
+        `io.IOBase` is what the callers may pass and not what the store can work
+        with: it promises `seek` but not `read`, and everything downstream does
+        both -- hash the content, then rewind and write it. A stream that cannot
+        be rewound is read into memory once, which is the only way to hash it
+        and still have it.
+        """
+        reader: io.BufferedIOBase
         if isinstance(data, bytes):
             reader = io.BytesIO(data)
         elif isinstance(data, io.IOBase):
-            if data.seekable():
+            if isinstance(data, io.BufferedIOBase) and data.seekable():
                 reader = data
                 reader.seek(0)
             else:
-                blob = data.read()
+                # An IOBase that is not seekable is a raw or buffered stream in
+                # every case that reaches here; `read` is what makes it one, and
+                # its absence is caught below either way.
+                blob = typing.cast(io.RawIOBase, data).read()
                 if not isinstance(blob, bytes):
                     raise TypeError("read() has to return bytes")
                 reader = io.BytesIO(blob)
@@ -304,7 +316,11 @@ class ContentAddressedStorage:
             raise TypeError("instance of bytes or io.IOBase expected")
         return reader
 
-    def _copy(self, reader: Any, write: collections.abc.Callable[[bytes], object]) -> None:
+    def _copy(
+        self,
+        reader: zstd.ByteReader,
+        write: collections.abc.Callable[[bytes], object],
+    ) -> None:
         """Pump everything from `reader` into `write`, block by block.
 
         Takes the bound method rather than the object, so the same loop feeds a
@@ -313,7 +329,7 @@ class ContentAddressedStorage:
         while block := reader.read(self.blocksize):
             write(block)
 
-    def _hashval(self, reader: io.IOBase) -> str:
+    def _hashval(self, reader: io.BufferedIOBase) -> str:
         m = self.hashfactory()
         self._copy(reader, m.update)
         reader.seek(0)
@@ -380,7 +396,7 @@ class ContentAddressedStorage:
         return AddStatus.NEW, hashval, file
 
     @contextlib.contextmanager
-    def _reading(self, path: pathlib.Path) -> collections.abc.Iterator[Any]:
+    def _reading(self, path: pathlib.Path) -> collections.abc.Iterator[zstd.ByteReader]:
         """Yield a reader over an entry, decompressing `.zst` transparently."""
         if path.suffix == ".zst":
             with path.open("rb") as f, zstd.open_reader(f) as reader:
@@ -389,7 +405,7 @@ class ContentAddressedStorage:
             with path.open("rb") as f:
                 yield f
 
-    def _open_entry(self, hashval: str) -> tuple[Any, bool]:
+    def _open_entry(self, hashval: str) -> tuple[io.BufferedReader, bool]:
         """Open the entry filed under `hashval`, whichever of its names it has.
 
         A store id does not name a file: it names two candidates, `<hash>.eml`
@@ -426,7 +442,7 @@ class ContentAddressedStorage:
         raise FileNotFoundError(f"{hashval}: no entry under this id in {self.root_dir}")
 
     @contextlib.contextmanager
-    def reading(self, hashval: str) -> collections.abc.Iterator[Any]:
+    def reading(self, hashval: str) -> collections.abc.Iterator[zstd.ByteReader]:
         """Yield a reader over the entry with this id.
 
         For everyone who has a store id and wants what is behind it: where the
@@ -449,7 +465,7 @@ class ContentAddressedStorage:
         finally:
             handle.close()
 
-    def _read_until_header_end(self, reader: Any, limit: int) -> bytes:
+    def _read_until_header_end(self, reader: zstd.ByteReader, limit: int) -> bytes:
         """Pull blocks off `reader` until the headers are complete."""
         buf = bytearray()
         while len(buf) < limit:
