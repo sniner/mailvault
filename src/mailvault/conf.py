@@ -85,7 +85,7 @@ def _resolve_values(where: str, data: dict, allow_exec: bool = False) -> dict:
 
     cmd_keys = [k for k in resolved if k.endswith("_cmd")]
     for cmd_key in cmd_keys:
-        target_key = cmd_key[:-4]
+        target_key = cmd_key.removesuffix("_cmd")
         cmd = resolved.pop(cmd_key)
         if not isinstance(cmd, str) or not cmd.strip():
             continue

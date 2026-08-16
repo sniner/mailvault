@@ -85,6 +85,11 @@ _HEAD_INDEX_DDL = """
 REBUILD_COMMAND = "mailvault db create --force"
 UPDATE_COMMAND = "mailvault db update"
 
+# A sentinel, because None is a legitimate recorded value: a place whose chain
+# has no head yet is recorded with one, and it must not compare equal to a place
+# the projection has never seen.
+_MISSING = object()
+
 
 @dataclasses.dataclass
 class Freshness:
@@ -228,12 +233,6 @@ def freshness(store_path: pathlib.Path, db_path: pathlib.Path) -> Freshness:
             result.behind.append(heads.place_name(*place))
     result.behind.sort()
     return result
-
-
-# A sentinel, because None is a legitimate recorded value: a place whose chain
-# has no head yet is recorded with one, and it must not compare equal to a place
-# the projection has never seen.
-_MISSING = object()
 
 
 def _mark_logs_applied(db: index_db.IndexDatabaseConnection, paths: list[pathlib.Path]) -> None:

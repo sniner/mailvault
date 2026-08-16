@@ -223,10 +223,10 @@ class DocuwareMailArchive(ExternalMailArchive):
         """
         for path, _, files in os.walk(self.root_dir):
             eml = [pathlib.Path(path, f) for f in files if f.endswith(".eml")]
-            if len(eml) > 1:
-                eml_file = max([(f.stat().st_size, f) for f in eml], key=lambda x: x[0])[1]
-            elif len(eml) == 1:
-                eml_file = eml[0]
-            else:
+            if not eml:
                 continue
-            yield eml_file
+            # One directory is one message; where a Docuware export left more
+            # than one file, the largest is the message and the rest are its
+            # fragments. `max` takes the key it is given, so there is no tuple to
+            # build and no `[1]` to remember at the end.
+            yield max(eml, key=lambda f: f.stat().st_size)

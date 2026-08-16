@@ -169,7 +169,7 @@ def _run_job(
     destination: pathlib.Path | None = None,
     places: jobs.ArchivedPlaces | None = None,
 ) -> None:
-    log.info(f"Job item: {job.name}")
+    log.info("Job: %s", job.name)
 
     if args.command == "folders":
         jobs.folder_list(job)
@@ -285,12 +285,12 @@ def _external(path: pathlib.Path, docuware: bool = False) -> jobs.ExternalMailAr
 def _human_size(size: int) -> str:
     units = ["bytes", "KiB", "MiB", "GiB", "TiB"]
     value = float(size)
-    unit = units[0]
-    for unit in units:
-        if value < 1024 or unit == units[-1]:
-            break
+    for unit in units[:-1]:
+        if value < 1024:
+            return f"{value:.1f} {unit}"
         value /= 1024
-    return f"{value:.1f} {unit}"
+    # The largest unit is where it stops, however big the number gets.
+    return f"{value:.1f} {units[-1]}"
 
 
 def report_init(archive: pathlib.Path, result: jobs.InitResult) -> int:

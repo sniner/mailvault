@@ -309,11 +309,10 @@ class LogWriter:
         labels the server reported -- and the same place named twice would file
         the message twice in one file.
         """
-        names: list[str | None] = []
-        for folder in folders:
-            name = as_text(folder)
-            if name not in names:
-                names.append(name)
+        # `dict.fromkeys` keeps the first of each and the order they came in,
+        # which a `not in` over a growing list also did -- at a comparison per
+        # name already seen.
+        names = list(dict.fromkeys(as_text(folder) for folder in folders))
         for name in names or [None]:
             self._places.setdefault((mailbox, name), []).append(store_id)
 

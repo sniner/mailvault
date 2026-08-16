@@ -85,9 +85,19 @@ class DatabaseConnection:
         claim about a database that no longer says so.
         """
 
-    def execute(self, statement: str, *args: Any) -> sqlite3.Cursor:
+    def execute(
+        self,
+        statement: str,
+        parameters: collections.abc.Sequence[Any] | collections.abc.Mapping[str, Any] = (),
+    ) -> sqlite3.Cursor:
+        """Run one statement, with its parameters bound rather than interpolated.
+
+        Named rather than `*args`: sqlite3 takes exactly one parameter argument,
+        and a signature that accepts any number lets a call through that only
+        fails once it is run.
+        """
         with self.lock:
-            return self.dbconn.execute(statement, *args)
+            return self.dbconn.execute(statement, parameters)
 
     def commit(self) -> None:
         with self.lock:
