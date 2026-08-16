@@ -15,6 +15,7 @@ import dataclasses
 import logging
 import pathlib
 from datetime import UTC, datetime
+from typing import Any
 
 from mailvault import conf, mailutils, utils
 from mailvault.backend import base, session
@@ -27,7 +28,11 @@ from mailvault.store import cas, heads, metalog
 log = logging.getLogger(__name__)
 
 
-def _resume_point(heads_root: pathlib.Path, job_name: str, folder: str) -> dict | None:
+def _resume_point(
+    heads_root: pathlib.Path,
+    job_name: str,
+    folder: str,
+) -> dict[str, Any] | None:
     """Where the next pass over this folder carries on, or None to read it all.
 
     The value is handed to the backend as it was stored. Nothing here knows what
@@ -42,7 +47,7 @@ def _record_pass(
     job_name: str,
     folder: str,
     last_run: datetime,
-    resume: dict | None,
+    resume: dict[str, Any] | None,
     void_previous: bool = False,
 ) -> None:
     """Note that a pass read this folder, and where the next one may carry on.
@@ -240,7 +245,7 @@ def _backup_folder(
     # fact about the run and stays the wall clock. Where the *next* run resumes
     # is a claim about coverage, and that one comes back from the backend.
     sealed = seal_log(log_writer, observed_at)
-    resume: dict | None = None
+    resume: dict[str, Any] | None = None
     if result.complete and sealed:
         resume = result.resume
         if resume is None and previous is None:

@@ -17,6 +17,7 @@ import subprocess
 import tomllib
 import types
 import typing
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -74,7 +75,9 @@ def _report_unset_vars(where: str, key: str, value: str) -> None:
         )
 
 
-def _resolve_values(where: str, data: dict, allow_exec: bool = False) -> dict:
+def _resolve_values(
+    where: str, data: dict[str, Any], allow_exec: bool = False
+) -> dict[str, Any]:
     """Expand environment variables in string values and resolve *_cmd fields."""
     resolved = {}
     for key, value in data.items():
@@ -229,7 +232,7 @@ class JobConfig:
             )
 
     @classmethod
-    def from_dict(cls, name: str, data: dict, allow_exec: bool = False) -> JobConfig:
+    def from_dict(cls, name: str, data: dict[str, Any], allow_exec: bool = False) -> JobConfig:
         resolved = _resolve_values(name, data, allow_exec=allow_exec)
         resolved = cls._drop_retired_fields(name, resolved)
         fields = {f.name for f in dataclasses.fields(cls)}
@@ -241,7 +244,7 @@ class JobConfig:
         return cls(name=name, **known)
 
     @staticmethod
-    def _drop_retired_fields(name: str, data: dict) -> dict:
+    def _drop_retired_fields(name: str, data: dict[str, Any]) -> dict[str, Any]:
         """Report fields that no longer exist, rather than ignoring them quietly.
 
         A dropped field is otherwise indistinguishable from a typo, and a reader
@@ -255,7 +258,7 @@ class JobConfig:
         return remaining
 
 
-def _job_tables(data: dict) -> list[dict]:
+def _job_tables(data: dict[str, Any]) -> list[dict[str, Any]]:
     """The `[[job]]` sections of a configuration, or an error naming the bracket.
 
     `[job]` where `[[job]]` was meant is the commonest mistake TOML has to offer,
@@ -331,7 +334,7 @@ def _expected(hint: object) -> str:
     return _TYPE_WORDS.get(hint, f"a {getattr(hint, '__name__', hint)}")
 
 
-def _check_types(where: str, data: dict, hints: dict[str, object]) -> None:
+def _check_types(where: str, data: dict[str, Any], hints: dict[str, object]) -> None:
     """Refuse a value whose type is not the one its field holds.
 
     Dataclasses check nothing, and neither did `validate` -- it asks which
@@ -394,7 +397,7 @@ class Config:
     incremental: bool = True
 
     @classmethod
-    def from_toml(cls, data: dict, allow_exec: bool = False) -> Config:
+    def from_toml(cls, data: dict[str, Any], allow_exec: bool = False) -> Config:
         if "copy" in data:
             log.warning("[copy] no longer does anything -- %s", RETIRED_SECTIONS["copy"])
 

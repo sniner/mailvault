@@ -65,7 +65,7 @@ class BackupResult:
     total: int = 0
     stored: int = 0
     failed: int = 0
-    resume: dict | None = None
+    resume: dict[str, Any] | None = None
     resume_lost: bool = False
     deletable: list[Any] = dataclasses.field(default_factory=list)
 
@@ -103,7 +103,7 @@ class MailboxClient(Protocol):
         self,
         folder_name: str,
         store: cas.ContentAddressedStorage,
-        resume: dict | None = ...,
+        resume: dict[str, Any] | None = ...,
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = ...,
     ) -> BackupResult:
         """Store a folder's messages, recording each via `callback`.
@@ -152,7 +152,7 @@ class MailboxClient(Protocol):
         folder_name: str,
     ) -> collections.abc.Generator[MessageRef, None, None]: ...
 
-    def resume_point(self, folder_name: str) -> dict | None:
+    def resume_point(self, folder_name: str) -> dict[str, Any] | None:
         """A resume point over the folder as it stands right now, fetching nothing.
 
         For when a folder was brought back in step by other means and only its

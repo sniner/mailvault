@@ -38,6 +38,7 @@ import dataclasses
 import json
 import logging
 import pathlib
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class FolderState:
     """
 
     last_run: str | None = None
-    resume: dict | None = None
+    resume: dict[str, Any] | None = None
 
     def is_empty(self) -> bool:
         return self.last_run is None and self.resume is None

@@ -54,6 +54,7 @@ import logging
 import pathlib
 import re
 from datetime import datetime
+from typing import Any
 
 from mailvault import utils
 from mailvault.store import atomic
@@ -236,7 +237,7 @@ class Head:
     job: str | None
     folder: str | None
     last_run: str | None = None
-    resume: dict | None = None
+    resume: dict[str, Any] | None = None
     # The chain head of the metadata log for this place. A single hash, because
     # this file carries no integrity check of its own: everything behind that
     # hash lives in files whose names *are* their hashes, so one value here
@@ -264,7 +265,7 @@ class Head:
             return None
         return parsed if parsed.tzinfo is not None else parsed.astimezone()
 
-    def to_payload(self) -> dict:
+    def to_payload(self) -> dict[str, Any]:
         return {
             "version": HEAD_VERSION,
             "job": self.job,

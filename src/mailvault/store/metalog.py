@@ -77,6 +77,7 @@ import json
 import logging
 import pathlib
 from datetime import datetime
+from typing import Any
 
 from mailvault import utils
 from mailvault.store import cas, heads
@@ -382,7 +383,7 @@ def _parse_store_id(path: pathlib.Path, number: int, line: str) -> str | None:
     return store_id
 
 
-def _parse_header(path: pathlib.Path, line: str) -> dict | None:
+def _parse_header(path: pathlib.Path, line: str) -> dict[str, Any] | None:
     """Decode a log file's first line, or None when it cannot be used.
 
     Without a usable header the lines below it have no place to belong to, so
@@ -408,7 +409,7 @@ def _parse_header(path: pathlib.Path, line: str) -> dict | None:
     return header
 
 
-def read_header(path: pathlib.Path) -> dict | None:
+def read_header(path: pathlib.Path) -> dict[str, Any] | None:
     """Read only a log file's header, without its message lines.
 
     For the questions the header alone answers -- which mailbox, which folder,

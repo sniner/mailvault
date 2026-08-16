@@ -108,7 +108,7 @@ def _is_graph_url(url: str) -> bool:
     return parts.scheme == "https" and (parts.hostname or "").lower() == GRAPH_HOST
 
 
-def _delta_point(resume: dict | None) -> tuple[str, datetime | None] | None:
+def _delta_point(resume: dict[str, Any] | None) -> tuple[str, datetime | None] | None:
     """Read this backend's own resume point, or None for anything else.
 
     Returns the delta link and when it was issued -- the latter only so that a
@@ -137,7 +137,11 @@ def _delta_point(resume: dict | None) -> tuple[str, datetime | None] | None:
     return link, _parse_graph_datetime(resume.get("issued"))
 
 
-def _delta_token(new_link: str | None, previous: object, stored: int) -> dict | None:
+def _delta_token(
+    new_link: str | None,
+    previous: object,
+    stored: int,
+) -> dict[str, Any] | None:
     """The point for next time, or None to leave the previous one standing.
 
     A completed delta round ends on a link meaning "you are caught up here", and
@@ -160,7 +164,7 @@ def _delta_token(new_link: str | None, previous: object, stored: int) -> dict | 
     return _make_delta_token(new_link)
 
 
-def _make_delta_token(delta_link: str) -> dict:
+def _make_delta_token(delta_link: str) -> dict[str, Any]:
     """Wrap a delta link as a resume point, stamped with when it was issued."""
     return {
         "kind": DELTA_RESUME_KIND,
@@ -581,7 +585,7 @@ class MSGraphClient:
                 return items, None
             return items, delta_link
 
-    def resume_point(self, folder_name: str) -> dict | None:
+    def resume_point(self, folder_name: str) -> dict[str, Any] | None:
         """A fresh delta link over the folder as it stands, fetching no bodies."""
         folder_id = self._resolve_folder(folder_name)
         _items, delta_link = self._delta_round(folder_name, folder_id, None)
@@ -615,7 +619,7 @@ class MSGraphClient:
         self,
         folder_name: str,
         store: cas.ContentAddressedStorage,
-        resume: dict | None = None,
+        resume: dict[str, Any] | None = None,
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> base.BackupResult:
         """Store a folder's messages, recording each via `callback`.

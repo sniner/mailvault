@@ -7,6 +7,7 @@ cannot say.
 
 from __future__ import annotations
 
+import collections.abc
 import dataclasses
 
 
@@ -19,20 +20,19 @@ class MessageMetadata:
     to write about a message -- subject, sender and date are in the message itself.
     ``folders`` is the set of places it is in: one for IMAP, possibly several for
     Gmail, which reports every label a message carries no matter which folder it
-    was fetched from. It may hold ``bytes`` as well as ``str`` (Gmail reports
-    label names as raw bytes), so it is deliberately not annotated ``list[str]``.
+    was fetched from -- as raw bytes, which is why ``str`` alone will not do.
     """
 
     mailbox: str
     store_id: str
-    folders: list
+    folders: list[str | bytes]
 
 
 def metadata(
     mailbox: str,
     folder: str,
     store_id: str,
-    folders: list | None = None,
+    folders: collections.abc.Sequence[str | bytes] | None = None,
 ) -> MessageMetadata:
     """Build the location record a backend hands to the backup callback.
 
@@ -43,5 +43,7 @@ def metadata(
     return MessageMetadata(
         mailbox=mailbox,
         store_id=store_id,
-        folders=folders if folders is not None else [folder],
+        # Copied rather than kept: the record is frozen, and a caller holding on
+        # to the list it passed in could otherwise still change what it says.
+        folders=list(folders) if folders is not None else [folder],
     )

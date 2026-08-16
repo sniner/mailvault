@@ -88,7 +88,7 @@ class _UidResume:
     which is the same answer this backend gives to a point it cannot read at all.
     """
 
-    def __init__(self, previous: dict | None):
+    def __init__(self, previous: dict[str, Any] | None):
         self._given = previous is not None
         self._previous = _uid_point(previous)
         self.uidvalidity: int | None = None
@@ -97,7 +97,7 @@ class _UidResume:
         # worked around. Being given none in the first place is not a loss.
         self.lost = self._given and self._previous is None
 
-    def accept(self, folder_info: dict, ctx: str) -> int | None:
+    def accept(self, folder_info: dict[bytes, Any], ctx: str) -> int | None:
         """Take the SELECT response; return the UID to resume above, or None.
 
         None means read the folder in full, and it is the answer whenever there
@@ -136,7 +136,7 @@ class _UidResume:
         if self.highest is None or uid > self.highest:
             self.highest = uid
 
-    def token(self) -> dict | None:
+    def token(self) -> dict[str, Any] | None:
         """The point this pass earned, or None if it archived nothing."""
         if self.highest is None or self.uidvalidity is None:
             return None
@@ -147,7 +147,7 @@ class _UidResume:
         }
 
 
-def _uid_point(resume: dict | None) -> tuple[int, int] | None:
+def _uid_point(resume: dict[str, Any] | None) -> tuple[int, int] | None:
     """Read this backend's own resume point, or None for anything else."""
     if resume is None:
         return None
@@ -537,7 +537,7 @@ class ImapClient:
         self,
         folder_name: str,
         store: cas.ContentAddressedStorage,
-        resume: dict | None = None,
+        resume: dict[str, Any] | None = None,
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> BackupResult:
         """Store a folder's messages read-only, recording each via `callback`.
@@ -629,7 +629,7 @@ class ImapClient:
         if self.gmail and self.trash_folder:
             self._clear_folder(self.trash_folder)
 
-    def resume_point(self, folder_name: str) -> dict | None:
+    def resume_point(self, folder_name: str) -> dict[str, Any] | None:
         """The folder's current UID watermark, without fetching anything."""
         with self.lock:
             folder_info = self.conn.select_folder(folder_name, readonly=True)
