@@ -236,9 +236,9 @@ class ContentAddressedStorage:
         hashfactory: collections.abc.Callable[..., hashlib._Hash] | None = None,
     ):
         self.root_dir = pathlib.Path(root_dir)
-        pathlib.Path.mkdir(self.root_dir, parents=True, exist_ok=True)
+        self.root_dir.mkdir(parents=True, exist_ok=True)
         self.compress = compress
-        self.hashfactory = hashfactory if hashfactory else DEFAULT_HASH
+        self.hashfactory = hashfactory or DEFAULT_HASH
         self.depth = _checked_depth(depth, self.hashfactory)
         self.suffix = suffix
         self.blocksize = 16384
@@ -265,7 +265,7 @@ class ContentAddressedStorage:
 
     def _subdirs(self, hashval: str) -> list[str]:
         if len(hashval) < self.depth * 2:
-            raise ValueError(f"hash string to short, {self.depth * 2} characters required")
+            raise ValueError(f"hash string too short, {self.depth * 2} characters required")
         return [hashval[i : i + 2] for i in range(0, self.depth * 2, 2)]
 
     def _path(self, hashval: str) -> pathlib.Path:
@@ -347,7 +347,7 @@ class ContentAddressedStorage:
         hashval = self._hashval(reader)
         existing = self._find_existing(hashval)
         if existing:
-            log.debug(f"{self.where(existing)}: already exists")
+            log.debug("%s: already exists", self.where(existing))
             return "EXISTS", hashval, existing
         path, filename = self._destination(hashval)
         file = path / filename
@@ -359,7 +359,7 @@ class ContentAddressedStorage:
                     self._copy(reader, compressor.write)
             else:
                 self._copy(reader, f.write)
-        log.debug(f"{self.where(file)}: new entry")
+        log.debug("%s: new entry", self.where(file))
         return "NEW", hashval, file
 
     @contextlib.contextmanager
@@ -606,7 +606,7 @@ class ContentAddressedStorage:
         try:
             return path.stat().st_mtime <= time.time() - min_age
         except OSError as exc:
-            log.debug(f"{self.where(path)}: kept: {exc}")
+            log.debug("%s: kept: %s", self.where(path), exc)
             return False
 
     def prune_transient_files(self, min_age: float = TRANSIENT_MIN_AGE) -> int:
@@ -643,9 +643,9 @@ class ContentAddressedStorage:
         try:
             utils.remove_file(path)
         except OSError as exc:
-            log.debug(f"{self.where(path)}: kept: {exc}")
+            log.debug("%s: kept: %s", self.where(path), exc)
             return False
-        log.info(f"{self.where(path)}: leftover of an interrupted write, removed")
+        log.info("%s: leftover of an interrupted write, removed", self.where(path))
         return True
 
     def prune_empty_dirs(self) -> int:
@@ -669,7 +669,7 @@ class ContentAddressedStorage:
             try:
                 directory.rmdir()
             except OSError as exc:
-                log.debug(f"{self.where(directory)}: kept: {exc}")
+                log.debug("%s: kept: %s", self.where(directory), exc)
                 continue
             removed += 1
         return removed
