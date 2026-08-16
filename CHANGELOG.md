@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed
+
+- **Counting the archive during `verify` and a catch-up opens each message once instead of
+  twice.** The pass that reads every archived message's headers -- the longest silence in the
+  whole operation, and one that runs over the network share -- located each entry before opening
+  it. A store id names two candidate files (`.eml` and `.eml.zst`) and nothing says which is
+  there, so that lookup cost up to two `stat()` calls per message before the read that followed.
+  The entry is now opened by its id, which is what the query-database build has done all along
+
 ### Fixed
 
 - **The Microsoft 365 access token only ever goes to Graph.** A URL is checked against Graph's

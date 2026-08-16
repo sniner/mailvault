@@ -183,6 +183,13 @@ def archived_message_counts(
     Messages without a usable Message-ID are omitted: they cannot serve as a
     comparison key and must count as "not present" so they are re-fetched, which
     is harmless because the storage deduplicates by content.
+
+    Each entry is opened by its id rather than looked up first, which is one
+    round trip instead of two -- the same reason `db._insert_message` does it
+    that way. Asking `locate(exists=True)` where the file is costs up to two
+    `stat()` calls (a store id names two candidates, `.eml` and `.eml.zst`)
+    before the `open()` that actually reads, and every one of them goes over the
+    share this pass is already the slowest part of.
     """
     known: collections.Counter[str] = collections.Counter()
     read = 0
@@ -190,13 +197,15 @@ def archived_message_counts(
         read += 1
         if log_ctx and read % ARCHIVE_PROGRESS_EVERY == 0:
             log.info("%s: %s read from the archive", log_ctx, utils.counted(read, "message"))
-        path = store.locate(store_id, exists=True)
-        if path is None:
-            continue
         try:
-            header = mailutils.decode_email_header(store.read_header(path))
+            header = mailutils.decode_email_header(store.read_header_of(store_id))
+        except FileNotFoundError:
+            # The log names it, the store no longer holds it. Expected rather
+            # than wrong -- a message can have gone since it was recorded -- and
+            # not counted as archived is exactly the answer the caller wants.
+            continue
         except (OSError, ValueError) as exc:
-            log.warning("%s: unreadable, not counted as archived: %s", store.where(path), exc)
+            log.warning("%s: unreadable, not counted as archived: %s", store_id, exc)
             continue
         known[mailutils.normalize_message_id(mailutils.message_id(header))] += 1
     known.pop("", None)

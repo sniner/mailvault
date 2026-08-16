@@ -1762,6 +1762,38 @@ class TestVerify:
         known = archived_message_counts(store, places[("test-job", "INBOX")])
         assert known == {"a@example.com": 1, "b@example.com": 1}
 
+    def test_counting_the_archive_opens_each_entry_once(self, tmp_path):
+        """The longest silence in the operation, and it runs over the share.
+
+        An entry used to be located and then opened -- up to two `stat()` calls
+        before the `open()` that reads, per message, because a store id names
+        two candidates and nothing says which is there.
+        """
+        store = cas.mail_store(tmp_path)
+        ids = [store.add(_eml(f"<{n}@example.com>"))[1] for n in "abc"]
+        gone = store.add(_eml("<d@example.com>"))[1]
+        located = []
+        real_locate = cas.ContentAddressedStorage.locate
+
+        def locate(self, data, exists=False):
+            located.append(data)
+            return real_locate(self, data, exists=exists)
+
+        with patch.object(cas.ContentAddressedStorage, "locate", locate):
+            known = archived_message_counts(store, [*ids, "0" * 64])
+
+        assert known == {"a@example.com": 1, "b@example.com": 1, "c@example.com": 1}
+        assert located == [], "nothing is looked up before it is read"
+        assert gone, "the id is a real one; the missing entry above is not"
+
+    def test_an_entry_the_log_names_and_the_store_lost_is_simply_not_counted(self, tmp_path):
+        store = cas.mail_store(tmp_path)
+        _status, store_id, path = store.add(_eml("<a@example.com>"))
+        path.chmod(0o600)
+        path.unlink()
+
+        assert archived_message_counts(store, [store_id]) == {}
+
     def test_repair_is_idempotent(self, tmp_path):
         """A second verify run right after a repair must find nothing."""
         job = _make_job(folders=["INBOX"])
