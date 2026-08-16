@@ -15,7 +15,6 @@ import logging
 import re
 import ssl
 import sys
-import threading
 import typing
 from typing import Any
 
@@ -161,13 +160,21 @@ def _uid_point(resume: dict[str, Any] | None) -> tuple[int, int] | None:
 
 
 class ImapClient:
-    """The IMAP implementation of `MailboxClient`, wrapping an `imapclient` connection."""
+    """The IMAP implementation of `MailboxClient`, wrapping an `imapclient` connection.
+
+    **One client, one connection, one thread.** Nothing here is safe to call
+    from two threads at once, and no lock would make it so: `SELECT` is
+    connection *state*, not an argument, so two threads reading different
+    folders over one connection would read each other's mail whatever the
+    calls were serialised against. Reading in parallel means a connection per
+    thread, and that is a decision for the caller, not something this class
+    can paper over.
+    """
 
     def __init__(self, conn: imapclient.IMAPClient, job: conf.JobConfig):
         self.job = job
         self.conn = conn
         self.job_name = job.name
-        self.lock = threading.RLock()
         self.capabilities = self.conn.capabilities()
         self.delete_after_export = job.delete_after_export
         self.exchange_journal = job.exchange_journal
@@ -269,14 +276,13 @@ class ImapClient:
         return None
 
     def folders(self) -> collections.abc.Generator[str, None, None]:
-        with self.lock:
-            for folder in self.conn.list_folders():
-                if self._isfoldertype(folder, *self.job.ignore_folder_flags):
-                    continue
-                if self._isfoldername(folder, *self.job.ignore_folder_names):
-                    continue
-                _flags, _delimiter, name = folder
-                yield name
+        for folder in self.conn.list_folders():
+            if self._isfoldertype(folder, *self.job.ignore_folder_flags):
+                continue
+            if self._isfoldername(folder, *self.job.ignore_folder_names):
+                continue
+            _flags, _delimiter, name = folder
+            yield name
 
     def _walk_folder(
         self,
@@ -365,26 +371,25 @@ class ImapClient:
         UNSELECT is guarded apart from it: a connection handed back with a
         folder still selected makes the *next* SELECT look like the failure.
         """
-        with self.lock:
+        try:
+            self.conn.select_folder(folder_name, readonly=False)
+        except Exception as exc:
+            log.error("%s::%s: %s", self.job_name, folder_name, exc)
+            return
+        try:
+            for msg_ids in utils.batched(self.conn.search(), 10):
+                self.conn.delete_messages(msg_ids)
+        except Exception as exc:
+            log.error("%s::%s: %s", self.job_name, folder_name, exc)
+        finally:
             try:
-                self.conn.select_folder(folder_name, readonly=False)
+                self.conn.expunge()
             except Exception as exc:
-                log.error("%s::%s: %s", self.job_name, folder_name, exc)
-                return
+                log.error("%s::%s: not expunged: %s", self.job_name, folder_name, exc)
             try:
-                for msg_ids in utils.batched(self.conn.search(), 10):
-                    self.conn.delete_messages(msg_ids)
+                self.conn.unselect_folder()
             except Exception as exc:
-                log.error("%s::%s: %s", self.job_name, folder_name, exc)
-            finally:
-                try:
-                    self.conn.expunge()
-                except Exception as exc:
-                    log.error("%s::%s: not expunged: %s", self.job_name, folder_name, exc)
-                try:
-                    self.conn.unselect_folder()
-                except Exception as exc:
-                    log.error("%s::%s: not unselected: %s", self.job_name, folder_name, exc)
+                log.error("%s::%s: not unselected: %s", self.job_name, folder_name, exc)
 
     def _search(self, criteria: list[str]) -> list[int]:
         """Run one SEARCH over the selected folder and return the UIDs.
@@ -423,55 +428,54 @@ class ImapClient:
         after export, and a torn run can never remove mail whose location was
         never written down. The folder is always unselected on exit.
         """
-        with self.lock:
-            folder_info = self.conn.select_folder(folder_name, readonly=True)
-            try:
-                items_in_folder = folder_info[b"EXISTS"]
-                above_uid = (
-                    resume.accept(folder_info, f"{self.job_name}::{folder_name}")
-                    if resume is not None
-                    else None
+        folder_info = self.conn.select_folder(folder_name, readonly=True)
+        try:
+            items_in_folder = folder_info[b"EXISTS"]
+            above_uid = (
+                resume.accept(folder_info, f"{self.job_name}::{folder_name}")
+                if resume is not None
+                else None
+            )
+            if resume is not None and resume.lost:
+                # Nothing is yielded and nothing is fetched: what to do with
+                # a void point is the caller's call, not this backend's.
+                return
+            message_ids = self._search_folder(above_uid)
+            items_found = len(message_ids)
+            if result is not None:
+                result.total = items_found
+            if items_found != items_in_folder:
+                log.info(
+                    "%s::%s: found %s of %s",
+                    self.job_name,
+                    folder_name,
+                    items_found,
+                    utils.counted(items_in_folder, "message"),
                 )
-                if resume is not None and resume.lost:
-                    # Nothing is yielded and nothing is fetched: what to do with
-                    # a void point is the caller's call, not this backend's.
-                    return
-                message_ids = self._search_folder(above_uid)
-                items_found = len(message_ids)
-                if result is not None:
-                    result.total = items_found
-                if items_found != items_in_folder:
+            else:
+                log.info(
+                    "%s::%s: found %s",
+                    self.job_name,
+                    folder_name,
+                    utils.counted(items_found, "message"),
+                )
+            for processed, (msg_id, msg) in enumerate(
+                self._walk_folder(folder_name, message_ids, result=result), 1
+            ):
+                yield msg_id, msg
+                if processed % 100 == 0:
                     log.info(
-                        "%s::%s: found %s of %s",
+                        "%s::%s: %s/%s messages processed",
                         self.job_name,
                         folder_name,
+                        processed,
                         items_found,
-                        utils.counted(items_in_folder, "message"),
                     )
-                else:
-                    log.info(
-                        "%s::%s: found %s",
-                        self.job_name,
-                        folder_name,
-                        utils.counted(items_found, "message"),
-                    )
-                for processed, (msg_id, msg) in enumerate(
-                    self._walk_folder(folder_name, message_ids, result=result), 1
-                ):
-                    yield msg_id, msg
-                    if processed % 100 == 0:
-                        log.info(
-                            "%s::%s: %s/%s messages processed",
-                            self.job_name,
-                            folder_name,
-                            processed,
-                            items_found,
-                        )
-            except Exception as exc:
-                log.error("%s::%s: %s", self.job_name, folder_name, exc)
-                raise
-            finally:
-                self.conn.unselect_folder()
+        except Exception as exc:
+            log.error("%s::%s: %s", self.job_name, folder_name, exc)
+            raise
+        finally:
+            self.conn.unselect_folder()
 
     def _relocate(self, folder_name: str, msg_ids: list[int], dest_folder: str) -> None:
         """Move the given messages of `folder_name` into `dest_folder`.
@@ -488,41 +492,40 @@ class ImapClient:
         """
         if not msg_ids:
             return
-        with self.lock:
-            self.conn.select_folder(folder_name, readonly=False)
-            try:
-                if not self.conn.folder_exists(dest_folder):
-                    self.conn.create_folder(dest_folder)
-                if self.move_cap:
-                    self.conn.move(msg_ids, dest_folder)
-                else:
-                    self.conn.copy(msg_ids, dest_folder)
-                    self.conn.delete_messages(msg_ids)
-                    if self.uidplus_cap:
-                        # Targeted: removes these messages and nothing else. A
-                        # plain EXPUNGE would drop every \Deleted message in the
-                        # folder, including ones another client marked, so
-                        # without UIDPLUS the flag is left for the server or the
-                        # mailbox owner to act on.
-                        self.conn.uid_expunge(msg_ids)
-                log.info(
-                    "%s::%s: %s moved to '%s'",
-                    self.job_name,
-                    folder_name,
-                    utils.counted(len(msg_ids), "message"),
-                    dest_folder,
-                )
-            except Exception as exc:
-                log.error(
-                    "%s::%s: could not move %s to '%s': %s",
-                    self.job_name,
-                    folder_name,
-                    utils.counted(len(msg_ids), "message"),
-                    dest_folder,
-                    exc,
-                )
-            finally:
-                self.conn.unselect_folder()
+        self.conn.select_folder(folder_name, readonly=False)
+        try:
+            if not self.conn.folder_exists(dest_folder):
+                self.conn.create_folder(dest_folder)
+            if self.move_cap:
+                self.conn.move(msg_ids, dest_folder)
+            else:
+                self.conn.copy(msg_ids, dest_folder)
+                self.conn.delete_messages(msg_ids)
+                if self.uidplus_cap:
+                    # Targeted: removes these messages and nothing else. A
+                    # plain EXPUNGE would drop every \Deleted message in the
+                    # folder, including ones another client marked, so
+                    # without UIDPLUS the flag is left for the server or the
+                    # mailbox owner to act on.
+                    self.conn.uid_expunge(msg_ids)
+            log.info(
+                "%s::%s: %s moved to '%s'",
+                self.job_name,
+                folder_name,
+                utils.counted(len(msg_ids), "message"),
+                dest_folder,
+            )
+        except Exception as exc:
+            log.error(
+                "%s::%s: could not move %s to '%s': %s",
+                self.job_name,
+                folder_name,
+                utils.counted(len(msg_ids), "message"),
+                dest_folder,
+                exc,
+            )
+        finally:
+            self.conn.unselect_folder()
 
     def folder_backup(
         self,
@@ -594,13 +597,12 @@ class ImapClient:
         """
         if not msg_ids:
             return
-        with self.lock:
-            self.conn.select_folder(folder_name, readonly=False)
-            try:
-                self.conn.delete_messages(list(msg_ids))
-                self.conn.expunge()
-            finally:
-                self.conn.unselect_folder()
+        self.conn.select_folder(folder_name, readonly=False)
+        try:
+            self.conn.delete_messages(list(msg_ids))
+            self.conn.expunge()
+        finally:
+            self.conn.unselect_folder()
 
     def empty_trash(self) -> None:
         """Empty the trash folder, where Gmail keeps what `purge` deleted.
@@ -620,68 +622,65 @@ class ImapClient:
 
     def resume_point(self, folder_name: str) -> dict[str, Any] | None:
         """The folder's current UID watermark, without fetching anything."""
-        with self.lock:
-            folder_info = self.conn.select_folder(folder_name, readonly=True)
-            try:
-                uidvalidity = _as_int(folder_info.get(b"UIDVALIDITY"))
-                if uidvalidity is None:
-                    log.warning(
-                        "%s::%s: no UIDVALIDITY in the SELECT response, no resume point",
-                        self.job_name,
-                        folder_name,
-                    )
-                    return None
-                uids = self._search_folder()
-                if not uids:
-                    return None
-                return {
-                    "kind": UID_RESUME_KIND,
-                    "uidvalidity": uidvalidity,
-                    "uid": max(uids),
-                }
-            finally:
-                self.conn.unselect_folder()
+        folder_info = self.conn.select_folder(folder_name, readonly=True)
+        try:
+            uidvalidity = _as_int(folder_info.get(b"UIDVALIDITY"))
+            if uidvalidity is None:
+                log.warning(
+                    "%s::%s: no UIDVALIDITY in the SELECT response, no resume point",
+                    self.job_name,
+                    folder_name,
+                )
+                return None
+            uids = self._search_folder()
+            if not uids:
+                return None
+            return {
+                "kind": UID_RESUME_KIND,
+                "uidvalidity": uidvalidity,
+                "uid": max(uids),
+            }
+        finally:
+            self.conn.unselect_folder()
 
     def message_index(
         self,
         folder_name: str,
     ) -> collections.abc.Generator[MessageRef, None, None]:
         """List the folder's messages by Message-ID only, without fetching bodies."""
-        with self.lock:
-            self.conn.select_folder(folder_name, readonly=True)
-            try:
-                message_ids = self._search_folder()
-                log.info(
-                    "%s::%s: indexing %s messages",
-                    self.job_name,
-                    folder_name,
-                    len(message_ids),
-                )
-                for chunk in utils.batched(message_ids, INDEX_CHUNK_SIZE):
-                    try:
-                        fetched = self.conn.fetch(chunk, ["ENVELOPE"])
-                    except (OSError, imaplib.IMAP4.error) as exc:
-                        raise MailboxError(f"{folder_name}: indexing failed: {exc}") from exc
-                    for msg_id, msg_data in fetched.items():
-                        envelope = msg_data[b"ENVELOPE"]
-                        raw_id = getattr(envelope, "message_id", None)
-                        yield MessageRef(
-                            msg_id=msg_id,
-                            message_id=raw_id.decode("ascii", "replace") if raw_id else "",
-                            date=getattr(envelope, "date", None),
-                        )
-            finally:
-                self.conn.unselect_folder()
+        self.conn.select_folder(folder_name, readonly=True)
+        try:
+            message_ids = self._search_folder()
+            log.info(
+                "%s::%s: indexing %s messages",
+                self.job_name,
+                folder_name,
+                len(message_ids),
+            )
+            for chunk in utils.batched(message_ids, INDEX_CHUNK_SIZE):
+                try:
+                    fetched = self.conn.fetch(chunk, ["ENVELOPE"])
+                except (OSError, imaplib.IMAP4.error) as exc:
+                    raise MailboxError(f"{folder_name}: indexing failed: {exc}") from exc
+                for msg_id, msg_data in fetched.items():
+                    envelope = msg_data[b"ENVELOPE"]
+                    raw_id = getattr(envelope, "message_id", None)
+                    yield MessageRef(
+                        msg_id=msg_id,
+                        message_id=raw_id.decode("ascii", "replace") if raw_id else "",
+                        date=getattr(envelope, "date", None),
+                    )
+        finally:
+            self.conn.unselect_folder()
 
     def fetch_message(self, msg_id: int, folder_name: str) -> bytes:
         """Fetch a single message by UID from the given folder."""
-        with self.lock:
-            self.conn.select_folder(folder_name, readonly=True)
-            try:
-                msg_data = self.conn.fetch([msg_id], [WHOLE_MESSAGE_ITEM]).get(msg_id)
-                body = msg_data.get(WHOLE_MESSAGE_KEY) if msg_data else None
-                if not isinstance(body, bytes):
-                    raise MailboxError(f"{folder_name}[{msg_id}]: message not found")
-                return body
-            finally:
-                self.conn.unselect_folder()
+        self.conn.select_folder(folder_name, readonly=True)
+        try:
+            msg_data = self.conn.fetch([msg_id], [WHOLE_MESSAGE_ITEM]).get(msg_id)
+            body = msg_data.get(WHOLE_MESSAGE_KEY) if msg_data else None
+            if not isinstance(body, bytes):
+                raise MailboxError(f"{folder_name}[{msg_id}]: message not found")
+            return body
+        finally:
+            self.conn.unselect_folder()
