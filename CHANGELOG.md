@@ -4,6 +4,10 @@
 
 ### Changed
 
+- **The line that opens a job reads `Job: example.org`.** It said `Job item:`, a phrase that
+  appears nowhere else in anything mailvault prints. Worth knowing for anyone matching on the
+  log; the README's sample output says the same thing now
+
 - **Counting the archive during `verify` and a catch-up opens each message once instead of
   twice.** The pass that reads every archived message's headers -- the longest silence in the
   whole operation, and one that runs over the network share -- located each entry before opening
@@ -12,6 +16,8 @@
   The entry is now opened by its id, which is what the query-database build has done all along
 
 ### Fixed
+
+- **A typo in an error message: `hash string to short` is `too short`**
 
 - **The Microsoft 365 access token only ever goes to Graph.** A URL is checked against Graph's
   own host before the request is sent. Two of them do not come from mailvault: `@odata.nextLink`
