@@ -26,6 +26,7 @@ from __future__ import annotations
 import collections.abc
 import contextlib
 import dataclasses
+import enum
 import hashlib
 import io
 import itertools
@@ -77,6 +78,22 @@ TRANSIENT_MIN_AGE = 24 * 60 * 60
 # a stray file lying there was nobody's to judge, and `archive check` had to
 # pass over it in silence.
 MAIL_DIR = "mail"
+
+
+class AddStatus(enum.StrEnum):
+    """What `add` did with the bytes it was handed.
+
+    An enum rather than the two bare strings it used to return. Callers compare
+    the first element of that tuple in four places and log it in a fifth, and a
+    misspelt comparison against a string is not wrong in any way Python or a
+    checker can see -- it simply takes the other branch, for good.
+
+    A `StrEnum`, so a member still *is* its own name where one is printed or
+    written out, and nothing that only passes the value along has to change.
+    """
+
+    NEW = "NEW"
+    EXISTS = "EXISTS"
 
 
 def is_hashval(value: str) -> bool:
@@ -342,13 +359,13 @@ class ContentAddressedStorage:
                 return candidate
         return None
 
-    def add(self, data: io.IOBase | bytes) -> tuple[str, str, pathlib.Path]:
+    def add(self, data: io.IOBase | bytes) -> tuple[AddStatus, str, pathlib.Path]:
         reader = self._reader(data)
         hashval = self._hashval(reader)
         existing = self._find_existing(hashval)
         if existing:
             log.debug("%s: already exists", self.where(existing))
-            return "EXISTS", hashval, existing
+            return AddStatus.EXISTS, hashval, existing
         path, filename = self._destination(hashval)
         file = path / filename
         with _writing_to(file) as f:
@@ -360,7 +377,7 @@ class ContentAddressedStorage:
             else:
                 self._copy(reader, f.write)
         log.debug("%s: new entry", self.where(file))
-        return "NEW", hashval, file
+        return AddStatus.NEW, hashval, file
 
     @contextlib.contextmanager
     def _reading(self, path: pathlib.Path) -> collections.abc.Iterator[Any]:

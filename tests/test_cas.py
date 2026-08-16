@@ -16,16 +16,25 @@ def test_cas_init_directory(tmp_path):
     assert (tmp_path / "cas").exists()
 
 
+def test_the_status_is_still_the_word_it_used_to_be():
+    # A StrEnum, so what is logged and what a caller passes on is unchanged.
+    # Pinned here because the enum is the contract now and the strings are what
+    # anyone reading a log line sees.
+    assert f"{cas.AddStatus.NEW}" == "NEW"
+    assert f"{cas.AddStatus.EXISTS}" == "EXISTS"
+    assert cas.AddStatus.NEW == "NEW"
+
+
 def test_cas_add_bytes(tmp_path):
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas")
     status, hashval, path = store.add(b"hello world")
-    assert status == "NEW"
+    assert status == cas.AddStatus.NEW
     assert path.exists()
     assert path.read_bytes() == b"hello world"
 
     # Adding the same should return EXISTS
     status2, hashval2, path2 = store.add(b"hello world")
-    assert status2 == "EXISTS"
+    assert status2 == cas.AddStatus.EXISTS
     assert hashval == hashval2
     assert path == path2
 
@@ -35,12 +44,12 @@ def test_cas_add_file_object(tmp_path):
     data = b"file object data"
     reader = io.BytesIO(data)
     status, hashval, path = store.add(reader)
-    assert status == "NEW"
+    assert status == cas.AddStatus.NEW
     assert path.read_bytes() == data
 
     # Same content via bytes should be EXISTS
     status2, _, _ = store.add(data)
-    assert status2 == "EXISTS"
+    assert status2 == cas.AddStatus.EXISTS
 
 
 def test_cas_locate(tmp_path):
@@ -149,7 +158,7 @@ def test_cas_compress_add(tmp_path):
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml", compress=True)
     data = b"compressible " * 100
     status, hashval, path = store.add(data)
-    assert status == "NEW"
+    assert status == cas.AddStatus.NEW
     assert path.exists()
     assert path.name.endswith(".eml.zst")
     # Compressed file should be smaller
@@ -165,7 +174,7 @@ def test_cas_compress_add_survives_the_flush(tmp_path):
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml", compress=True)
     data = b"compressible " * 100
     status, _hashval, path = store.add(data)
-    assert status == "NEW"
+    assert status == cas.AddStatus.NEW
     assert path.name.endswith(".eml.zst")
     assert store.read(path) == data
 
@@ -182,8 +191,8 @@ def test_cas_compress_duplicate(tmp_path):
     data = b"duplicate test"
     status1, hash1, _ = store.add(data)
     status2, hash2, _ = store.add(data)
-    assert status1 == "NEW"
-    assert status2 == "EXISTS"
+    assert status1 == cas.AddStatus.NEW
+    assert status2 == cas.AddStatus.EXISTS
     assert hash1 == hash2
 
 
@@ -220,7 +229,7 @@ def test_cas_mixed_find_existing(tmp_path):
     )
     data = b"mixed mode test"
     status1, hash1, path1 = store_plain.add(data)
-    assert status1 == "NEW"
+    assert status1 == cas.AddStatus.NEW
     assert path1.name.endswith(".eml")
 
     # Same data, compressed store -> should find existing uncompressed file
@@ -230,7 +239,7 @@ def test_cas_mixed_find_existing(tmp_path):
         compress=True,
     )
     status2, hash2, path2 = store_zst.add(data)
-    assert status2 == "EXISTS"
+    assert status2 == cas.AddStatus.EXISTS
     assert hash1 == hash2
     assert path2 == path1  # returns the existing uncompressed path
 
@@ -638,7 +647,7 @@ def test_cas_an_entry_is_not_writable(tmp_path, monkeypatch):
 
     assert not _writable(path)
     assert store.read(path) == b"a message that made it"
-    assert store.add(b"a message that made it")[0] == "EXISTS"
+    assert store.add(b"a message that made it")[0] == cas.AddStatus.EXISTS
 
 
 def test_cas_the_protection_is_on_before_the_entry_has_its_name(tmp_path, monkeypatch):

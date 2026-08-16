@@ -178,7 +178,11 @@ class ExternalMailArchive:
                 data = _read_eml(eml)
                 if dry_run:
                     uid = store.hashval(data)
-                    status = "EXISTS" if store.locate(uid, exists=True) else "NEW"
+                    status = (
+                        cas.AddStatus.EXISTS
+                        if store.locate(uid, exists=True)
+                        else cas.AddStatus.NEW
+                    )
                 else:
                     status, uid, _ = store.add(data)
             except Exception as exc:
@@ -186,7 +190,7 @@ class ExternalMailArchive:
                 result.failed.append(eml)
                 continue
             log.info("%s: %s: %s", eml, status, uid)
-            if status == "NEW":
+            if status is cas.AddStatus.NEW:
                 result.stored += 1
             else:
                 result.present += 1

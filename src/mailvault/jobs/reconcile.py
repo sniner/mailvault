@@ -309,7 +309,7 @@ def reconcile_folder(
             # missing at *this* place is the record that it belongs here too.
             result.restored += 1
             log.info("%s: restored %s: %s id=%s", ctx, label, status, store_id)
-        elif status == "NEW":
+        elif status is cas.AddStatus.NEW:
             # An extra copy that was not a duplicate after all -- the byte-
             # different second version, and the reason these get fetched.
             result.recovered_copies += 1
