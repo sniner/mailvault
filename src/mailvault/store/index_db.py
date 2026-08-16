@@ -22,8 +22,8 @@ from __future__ import annotations
 import collections.abc
 import pathlib
 import sqlite3
+import types
 from datetime import datetime
-from typing import Any
 
 from mailvault.store.sqlite import DatabaseConnection, connect
 
@@ -87,9 +87,9 @@ class IndexDatabase:
 
     def __exit__(
         self,
-        exc_type: type | None,
+        exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: Any,
+        exc_tb: types.TracebackType | None,
     ) -> None:
         if self.dbconn:
             self.dbconn.close()

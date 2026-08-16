@@ -49,6 +49,17 @@ class TestBatched:
     def test_a_size_of_one_yields_singletons(self):
         assert list(utils.batched(range(3), 1)) == [[0], [1], [2]]
 
+    @pytest.mark.parametrize("n", [0, -1])
+    def test_a_batch_size_below_one_is_refused(self, n):
+        """The one thing a stand-in must not do is behave differently.
+
+        `itertools.batched` raises for these; the stand-in used to collect
+        everything into a single batch instead, so the same call did two
+        different things depending on which Python was running it.
+        """
+        with pytest.raises(ValueError):
+            list(utils.batched(range(3), n))
+
     def test_it_always_yields_lists(self):
         """What makes the version gate invisible: the stdlib yields tuples."""
         batches = list(utils.batched(range(5), 2))

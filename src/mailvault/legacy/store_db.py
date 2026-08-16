@@ -24,7 +24,7 @@ import collections.abc
 import logging
 import pathlib
 import sqlite3
-from typing import Any
+import types
 
 from mailvault.store.sqlite import DatabaseConnection, connect
 
@@ -54,9 +54,9 @@ class StoreDatabase:
 
     def __exit__(
         self,
-        exc_type: type | None,
+        exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: Any,
+        exc_tb: types.TracebackType | None,
     ) -> None:
         if self.dbconn:
             self.dbconn.close()
