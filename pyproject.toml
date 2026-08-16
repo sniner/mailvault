@@ -1,6 +1,6 @@
 [project]
 name = "mailvault"
-version = "0.12.2"
+version = "0.13.0"
 description = "Back up and archive email from IMAP and Microsoft 365 (Graph) mailboxes"
 authors = [{ name = "Stefan Schönberger", email = "stefan@sniner.dev" }]
 readme = "README.md"

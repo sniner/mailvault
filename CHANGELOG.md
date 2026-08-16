@@ -1,6 +1,53 @@
 # Changelog
 
-## Unreleased
+## 0.13.0 (2026-08-16)
+
+### Breaking changes
+
+- **A configuration value has to be the type its option holds, and a run stops where it is
+  not.** Nothing checked them before: `validate` asks which options are there and whether they go
+  together, never what they are, and a dataclass takes whatever it is handed. So `port = "993"`
+  failed deep inside `imapclient`, `folders = "INBOX"` was iterated letter by letter -- sending
+  mailvault after five folders `I`, `N`, `B`, `O` and `X` and reporting each as missing -- and
+  `tls = "yes"` was true by accident, a non-empty string being true, which means `tls = "no"` was
+  every bit as true. Every option now says what belongs in it: `'folders' must be a list of
+  strings, not a string -- a single one goes in brackets too: folders = ["INBOX"]`, and one wrong
+  entry in an otherwise good list is named as well.
+
+  **What to change.** Quotes around a number or a boolean come off, and a single folder goes in
+  brackets:
+
+  ```toml
+  port = 993                 # not "993"
+  tls = true                 # not "yes" -- and "no" was true as well
+  folders = ["INBOX"]        # not "INBOX"
+  ```
+
+  `tls` is the one worth checking twice: a job carrying `tls = "no"` was running with TLS *on*
+  the whole time, whatever its owner meant, and now says so instead of stopping quietly at the
+  wrong answer
+
+- **A mailbox backend implements `empty_trash()`.** It is part of the `MailboxClient` protocol,
+  called once per job after the last folder has been purged. Nothing outside this package
+  implements that protocol as far as anyone knows, so this is a note rather than a migration
+
+### Added
+
+- **`docs/providers.md`: what a particular mailbox wants in `mailvault.toml`.** One page, one
+  `[[job]]` to copy per provider, and the things nobody guesses: Gmail's labels are folders and
+  `All Mail` is the only one worth backing up, Microsoft 365 takes no password but an Azure app
+  registration whose permission covers every mailbox in the tenant, the Proton Bridge reports its
+  folders as empty until the first sync has finished, and iCloud lives at `imap.mail.me.com`.
+  Linked from the README and the deep dive
+
+- **`docs/usecases.md`: whole recipes for situations that take more than one option.** The
+  first one is rolling old mail off a mailbox that is filling up -- a folder the old mail is
+  moved into, plus a second `[[job]]` over that folder with `delete_after_export`, carrying the
+  same `name` as the mailbox's ordinary job so both stay one mailbox in the archive. That makes
+  the two share a resume point per folder, so their `folders` must not overlap: the page says
+  what silently goes wrong when they do, and what to do instead where a job cannot name its
+  folders at all. It also says why there is no `older_than` option and why there will not be
+  one: a run that skips the newest mail cannot also record that it is done with the folder
 
 ### Changed
 
@@ -46,17 +93,6 @@
   that `${VAR:-default}` is the way to give it a fallback. The value is still used as it stands:
   this says what happened, it does not decide for anyone
 
-- **A configuration value of the wrong type is refused, naming the option and what belongs in
-  it.** Nothing checked them: `validate` asks which options are there and whether they go
-  together, never what they are, and a dataclass takes whatever it is handed. So `port = "993"`
-  failed deep inside `imapclient`, `tls = "yes"` was right by accident -- a non-empty string is
-  true, and so is `"no"` -- and `folders = "INBOX"` was iterated letter by letter, sending
-  mailvault after the folders `I`, `N`, `B`, `O` and `X` and reporting five times that the server
-  did not have them. Every option now says what it holds: `'folders' must be a list of strings,
-  not a string -- a single one goes in brackets too: folders = ["INBOX"]`, and one wrong entry in
-  an otherwise good list is named as well. A configuration that carries a quoted number or a
-  quoted boolean stops the run now where it used to start it, which is the point
-
 - **`[job]` where `[[job]]` was meant is now said in those words.** Both spellings are valid
   TOML, and the single brackets make one table where mailvault expects a list of them -- so the
   configuration parsed, and what came out was `'str' object has no attribute 'get'` and a
@@ -73,24 +109,6 @@
   only ever half emptied, always one run behind. The trash is now emptied once per job, after the
   last folder has been purged. Nothing to change in the configuration; a run over an archive whose
   trash still holds an earlier run's mail clears it out on the way
-
-### Added
-
-- **`docs/providers.md`: what a particular mailbox wants in `mailvault.toml`.** One page, one
-  `[[job]]` to copy per provider, and the things nobody guesses: Gmail's labels are folders and
-  `All Mail` is the only one worth backing up, Microsoft 365 takes no password but an Azure app
-  registration whose permission covers every mailbox in the tenant, the Proton Bridge reports its
-  folders as empty until the first sync has finished, and iCloud lives at `imap.mail.me.com`.
-  Linked from the README and the deep dive
-
-- **`docs/usecases.md`: whole recipes for situations that take more than one option.** The
-  first one is rolling old mail off a mailbox that is filling up -- a folder the old mail is
-  moved into, plus a second `[[job]]` over that folder with `delete_after_export`, carrying the
-  same `name` as the mailbox's ordinary job so both stay one mailbox in the archive. That makes
-  the two share a resume point per folder, so their `folders` must not overlap: the page says
-  what silently goes wrong when they do, and what to do instead where a job cannot name its
-  folders at all. It also says why there is no `older_than` option and why there will not be
-  one: a run that skips the newest mail cannot also record that it is done with the folder
 
 ## 0.12.2 (2026-08-14)
 
