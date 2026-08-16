@@ -6,9 +6,6 @@ import collections.abc
 import sys
 from typing import TypeVar
 
-# What `batched` was handed, so that what it yields says so too. Without it a
-# caller batching `list[int]` got `list[Any]` back, and every use of an item
-# after that was invisible to the checker.
 T = TypeVar("T")
 
 # `itertools.batched` arrived in Python 3.12; below that the stand-in below does
@@ -25,10 +22,8 @@ else:
     ) -> collections.abc.Generator[tuple[T, ...], None, None]:
         """Stand in for `itertools.batched`, yielding tuples exactly as it does.
 
-        Including what it does about `n`: the standard library raises for a
-        batch size below one, and a stand-in that quietly collected everything
-        into a single batch instead would behave one way on 3.11 and another on
-        3.12 -- which is the one thing a stand-in must never do.
+        Including its `ValueError` for a batch size below one, so that the
+        same call means the same thing on either side of the version gate.
         """
         if n < 1:
             raise ValueError("n must be at least one")

@@ -261,12 +261,11 @@ class JobConfig:
 def _job_tables(data: dict[str, Any]) -> list[dict[str, Any]]:
     """The `[[job]]` sections of a configuration, or an error naming the bracket.
 
-    `[job]` where `[[job]]` was meant is the commonest mistake TOML has to offer,
-    and nothing about it looks wrong: both spellings parse. The single brackets
-    make one table instead of a list of them, iterating a table hands out its
-    *keys*, and what arrived here was the string `server` -- which failed with
-    `'str' object has no attribute 'get'`, naming neither the file nor the
-    bracket that caused it.
+    `[job]` where `[[job]]` was meant is the commonest mistake TOML has to
+    offer, and nothing about it looks wrong: both spellings parse. The single
+    brackets make one table instead of a list of them, and iterating a table
+    hands out its *keys* -- so without this the job builder is handed the string
+    `server` and fails on it, naming neither the file nor the bracket.
     """
     section = data.get("job", [])
     if isinstance(section, dict):
@@ -337,15 +336,13 @@ def _expected(hint: object) -> str:
 def _check_types(where: str, data: dict[str, Any], hints: dict[str, object]) -> None:
     """Refuse a value whose type is not the one its field holds.
 
-    Dataclasses check nothing, and neither did `validate` -- it asks which
-    options are there and whether they go together, never what they are. So a
-    quoted number reached `imapclient` and failed there, `tls = "yes"` was right
-    by accident (a non-empty string is true, and so is `"no"`), and the worst of
-    them, `folders = "INBOX"`, iterated the string: mailvault went looking for
-    the folders `I`, `N`, `B`, `O` and `X` and reported five times that the
-    server did not have them. Everything about that reads like a server problem.
-
-    The field is named, and so is what belongs in it.
+    The only place that asks. A dataclass takes whatever it is handed, and
+    `validate` asks which options are there and whether they go together, never
+    what they are. Left to itself, a quoted number fails deep inside
+    `imapclient`, `tls = "yes"` is true by accident -- a non-empty string is,
+    and so is `"no"` -- and `folders = "INBOX"` is iterated letter by letter,
+    sending mailvault after five folders `I`, `N`, `B`, `O`, `X` that no server
+    has.
     """
     for key, value in data.items():
         hint = hints.get(key)
@@ -368,10 +365,9 @@ def _list_hint(hint: object) -> object | None:
 def _type_error(where: str, key: str, value: object, hint: object) -> str:
     """Say what belongs in a field, and what was found there instead.
 
-    The list cases get a sentence of their own because both are somebody one
-    keystroke short of right, and neither is obvious from the general wording: a
-    single folder written without its brackets, and one wrong entry in a list
-    that is otherwise fine.
+    The two list cases have a sentence each: a single folder written without
+    its brackets, and one wrong entry in a list that is otherwise fine. Both are
+    a keystroke away from right, and the general wording points at neither.
     """
     listed = _list_hint(hint)
     if listed is not None and isinstance(value, list):

@@ -83,13 +83,10 @@ MAIL_DIR = "mail"
 class AddStatus(enum.StrEnum):
     """What `add` did with the bytes it was handed.
 
-    An enum rather than the two bare strings it used to return. Callers compare
-    the first element of that tuple in four places and log it in a fifth, and a
-    misspelt comparison against a string is not wrong in any way Python or a
-    checker can see -- it simply takes the other branch, for good.
-
-    A `StrEnum`, so a member still *is* its own name where one is printed or
-    written out, and nothing that only passes the value along has to change.
+    Compare against the members, not against the strings: a misspelt string is
+    wrong in no way Python or a checker can see, and simply takes the other
+    branch. A `StrEnum`, so a member is its own name wherever one is logged or
+    written out.
     """
 
     NEW = "NEW"
@@ -291,11 +288,9 @@ class ContentAddressedStorage:
     def _reader(self, data: io.IOBase | bytes) -> io.BufferedIOBase:
         """A rewindable stream of bytes over whatever was handed in.
 
-        `io.IOBase` is what the callers may pass and not what the store can work
-        with: it promises `seek` but not `read`, and everything downstream does
-        both -- hash the content, then rewind and write it. A stream that cannot
-        be rewound is read into memory once, which is the only way to hash it
-        and still have it.
+        The content is read twice -- once to hash it, once to write it -- so a
+        stream that cannot be rewound is pulled into memory here, and a caller
+        handing over a large unseekable stream pays for it in RAM.
         """
         reader: io.BufferedIOBase
         if isinstance(data, bytes):
@@ -305,9 +300,8 @@ class ContentAddressedStorage:
                 reader = data
                 reader.seek(0)
             else:
-                # An IOBase that is not seekable is a raw or buffered stream in
-                # every case that reaches here; `read` is what makes it one, and
-                # its absence is caught below either way.
+                # `io.IOBase` promises `seek` and not `read`; anything without
+                # `read` fails the check below.
                 blob = typing.cast(io.RawIOBase, data).read()
                 if not isinstance(blob, bytes):
                     raise TypeError("read() has to return bytes")

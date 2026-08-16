@@ -31,12 +31,10 @@ if sys.version_info >= (3, 14):
         if hasattr(imapclient.imap4.IMAP4WithTimeout, "open"):
             del imapclient.imap4.IMAP4WithTimeout.open
     except Exception as _patch_exc:
-        # Said out loud, quietly. The patch is tied to one version of one
-        # library: a moved module or a renamed class makes it miss, and what
-        # follows is a connection that fails much later with something that
-        # sounds like a server problem. `log` does not exist yet at import time,
-        # and the version goes with it because that is the first thing anyone
-        # would ask for.
+        # The patch is tied to imapclient 3.1.0: a moved module or a renamed
+        # class makes it miss, and the consequence surfaces much later as a
+        # connection failure that sounds like a server problem. The logger is
+        # fetched by hand because `log` is not defined until below the imports.
         logging.getLogger(__name__).debug(
             "imapclient %s: the 3.14 open() patch did not apply (%s);"
             " connecting may fail on this combination",
@@ -252,8 +250,7 @@ class ImapClient:
     def _isfoldertype(folder: tuple, *flags: str) -> str | None:
         """The first of `flags` the folder carries, spelled as the caller wrote it.
 
-        `imapclient` reports a folder as `(flags, delimiter, name)`, so the
-        entries are unpacked rather than reached for by number.
+        `imapclient` reports a folder as `(flags, delimiter, name)`.
         """
         folderflags, _delimiter, _name = folder
         carried = set(folderflags)
@@ -363,12 +360,10 @@ class ImapClient:
     def _clear_folder(self, folder_name: str) -> None:
         """Delete everything in a folder and expunge it, whatever goes wrong.
 
-        Every step is answered for on its own. The EXPUNGE is in the `finally`
-        because whatever was flagged should still go when the pass over the
-        batches broke off half way; the UNSELECT is guarded apart from it,
-        because an EXPUNGE the server refuses used to take the UNSELECT with it
-        -- and a connection handed back with a folder still selected makes the
-        *next* SELECT look like the thing that failed.
+        The EXPUNGE is in the `finally` so that whatever was flagged still
+        goes when the pass over the batches breaks off half way, and the
+        UNSELECT is guarded apart from it: a connection handed back with a
+        folder still selected makes the *next* SELECT look like the failure.
         """
         with self.lock:
             try:
@@ -392,16 +387,12 @@ class ImapClient:
                     log.error("%s::%s: not unselected: %s", self.job_name, folder_name, exc)
 
     def _search(self, criteria: list[str]) -> list[int]:
-        """Run one SEARCH, and get the UIDs back as the numbers they are.
+        """Run one SEARCH over the selected folder and return the UIDs.
 
-        `imapclient.search` carries no annotations at all, so a checker infers
-        `criteria: str` from its `"ALL"` default and `list[int] | list[bytes]`
-        for what comes back. Neither is the contract: the library's own
-        docstring asks for a sequence of criteria items, and bytes come back
-        only from a MODSEQ search, which this never asks for.
-
-        Both answered here, once, and each says which complaint it answers --
-        a bare ignore would also silence the next, unrelated one.
+        `imapclient.search` carries no annotations, so a checker reads
+        `criteria: str` off its `"ALL"` default and offers
+        `list[int] | list[bytes]` for the result. It takes a sequence of
+        criteria items, and it answers in bytes only for a MODSEQ search.
         """
         found = self.conn.search(criteria)  # type: ignore[arg-type]
         return typing.cast(list[int], found)
@@ -620,11 +611,9 @@ class ImapClient:
         and `trash_folder` is how the owner names it -- the name is localised, so
         only they know it.
 
-        This ran per folder once, at the end of the read-only pass, back when
-        `folder_backup` did the deleting itself. Since the purge moved behind the
-        seal, that spot empties the trash *before* the folder's own messages
-        arrive in it: every run then cleared the previous run's remains and left
-        its own. Hence once per job, after the last purge.
+        Once per job, after the last purge: a message reaches the trash
+        *during* `purge`, so emptying at any earlier point clears what an
+        earlier run left behind and leaves this run's mail sitting there.
         """
         if self.gmail and self.trash_folder:
             self._clear_folder(self.trash_folder)

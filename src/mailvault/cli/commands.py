@@ -550,10 +550,9 @@ def report_import(
     _report_items(
         [utils.under(source, p) for p in result.failed], "message", "could not be read"
     )
-    # Said apart from the failures above, because it is a different outcome: the
-    # mail is in the archive and recorded, and what is left over is the source
-    # file --move was asked to take away. Importing the same source again is
-    # harmless and deletes them, which is why the line says so.
+    # A different outcome from the failures above: this mail is in the archive
+    # and recorded, and what is left over is the source file --move was asked to
+    # take away. Importing the same source again is harmless and removes them.
     _report_items(
         [utils.under(source, p) for p in result.undeleted],
         "source file",

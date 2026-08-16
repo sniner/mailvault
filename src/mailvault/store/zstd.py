@@ -45,17 +45,13 @@ else:
 
 
 class ByteReader(typing.Protocol):
-    """What the store needs of a reader, and nothing more.
+    """Blocks of bytes, and a `with` block to hold them in.
 
-    Narrower than `BinaryIO` on purpose, because the two backends have nothing
-    wider in common: `compression.zstd.ZstdFile` is a full file object, while
-    `zstandard`'s `stream_reader` is an object of its own that happens to read.
-    A plain `open(..., "rb")` handle satisfies this as well, which is what lets
-    the store hold a compressed and an uncompressed entry in the same variable.
-
-    Without it the whole read path was `Any` -- `reading`, `_open_entry`,
-    `read_header_of`, and therefore every database build -- and a checker had
-    nothing to say about any of it.
+    The widest type the two codec backends have in common:
+    `compression.zstd.ZstdFile` is a full file object, `zstandard`'s
+    `stream_reader` is an object of its own that happens to read. A plain
+    `open(..., "rb")` handle satisfies it too, so the store can hold a
+    compressed and an uncompressed entry in the same variable.
     """
 
     def read(self, size: int = ..., /) -> bytes: ...
@@ -74,7 +70,7 @@ class ByteReader(typing.Protocol):
 
 
 class ByteWriter(typing.Protocol):
-    """The writing half of `ByteReader`, for the same reason."""
+    """The writing half of `ByteReader`, over the same two backends."""
 
     def write(self, data: bytes, /) -> object: ...
 

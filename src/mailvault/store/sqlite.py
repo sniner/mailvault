@@ -54,12 +54,11 @@ class DatabaseConnection:
                 if outer:
                     self.dbconn.commit()
             except RollbackException:
-                # Not a failure and not reported as one: `rollback()` is how a
-                # caller asks for the block to be undone, and raising is how it
-                # asks. What stood here was three ERROR lines for a deliberate
-                # abort -- one per nesting level -- each of them saying
-                # "Transaction failed:" and then nothing, because the exception
-                # carries no message.
+                # Not a failure and not reported as one: `rollback()` is how
+                # a caller asks for the block to be undone, and raising is how
+                # it asks. Reporting it would put an ERROR line -- with no
+                # message, since the exception carries none -- against an
+                # operation somebody meant to happen.
                 if outer:
                     self.dbconn.rollback()
                     self._rolled_back()
@@ -92,9 +91,8 @@ class DatabaseConnection:
     ) -> sqlite3.Cursor:
         """Run one statement, with its parameters bound rather than interpolated.
 
-        Named rather than `*args`: sqlite3 takes exactly one parameter argument,
-        and a signature that accepts any number lets a call through that only
-        fails once it is run.
+        One parameter argument, which is what sqlite3 takes: a sequence for `?`
+        placeholders, a mapping for named ones.
         """
         with self.lock:
             return self.dbconn.execute(statement, parameters)

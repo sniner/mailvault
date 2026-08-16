@@ -311,8 +311,7 @@ class LogWriter:
         the message twice in one file.
         """
         # `dict.fromkeys` keeps the first of each and the order they came in,
-        # which a `not in` over a growing list also did -- at a comparison per
-        # name already seen.
+        # without a comparison against every name already seen.
         names = list(dict.fromkeys(as_text(folder) for folder in folders))
         for name in names or [None]:
             self._places.setdefault((mailbox, name), []).append(store_id)

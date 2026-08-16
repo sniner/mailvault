@@ -164,11 +164,10 @@ def _backup_to_log(
 def _empty_trash(mb: base.MailboxClient, job: conf.JobConfig) -> None:
     """Finish off the deletions of this job, once every folder has been purged.
 
-    Here and not in the folder loop: what a provider like Gmail keeps in its
-    trash folder only arrives there during `purge`, which runs per folder after
-    the seal. Emptying it any earlier -- as this did while it sat at the end of
-    the read-only pass -- clears what an earlier run left and keeps what this one
-    just deleted, so the mailbox the job was meant to free stays full.
+    What a provider like Gmail keeps in its trash folder arrives there during
+    `purge`, which runs per folder after the seal -- so this belongs after the
+    loop, not in it. Emptied any earlier it clears what an earlier run left and
+    keeps what this one just deleted, and the mailbox stays full.
 
     A failure costs nothing but server space: the messages are archived and their
     locations durable, and the next run empties the folder again.

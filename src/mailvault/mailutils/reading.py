@@ -19,11 +19,6 @@ def mail_reader(msg: typing.BinaryIO | bytes) -> typing.BinaryIO:
     A stream that has already been read is rewound where it can be: the callers
     hand the same open file to more than one of these, and a parser that starts
     wherever the last one stopped sees a message with no headers.
-
-    `BinaryIO` rather than `io.IOBase`, which is what stood here and is not what
-    a parser can be handed: `IOBase` promises `seek` and not `read`. Every caller
-    in the program passes bytes; the other half of the union is for the callers
-    that do not exist yet, and it now says what they have to bring.
     """
     if isinstance(msg, bytes):
         return io.BytesIO(msg)

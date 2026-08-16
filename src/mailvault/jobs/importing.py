@@ -107,10 +107,9 @@ def _record(
 
     A file that will not go is noted and stepped over. `remove_file` raises on
     purpose -- a caller meaning to be rid of a file has to hear that it is still
-    there -- but here the message behind it is already stored and already
-    recorded, and letting the error out ended the whole import: no report, no
-    further batch, over one file somebody had open or a directory with the wrong
-    write bit.
+    there -- but the message behind this one is already stored and already
+    recorded, and one file somebody has open must not cost the rest of the
+    import and its report.
     """
     if provenance is not None:
         observed = len(provenance.log)
@@ -231,6 +230,5 @@ class DocuwareMailArchive(ExternalMailArchive):
                 continue
             # One directory is one message; where a Docuware export left more
             # than one file, the largest is the message and the rest are its
-            # fragments. `max` takes the key it is given, so there is no tuple to
-            # build and no `[1]` to remember at the end.
+            # fragments.
             yield max(eml, key=lambda f: f.stat().st_size)
