@@ -10,7 +10,6 @@ the Exchange-journal unwrapping path.
 from __future__ import annotations
 
 import collections.abc
-import functools
 import imaplib
 import logging
 import re
@@ -173,11 +172,7 @@ class ImapClient:
         self.capabilities = self.conn.capabilities()
         self.delete_after_export = job.delete_after_export
         self.exchange_journal = job.exchange_journal
-        self.gmail = functools.reduce(
-            lambda acc, c: acc or c.startswith(b"X-GM-"),
-            self.capabilities,
-            False,
-        )
+        self.gmail = any(c.startswith(b"X-GM-") for c in self.capabilities)
         # MOVE is RFC 6851 (2013), UIDPLUS is RFC 4315 -- neither is in the
         # IMAP4rev1 base, and Exchange's IMAP service in particular is sparing
         # with both. Missing capabilities only pick a different route in
@@ -254,16 +249,22 @@ class ImapClient:
 
     @staticmethod
     def _isfoldertype(folder: tuple, *flags: str) -> str | None:
-        folderflags = set(folder[0])
-        bflags = [(b"\\" + f.encode(), f) for f in [f.capitalize() for f in flags]]
-        for flag in bflags:
-            if flag[0] in folderflags:
-                return flag[1]
+        """The first of `flags` the folder carries, spelled as the caller wrote it.
+
+        `imapclient` reports a folder as `(flags, delimiter, name)`, so the
+        entries are unpacked rather than reached for by number.
+        """
+        folderflags, _delimiter, _name = folder
+        carried = set(folderflags)
+        for flag in flags:
+            name = flag.capitalize()
+            if b"\\" + name.encode() in carried:
+                return name
         return None
 
     @staticmethod
     def _isfoldername(folder: tuple, *patterns: str) -> str | None:
-        foldername = folder[2]
+        _flags, _delimiter, foldername = folder
         for pattern in patterns:
             if re.match(pattern, foldername):
                 return pattern
@@ -276,7 +277,8 @@ class ImapClient:
                     continue
                 if self._isfoldername(folder, *self.job.ignore_folder_names):
                     continue
-                yield folder[2]
+                _flags, _delimiter, name = folder
+                yield name
 
     def _walk_folder(
         self,
@@ -447,10 +449,10 @@ class ImapClient:
                         folder_name,
                         utils.counted(items_found, "message"),
                     )
-                processed = 0
-                for msg_id, msg in self._walk_folder(folder_name, message_ids, result=result):
+                for processed, (msg_id, msg) in enumerate(
+                    self._walk_folder(folder_name, message_ids, result=result), 1
+                ):
                     yield msg_id, msg
-                    processed += 1
                     if processed % 100 == 0:
                         log.info(
                             "%s::%s: %s/%s messages processed",
