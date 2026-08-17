@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A reader who has read enough is no longer answered with a traceback.** `mailvault archive
+  export ID | less`, quit before the last page, ended the run with `BrokenPipeError: [Errno 32]
+  Broken pipe` and a call stack under it -- a report on the program's own workings for something
+  the reader did on purpose. A pipe with nobody at the other end is the normal end of `| head` and
+  `| less`, and is now treated as one: the run ends where the reading did, without a word at any
+  level, and leaves the exit code a program killed by SIGPIPE leaves behind (141). The same for
+  the reports a run prints: `mailvault verify | head -1` used to write one traceback per job into
+  the pipe nobody was reading any more
+
 ## 0.13.0 (2026-08-16)
 
 ### Breaking changes

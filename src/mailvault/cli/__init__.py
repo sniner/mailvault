@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import logging
+import os
 import pathlib
 import sys
 
@@ -529,9 +530,21 @@ def main() -> int:
             exit_code = commands.run_archive(args)
         elif args.command == "db":
             exit_code = commands.run_db(args)
+        # A report the size of a screen never leaves the buffer on its own, and a
+        # buffer emptied after `main` has returned is emptied where nothing can
+        # answer for it. Here it is still this run's business.
+        sys.stdout.flush()
     except KeyboardInterrupt:
         log.warning("Interrupted!")
         exit_code = 130
+    except BrokenPipeError:
+        # `| head`, `| less` quit on the first page: nothing worth a word at any
+        # level. Only the leftovers need somewhere to go, because the interpreter
+        # flushes them on its way out, past everything here, and says `Exception
+        # ignored` when they are refused. 141 is what SIGPIPE would have left
+        # behind if Python let the signal through.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        exit_code = 141
     except commands.EXPECTED_ERRORS as exc:
         # A broken config or a refused operation is a user error, not a crash:
         # report it as one line instead of a traceback.

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
+import os
 import pathlib
+import sys
 import tempfile
 from datetime import UTC, datetime
 from typing import Any
@@ -474,6 +477,64 @@ class TestExport:
         commands.run_archive(self._export_args(tmp_path, [path.name], output=tmp_path / "o"))
 
         assert (tmp_path / "o").read_bytes() == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
+
+
+@contextlib.contextmanager
+def _stdout_nobody_reads(monkeypatch):
+    """Standard output on a pipe whose reading end is closed: `... | less`, quit.
+
+    Entered inside the test rather than set up as a fixture: pytest puts its own
+    capture back in front of `sys.stdout` when the test body begins, and would
+    undo it.
+    """
+    read, write = os.pipe()
+    os.close(read)
+    stdout = os.fdopen(write, "w")
+    monkeypatch.setattr(sys, "stdout", stdout)
+    try:
+        yield stdout
+    finally:
+        # What the run could not deliver is still in the buffer, and closing the
+        # file is one more attempt to write it into a pipe that refuses it.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), stdout.fileno())
+        stdout.close()
+
+
+class TestOutputNobodyIsReading:
+    """`... | less`, quit on the first page: a reader who leaves is not a crash."""
+
+    def test_the_run_ends_without_a_traceback(self, monkeypatch, caplog):
+        monkeypatch.setattr(sys, "argv", ["mailvault", "archive", "check"])
+
+        def _report(_args: argparse.Namespace) -> int:
+            print("a report nobody is reading any more")
+            return 0
+
+        monkeypatch.setattr(commands, "run_archive", _report)
+
+        with _stdout_nobody_reads(monkeypatch), caplog.at_level(logging.DEBUG):
+            assert cli.main() == 141
+
+        # The run's own START and FINISHED, and not a word about the pipe -- at
+        # any level, `-v`, which is this DEBUG, included.
+        assert len(caplog.records) == 2
+
+    def test_it_ends_there_rather_than_failing_every_job_in_turn(self, monkeypatch):
+        config = conf.Config(jobs=[conf.JobConfig(name="one"), conf.JobConfig(name="two")])
+        monkeypatch.setattr(conf, "load", lambda *a, **kw: config)
+        seen: list[str] = []
+
+        def _run(job, *_a, **_kw):
+            seen.append(job.name)
+            print(f"{job.name}: a report nobody is reading any more")
+            sys.stdout.flush()
+
+        monkeypatch.setattr(commands, "_run_job", _run)
+
+        with _stdout_nobody_reads(monkeypatch), pytest.raises(BrokenPipeError):
+            commands.run_mailbox(_args())
+
+        assert seen == ["one"]
 
 
 class TestWhereTheOptionsLive:

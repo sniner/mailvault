@@ -267,6 +267,12 @@ def run_mailbox(args: argparse.Namespace) -> int:
             log.error("Job '%s' failed: %s", job.name, exc)
             log.debug("Job '%s' failed", job.name, exc_info=exc)
             exit_code = 1
+        except BrokenPipeError:
+            # `mailvault verify | head -1`: nobody is reading the report any
+            # more. Every job after this one would write into the same closed
+            # pipe and fail the same way, so the run ends here and `main` decides
+            # what to make of it.
+            raise
         except Exception as exc:
             log.exception("Job '%s' failed: %s", job.name, exc)
             exit_code = 1
