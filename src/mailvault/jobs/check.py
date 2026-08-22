@@ -90,6 +90,7 @@ class CheckResult:
     contents_checked: bool = False
     missing: dict[str, str] = dataclasses.field(default_factory=dict)
     broken_chains: list[str] = dataclasses.field(default_factory=list)
+    unreadable_chains: list[str] = dataclasses.field(default_factory=list)
     unchained: list[pathlib.Path] = dataclasses.field(default_factory=list)
     orphans: list[pathlib.Path] = dataclasses.field(default_factory=list)
     foreign: list[pathlib.Path] = dataclasses.field(default_factory=list)
@@ -194,6 +195,7 @@ def _read_log(
     root: pathlib.Path,
     result: CheckResult,
     chain: dict[str, metalog.LogFile],
+    unread: set[str],
 ) -> dict[str, str]:
     """Read the whole log into `store id -> where it was first seen`.
 
@@ -219,6 +221,12 @@ def _read_log(
             result.damaged_logs.append(path)
         logfile = metalog.read_log(path)
         if logfile is None:
+            # Kept, because the chain walk has to tell a file that is not there
+            # from one this version could not read. A file written by a newer
+            # mailvault is present and intact, and calling it gone would be a
+            # statement about the archive for something that is true of the
+            # reader. `read_log` has already said which it was.
+            unread.add(path.name.removesuffix(".jsonl"))
             continue
         chain[logfile.hashval] = logfile
         where = heads.place_name(logfile.mailbox, logfile.folder)
@@ -235,15 +243,20 @@ def _walk_chains(
     heads_root: pathlib.Path,
     chain: dict[str, metalog.LogFile],
     result: CheckResult,
+    unread: set[str],
 ) -> None:
     """Follow every place's log chain and report where it does not hold.
 
-    Two different findings come out of this, and only the first says something
-    is wrong:
+    Three different things come out of this, and only the first says something
+    is wrong with the archive:
 
     - a link names a file that is **not there**. That is a log file which has
       gone missing, and it is the one thing a heap of files cannot notice about
       itself
+    - a link names a file that is there and that **this version cannot read**,
+      written by a newer mailvault. Nothing is missing; the archive is ahead of
+      the program looking at it. The chain stops there all the same, because the
+      link to the file before it is inside the file
     - a file that **no chain reaches**. Written before the chain existed, or
       left behind when a head could not be updated. It is still read and nothing
       is lost by it, so it is reported and not counted
@@ -266,7 +279,13 @@ def _walk_chains(
         while hashval is not None and hashval not in reached:
             logfile = chain.get(hashval)
             if logfile is None:
-                result.broken_chains.append(f"{hashval}  {where}")
+                if hashval in unread:
+                    # There, and not readable here. The chain cannot go on --
+                    # the link to the file before it is inside the file -- but
+                    # nothing is missing from the archive.
+                    result.unreadable_chains.append(f"{hashval}  {where}")
+                else:
+                    result.broken_chains.append(f"{hashval}  {where}")
                 break
             reached.add(hashval)
             hashval = logfile.prev
@@ -384,8 +403,9 @@ def check(
 
     log.info("step 2 of %s: reading the metadata log", steps)
     chain: dict[str, metalog.LogFile] = {}
-    seen_at = _read_log(store_path / metalog.DEFAULT_LOG_DIR, result, chain)
-    _walk_chains(store_path / heads.DEFAULT_HEADS_DIR, chain, result)
+    unread: set[str] = set()
+    seen_at = _read_log(store_path / metalog.DEFAULT_LOG_DIR, result, chain, unread)
+    _walk_chains(store_path / heads.DEFAULT_HEADS_DIR, chain, result, unread)
     log.info(
         "step 2 of %s: %s account for %s in %s",
         steps,

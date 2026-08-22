@@ -327,6 +327,30 @@ class TestTheLogChain:
             " so losing the record of their second place leaves no other trace"
         )
 
+    def test_a_file_from_a_newer_mailvault_is_there_not_gone(self, tmp_path):
+        """An archive ahead of the program looking at it is not a broken archive.
+
+        The chain stops all the same -- the link to the file before it is inside
+        the file -- but nothing is missing, so the run must not answer `NOT
+        sound` and exit 1 over a file that is present and intact.
+        """
+        store, ids = _archive(tmp_path)
+        (first,) = self._place(tmp_path, [ids[0]], folder="Sent")
+        self._place(tmp_path, [ids[1]], folder="Sent")
+        # Written by a version this one does not know. The file keeps its name,
+        # which is the hash of the content it had -- so it is unreadable *and*
+        # damaged, and only the first of those is the point here.
+        header = first.read_text(encoding="utf-8")
+        written = f'"version": {metalog.LOG_VERSION}'
+        assert written in header, "the field this test rewrites"
+        tamper(first, header.replace(written, '"version": 99', 1))
+
+        result = check(tmp_path)
+
+        assert result.broken_chains == [], "it is there; 'gone' is the wrong word"
+        assert len(result.unreadable_chains) == 1
+        assert "job::Sent" in result.unreadable_chains[0]
+
     def test_a_file_no_chain_reaches_is_reported_but_not_a_fault(self, tmp_path):
         """Left behind when a head could not be updated after the file landed.
 

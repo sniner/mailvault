@@ -11,6 +11,12 @@
   fact an archive cannot work out again from what it holds, and nothing said a word about it: the
   run reported the message restored. Backends now answer `places_of` and the repair asks
 
+- **An archive written by a newer mailvault is no longer reported as damaged.** A log file this
+  version cannot read is skipped with a warning -- and the chain that names it then counted it as
+  *gone*, so `archive check` answered `NOT sound` and exited 1 over a file that is present and
+  intact. It is now told apart from a file that really is missing and says what to do about it:
+  upgrade. The chain still stops there, because the link to the file before it is inside the file
+
 - **A `db search` answer says when it may be short.** The query database can be behind the
   archive, in which case what a search finds is true and not all of it -- and the sentence saying
   so went to the log while the hits went to stdout. `mailvault db search --sender x > hits` kept
