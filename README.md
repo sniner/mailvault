@@ -150,7 +150,13 @@ $ mailvault backup
 2024-08-15 10:05:52,799 INFO -- example.org::INBOX[1]: NEW: id=25652e390168...a234
 2024-08-15 10:05:52,799 INFO -- example.org::INBOX[2]: NEW: id=fa1f63a13f91...c9ee
 2024-08-15 10:05:52,799 INFO -- example.org::INBOX[3]: NEW: id=800be881dc38...7fa8
+example.org: 3 messages seen, 3 stored, 0 already archived
 ```
+
+The last line is the answer, and it is the only one on stdout -- the rest is the
+run talking about itself and goes to stderr, or to `--log-file` where one is
+named. `mailvault backup > last-night` keeps the first and lets you watch the
+second.
 
 From anywhere else, name the archive -- `--archive` is what `git -C` is:
 
@@ -171,7 +177,13 @@ $ mailvault backup
 2024-08-15 10:09:28,820 INFO -- example.org::INBOX[1]: EXISTS: id=25652e390168...a234
 2024-08-15 10:09:28,820 INFO -- example.org::INBOX[2]: EXISTS: id=fa1f63a13f91...c9ee
 2024-08-15 10:09:28,820 INFO -- example.org::INBOX[3]: EXISTS: id=800be881dc38...7fa8
+example.org: 3 messages seen, 0 stored, 3 already archived
 ```
+
+Three numbers rather than one, because `0 stored` on its own invites the wrong
+worry. Mail filed from one folder into another is offered again at its new
+place, and a run that counted it as stored would report a busy night for mail
+the archive has held for months.
 
 That is the whole routine -- a cron entry and nothing else. Three things adjust
 it:
@@ -185,6 +197,14 @@ $ mailvault backup --full                 # re-read every folder, ignoring resum
 A failed download needs no attention: that folder does not advance its resume
 point, the next ordinary run fetches it again, and nothing is deleted from the
 server that did not make it into the archive.
+
+**What no run can catch up with** is a message that arrived and was deleted
+again between two of them. It was not there at either moment mailvault looked,
+so no later run can find it: an archive holds what the mailbox held when it was
+read. That is not a gap to be repaired but the nature of looking in at
+intervals, and it is the one place where a memory of more mail and a complete
+archive may honestly disagree. Running more often narrows the window; nothing
+closes it.
 
 `verify` is therefore not part of the routine. It answers a different question --
 whether the archive still holds what the mailbox holds -- and is worth asking
