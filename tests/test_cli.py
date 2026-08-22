@@ -1223,6 +1223,124 @@ class TestVerifyReportRepairCounts:
         assert "0 restored" in capsys.readouterr().out
 
 
+class TestVerifyExitCode:
+    """The exit code says what the last line says, the way `archive check` does."""
+
+    @staticmethod
+    def _results(**overrides: Any) -> list[jobs.VerifyResult]:
+        defaults: dict[str, Any] = dict(folder="Sent", on_server=3, missing=0)
+        defaults.update(overrides)
+        return [jobs.VerifyResult(**defaults)]
+
+    def test_a_complete_archive_exits_zero(self, capsys):
+        assert commands.report_verify("job", self._results(), repaired=False) == 0
+
+    def test_a_gap_exits_non_zero_even_without_repair(self, capsys):
+        """Finding the thing it exists to find must not look like finding nothing."""
+        code = commands.report_verify("job", self._results(missing=2), repaired=False)
+
+        assert code == 1
+        assert "run again with --repair" in capsys.readouterr().out
+
+    def test_a_repair_that_closed_every_gap_exits_zero(self, capsys):
+        results = self._results(missing=2, restored=2)
+
+        assert commands.report_verify("job", results, repaired=True) == 0
+
+    def test_a_repair_that_left_a_gap_open_exits_non_zero(self, capsys):
+        results = self._results(missing=2, restored=1, failed=1)
+
+        assert commands.report_verify("job", results, repaired=True) == 1
+
+    def test_further_copies_are_no_reason_to_fail(self, capsys):
+        """Thousands of them are the ordinary state of a folder, every night."""
+        results = self._results(extra_copies=1729)
+
+        assert commands.report_verify("job", results, repaired=False) == 0
+
+    def test_a_failed_copy_download_is_no_reason_either(self, capsys):
+        """It is a duplicate of mail already archived; nothing is missing for it."""
+        results = self._results(extra_copies=2, failed=2)
+
+        assert commands.report_verify("job", results, repaired=True) == 0
+
+    def test_mail_that_was_fetched_and_not_recorded_is_said_and_counted(self, capsys):
+        """Restored, but nothing says where it belongs -- so the folder is not done."""
+        results = self._results(missing=2, restored=2, sealed=False)
+
+        code = commands.report_verify("job", results, repaired=True)
+
+        out = capsys.readouterr().out
+        assert code == 1
+        assert "metadata log was not written" in out
+        assert "  job::Sent" in out
+        # The way out is the last thing read, after the verdict it qualifies.
+        assert out.splitlines()[-1].strip() == "job::Sent"
+
+
+class TestBackupVerdict:
+    """A backup now answers the person who started it, not only the log."""
+
+    @staticmethod
+    def _report(**overrides: Any) -> jobs.BackupReport:
+        defaults: dict[str, Any] = dict(folders=15, with_mail=3, stored=1729)
+        defaults.update(overrides)
+        return jobs.BackupReport(**defaults)
+
+    def test_it_says_what_came_in_and_out_of_how_many_folders(self, capsys):
+        assert commands.report_backup("proton.me", self._report()) == 0
+
+        assert (
+            capsys.readouterr().out.splitlines()[0]
+            == "proton.me: 1,729 messages stored from 3 of 15 folders"
+        )
+
+    def test_a_quiet_night_says_so_rather_than_saying_nothing(self, capsys):
+        """Silence would be indistinguishable from a run that never got started."""
+        assert commands.report_backup("proton.me", self._report(with_mail=0, stored=0)) == 0
+
+        assert capsys.readouterr().out == "proton.me: nothing new in 15 folders\n"
+
+    def test_what_left_the_server_is_said_out_loud(self, capsys):
+        commands.report_backup("proton.me", self._report(deleted=1729))
+
+        assert "1,729 messages removed from the server" in capsys.readouterr().out
+
+    def test_a_folder_that_fell_short_is_named_with_what_happens_to_it(self, capsys):
+        code = commands.report_backup("proton.me", self._report(failed=12, retried=["INBOX"]))
+
+        out = capsys.readouterr().out
+        assert "12 messages could not be stored" in out
+        assert "1 folder not finished -- read again next run" in out
+        assert "  INBOX" in out
+        # The exit code says the same thing to whoever is not reading.
+        assert code == 1
+
+    def test_a_run_that_stored_nothing_and_failed_at_nothing_is_still_sound(self, capsys):
+        assert commands.report_backup("proton.me", self._report(stored=0, with_mail=0)) == 0
+
+    def test_a_run_that_fell_over_does_not_report_a_quiet_night(self, capsys):
+        """ "nothing new" is a claim about the mailbox, and this run never got to see it."""
+        report = self._report(stored=0, with_mail=0, retried=["INBOX", "Sent"])
+
+        assert commands.report_backup("proton.me", report) == 1
+
+        first = capsys.readouterr().out.splitlines()[0]
+        assert first == "proton.me: nothing stored in 15 folders"
+
+    def test_a_mailbox_without_folders_does_not_pretend_to_have_read_any(self, capsys):
+        assert commands.report_backup("proton.me", self._report(folders=0, stored=0)) == 0
+
+        assert capsys.readouterr().out == "proton.me: no folders to read\n"
+
+
+class TestFoldersAnswer:
+    def test_every_folder_is_one_line_and_nothing_else_is(self, capsys):
+        commands.report_folders("proton.me", ["INBOX", "Sent"])
+
+        assert capsys.readouterr().out == "proton.me::INBOX\nproton.me::Sent\n"
+
+
 class TestTheLogIsReadOncePerRun:
     """One archive has one metadata log, however many jobs the run names.
 

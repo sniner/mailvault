@@ -151,8 +151,21 @@ def report_backup(job_name: str, report: jobs.BackupReport) -> int:
     return 0 if report.complete else 1
 
 
-def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: bool) -> None:
+def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: bool) -> int:
     """Say what each folder turned out to hold, and whether anything is missing.
+
+    The exit code says what the last line says, and nothing besides. An archive
+    with a gap in it ends non-zero whether or not `--repair` was asked to close
+    it -- the same answer `archive check` gives to a message the log names and
+    the archive does not have, and for the same reason: a run that found the
+    thing it exists to find must not look like one that found nothing.
+
+    What it does *not* count is the extra copies, nor a download of one that
+    failed. They are duplicates of mail already archived, a folder can hold
+    thousands, and a run ending non-zero over them every night would teach its
+    owner to stop reading the exit code -- which is the one thing that must not
+    happen to it. The rule holds in both directions: a count kept out of the
+    verdict is kept out of the exit code too.
 
     Two counts where there used to be one, and the whole point of the second is
     that it is *not* added to the first. A folder can hold the same message
@@ -189,6 +202,7 @@ def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: boo
     total_extra = sum(r.extra_copies for r in results)
     total_restored = sum(r.restored for r in results)
     total_recovered = sum(r.recovered_copies for r in results)
+    unsealed = [f"{job_name}::{r.folder}" for r in results if not r.sealed]
     if not total_missing:
         line = f"{job_name}: archive is complete"
         if total_extra:
@@ -211,6 +225,18 @@ def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: boo
             copies = utils.counted(total_recovered, "further copy", "further copies")
             line += f", plus {copies} that really did differ"
         print(line)
+    # After the verdict rather than before it, because this qualifies whatever
+    # the verdict said: the mail is in the archive and nothing records where it
+    # belongs, so a folder counted as complete is not yet finished. Ending on
+    # the line that names the way out is the point of putting it last.
+    _report_items(
+        unsealed,
+        "folder",
+        "whose metadata log was not written -- what was fetched is in the archive"
+        " with nothing recording where it came from, run again",
+    )
+    outstanding = total_missing - total_restored if repaired else total_missing
+    return 0 if outstanding <= 0 and not unsealed else 1
 
 
 def _run_job(
@@ -260,7 +286,7 @@ def _run_job(
         results = jobs.verify(
             job, destination, repair=args.repair, compress=compress, places=places
         )
-        report_verify(job.name, results, repaired=args.repair)
+        return report_verify(job.name, results, repaired=args.repair)
     return 0
 
 

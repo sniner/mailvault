@@ -21,6 +21,14 @@
   It now ends with 1. **A cron job that reacts to a non-zero exit will start reporting runs that
   were already falling short before this, quietly**
 
+- **`verify` answers with its exit code as well.** An archive with a gap in it ended with 0, so a
+  nightly `verify` that found three thousand messages missing looked exactly like one that found
+  none -- while `archive check` has always ended non-zero over the same finding. It now does too,
+  with or without `--repair`. The further copies are deliberately not counted: they are duplicates
+  of mail an archive holds once, a folder can hold thousands, and a run failing over them every
+  night would teach its owner to stop reading the exit code. A repair that fetched mail and could
+  not write down where it belongs is now said out loud and counted as well
+
 ## 0.13.1 (2026-08-17)
 
 ### Fixed
