@@ -477,6 +477,15 @@ class MSGraphClient:
         """Fetch a single message by its Graph id (folder is irrelevant here)."""
         return self._download_mime(msg_id)
 
+    def places_of(self, msg_id: str, folder_name: str) -> list[str | bytes]:
+        """The folder, and nothing else: a Graph message is in one mail folder.
+
+        Spelled out rather than inherited, so that a later `folders=` in this
+        backend's own `metadata_fn` cannot drift away from what a repair
+        records without somebody having to change this line too.
+        """
+        return [folder_name]
+
     def _graph_delete(self, msg_id: str) -> None:
         """Delete one message, softly or for good depending on the job.
 

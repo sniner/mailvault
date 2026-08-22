@@ -1725,6 +1725,10 @@ def _verify_client(index: list[base.MessageRef], bodies: dict[str, bytes]):
     client = _make_mock_client()
     client.message_index.return_value = iter(index)
     client.fetch_message.side_effect = lambda msg_id, folder: bodies[msg_id]
+    # What a source with one place per message answers. Left to the MagicMock it
+    # would answer with a Mock, and the repair would write that into the log as
+    # the place -- which is a thing to find out here rather than on an archive.
+    client.places_of.side_effect = lambda msg_id, folder: [folder]
     return client
 
 
@@ -1785,6 +1789,41 @@ class TestVerify:
         places = places_from_log(tmp_path / metalog.DEFAULT_LOG_DIR)
         known = archived_message_counts(store, places[("test-job", "INBOX")])
         assert known == {"a@example.com": 1, "b@example.com": 1}
+
+    def test_a_restored_message_keeps_every_place_it_is_in(self, tmp_path):
+        """A repair records where the source says the message is, not where it looked.
+
+        On Gmail a message carries labels, and the backup path writes all of
+        them: `\\Inbox`, `Wichtig`, `INBOX`. The repair path wrote the one
+        folder it happened to be walking, so a message restored after a loss
+        came back with its labels stripped -- and where a message was seen is
+        the one fact the archive cannot work out again for itself.
+        """
+        job = _make_job(folders=["INBOX"])
+        lost = _eml("<b@example.com>", "Lost")
+        _archive_message(tmp_path, "test-job", "INBOX", _eml("<a@example.com>", "Archived"))
+
+        client = _verify_client(
+            [
+                base.MessageRef(msg_id="id-a", message_id="<a@example.com>"),
+                base.MessageRef(msg_id="id-b", message_id="<b@example.com>"),
+            ],
+            {"id-b": lost},
+        )
+        client.places_of.side_effect = lambda msg_id, folder: ["INBOX", "Wichtig"]
+
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            jobs.verify(job, tmp_path, repair=True)
+
+        places = places_from_log(tmp_path / metalog.DEFAULT_LOG_DIR)
+        assert ("test-job", "Wichtig") in places, sorted(places)
+        store = cas.mail_store(tmp_path)
+        assert archived_message_counts(store, places[("test-job", "Wichtig")]) == {
+            "b@example.com": 1
+        }
 
     def test_counting_the_archive_opens_each_entry_once(self, tmp_path):
         """The longest silence in the operation, and it runs over the share.

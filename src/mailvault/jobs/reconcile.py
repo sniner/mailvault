@@ -297,7 +297,10 @@ def reconcile_folder(
         try:
             status, store_id, _path = store.add(msg)
             if store_id not in recorded:
-                log_writer.add(job_name, [folder], store_id)
+                # The source's places, not the folder this pass happens to be
+                # walking. A Gmail message carries labels, and a repair that
+                # wrote `[folder]` put it back with the others stripped off.
+                log_writer.add(job_name, mb.places_of(ref.msg_id, folder), store_id)
                 recorded.add(store_id)
         except Exception as exc:
             log.exception("%s: storing %s failed: %s", ctx, label, exc)

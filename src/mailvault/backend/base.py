@@ -175,6 +175,22 @@ class MailboxClient(Protocol):
 
     def fetch_message(self, msg_id: Any, folder_name: str) -> bytes: ...
 
+    def places_of(self, msg_id: Any, folder_name: str) -> list[str | bytes]:
+        """Every place the source says this message is in, the folder included.
+
+        A backup gets these along the way, out of the same read that fetched
+        the message: `mailutils.metadata` takes them and the log writes them.
+        A repair fetches one message at a time and has to ask, and it must --
+        Gmail reports a message under every label it carries, and a repair that
+        recorded only the folder it was walking would put back a message whose
+        other places had been silently dropped. Where a message was seen is the
+        one thing the archive cannot work out again from what it holds.
+
+        A source with one place per message answers with the folder and asks
+        nothing of the network; only Gmail pays for this.
+        """
+        ...
+
     def close(self) -> None: ...
 
 

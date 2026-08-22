@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **`verify --repair` gave a Gmail message back without its labels.** A backup records every place
+  a message is in -- on Gmail that is each of its labels, which the backend reports along with the
+  message. The repair path wrote the one folder it happened to be walking instead, so a message
+  restored after a loss came back stripped of its other places. Where a message was seen is the one
+  fact an archive cannot work out again from what it holds, and nothing said a word about it: the
+  run reported the message restored. Backends now answer `places_of` and the repair asks
+
 - **A `db search` answer says when it may be short.** The query database can be behind the
   archive, in which case what a search finds is true and not all of it -- and the sentence saying
   so went to the log while the hits went to stdout. `mailvault db search --sender x > hits` kept

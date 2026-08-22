@@ -960,6 +960,36 @@ class TestCollectMetadata:
 
         assert md.folders == [b"\\Important", b"Work", "INBOX"]
 
+    def test_places_of_answers_what_the_backup_path_records(self):
+        """The repair path asks this; it has to say the same as `_collect_metadata`.
+
+        Two ways of arriving at the same fact, and a message restored by
+        `verify --repair` used to get the poorer one -- the folder alone, with
+        its labels dropped.
+        """
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
+        conn.get_gmail_labels.return_value = {1: [b"\\Important", b"Work"]}
+        client = _make_client(conn=conn)
+
+        assert client.places_of(1, "INBOX") == client._collect_metadata("INBOX", 1, "x").folders
+
+    def test_places_of_costs_a_source_without_labels_no_round_trip(self):
+        conn = _make_mock_conn()
+        client = _make_client(conn=conn)
+
+        assert client.places_of(1, "INBOX") == ["INBOX"]
+        conn.select_folder.assert_not_called()
+        conn.get_gmail_labels.assert_not_called()
+
+    def test_labels_that_cannot_be_read_leave_the_folder_standing(self):
+        """The message is fetched and about to be stored; only its place is at stake."""
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
+        conn.get_gmail_labels.side_effect = OSError("connection reset")
+        client = _make_client(conn=conn)
+
+        assert client.places_of(1, "INBOX") == ["INBOX"]
+        conn.unselect_folder.assert_called_once()
+
     def test_gmail_localised_pseudo_folder_is_not_recorded(self):
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
         conn.get_gmail_labels.return_value = {1: [b"\\Sent"]}

@@ -363,6 +363,31 @@ class ImapClient:
             folders=folders,
         )
 
+    def places_of(self, msg_id: int, folder_name: str) -> list[str | bytes]:
+        """Every place this message is in -- for Gmail its labels, else the folder.
+
+        The same answer `_collect_metadata` builds for the backup path, asked
+        one message at a time because that is how a repair works. A folder has
+        to be selected for `X-GM-LABELS`, and `fetch_message` gives its
+        selection back when it is done, so this makes its own.
+        """
+        if not self.gmail:
+            return [folder_name]
+        self.conn.select_folder(folder_name, readonly=True)
+        try:
+            labels = self.conn.get_gmail_labels(msg_id).get(msg_id, [])
+        except Exception as exc:
+            # The message is fetched and about to be stored; what is at stake
+            # here is only how completely its place is written down. Falling
+            # back to the folder is what the caller would have recorded anyway.
+            log.warning(
+                "%s::%s[%s]: labels not read: %s", self.job_name, folder_name, msg_id, exc
+            )
+            return [folder_name]
+        finally:
+            self.conn.unselect_folder()
+        return [*labels, folder_name]
+
     def _clear_folder(self, folder_name: str) -> None:
         """Delete everything in a folder and expunge it, whatever goes wrong.
 
