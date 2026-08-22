@@ -157,9 +157,12 @@ class ExternalMailArchive:
         on its way here -- headers stripped, line endings rewritten, a message
         re-encoded -- yields bytes the store cannot recognise as ones it already
         holds, and the only sign of that is a "new" count where a small one was
-        expected. It has to be seen *before* anything is written, because
-        afterwards a mangled message is an entry like any other: nothing tells
-        it apart from one that really is new.
+        expected. Which is why the dry run keeps its own account of what it
+        would have written: asking only the store, which nothing changes while
+        it runs, counted a message that occurs twice in the source as new both
+        times and inflated the very number being read. It has to be seen
+        *before* anything is written, because afterwards a mangled message is an
+        entry like any other: nothing tells it apart from one that really is new.
 
         `provenance` is what records where these messages came from. Without it
         the import is what it used to be and leaves mail nothing says anything
@@ -171,17 +174,23 @@ class ExternalMailArchive:
         # Sources that have been read but whose provenance is not written yet.
         # They are let go of a batch at a time, never one at a time -- see `_record`.
         pending: list[pathlib.Path] = []
+        # What a dry run has "stored" so far. The store answers the same question
+        # every time because nothing is written to it, so without this the same
+        # message twice in the source counts as new twice -- and a source that
+        # repeats itself is exactly what the two counts are asked about. A real
+        # run needs no such thing: the second `add` finds the first one's entry.
+        would_hold: set[str] = set()
         since_seal = 0
         for eml in self.walk():
             try:
                 data = _read_eml(eml)
                 if dry_run:
                     uid = store.hashval(data)
-                    status = (
-                        cas.AddStatus.EXISTS
-                        if store.locate(uid, exists=True)
-                        else cas.AddStatus.NEW
-                    )
+                    if uid in would_hold or store.locate(uid, exists=True):
+                        status = cas.AddStatus.EXISTS
+                    else:
+                        status = cas.AddStatus.NEW
+                        would_hold.add(uid)
                 else:
                     status, uid, _ = store.add(data)
             except Exception as exc:

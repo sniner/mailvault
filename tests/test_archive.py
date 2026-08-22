@@ -122,6 +122,31 @@ def test_a_dry_run_predicts_what_the_real_import_then_does(tmp_path, dummy_eml_b
     assert (predicted.stored, predicted.present) == (actual.stored, actual.present)
 
 
+def test_a_dry_run_predicts_it_for_a_source_that_repeats_itself(tmp_path, dummy_eml_bytes):
+    """The case the dry run exists for, and the one it used to get wrong.
+
+    A dry run asks the store, and the store does not change while it runs -- so
+    the same message twice in the source was counted new twice, where the real
+    import stores it once and recognises the second. Two mailboxes exported into
+    one directory is how a source comes to repeat itself, and "how much of this
+    is really new" is the question being asked.
+    """
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "one.eml").write_bytes(dummy_eml_bytes)
+    (src / "again.eml").write_bytes(dummy_eml_bytes)
+    (src / "other.eml").write_bytes(b"From: someone\r\n\r\nanother one")
+
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    arch = importing.ExternalMailArchive(root_dir=src)
+
+    predicted = arch.archive_to_cas(store, dry_run=True)
+    actual = arch.archive_to_cas(store)
+
+    assert (predicted.stored, predicted.present) == (actual.stored, actual.present)
+    assert (actual.stored, actual.present) == (2, 1), "the duplicate is not a third message"
+
+
 def test_an_unreadable_message_is_named_rather_than_counted(tmp_path, monkeypatch):
     src = tmp_path / "src"
     src.mkdir()

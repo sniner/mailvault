@@ -17,6 +17,12 @@
   intact. It is now told apart from a file that really is missing and says what to do about it:
   upgrade. The chain still stops there, because the link to the file before it is inside the file
 
+- **`archive import --dry-run` counted a repeated message as new every time.** The dry run asks the
+  store, and nothing is written to the store while it runs -- so the same message twice in the
+  source was new twice, where the real import stores it once and recognises the second. That is
+  exactly the ratio the dry run exists to show, and it was the one it got wrong. It now keeps its
+  own account of what it would have written
+
 - **A `db search` answer says when it may be short.** The query database can be behind the
   archive, in which case what a search finds is true and not all of it -- and the sentence saying
   so went to the log while the hits went to stdout. `mailvault db search --sender x > hits` kept
