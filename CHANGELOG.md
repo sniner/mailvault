@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A `db search` answer says when it may be short.** The query database can be behind the
+  archive, in which case what a search finds is true and not all of it -- and the sentence saying
+  so went to the log while the hits went to stdout. `mailvault db search --sender x > hits` kept
+  the hits and left the caveat on the terminal, so the file claimed a completeness it did not
+  have. It now goes out with the answer it qualifies. `--json`, `--csv` and `--ids` keep it in the
+  log: a sentence cannot be put into those without an envelope around the data, and there is none
+  yet
+
+- **`1 message carry no date` now says `carries`.** The line `db create` gained in 0.14.0 read as
+  a plural whatever the count was
+
 ## 0.14.0 (2026-08-22)
 
 ### Breaking changes

@@ -513,9 +513,10 @@ def report_create_db(target: pathlib.Path, result: jobs.RebuildResult) -> int:
                 f"mail that is not in the archive, ignored"
             )
         if result.undated:
+            carry = utils.counted(result.undated, "message carries", "messages carry")
             print(
-                f"{utils.counted(result.undated, 'message')} carry no date that could"
-                f" be read -- `db search --since/--until` will not find them"
+                f"{carry} no date that could be read --"
+                f" `db search --since/--until` will not find them"
             )
     else:
         # An empty database, and the reason has a move: an archive built entirely
@@ -1159,12 +1160,22 @@ def run_db(args: argparse.Namespace) -> int:
                 f"{db_path.name}: no query database in this archive -- build one"
                 f" with `mailvault db create`"
             )
-        # Asked before the results are printed, so the warning is not scrolled
-        # away by them: what follows is true and may be incomplete.
+        # Asked before the results are printed, so it is not scrolled away by
+        # them: what follows is true and may be incomplete.
+        #
+        # It goes out with the answer it qualifies. `db search > hits` used to
+        # keep the hits and leave the sentence saying they are not all of them
+        # on the terminal, so the file claimed a completeness it did not have.
+        # A machine format cannot carry it without an envelope around the data,
+        # and there is none yet -- so there it stays in the log, and that is the
+        # first thing a machine-readable result owes its consumer.
         state = jobs.freshness(archive, db_path)
         complaint = state.complaint(db_path.name)
         if complaint:
-            log.warning("%s", complaint)
+            if args.ids or args.csv or args.json:
+                log.warning("%s", complaint)
+            else:
+                print(complaint)
         query = _search_query(args)
         hits = jobs.search(db_path, query)
         if args.ids:

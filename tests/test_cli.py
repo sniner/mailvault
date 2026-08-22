@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import logging
 import os
 import pathlib
@@ -1183,19 +1184,41 @@ class TestDbCommands:
         for store_id in printed:
             assert cas.is_hashval(store_id), store_id
 
-    def test_a_search_on_a_database_that_is_behind_says_so(self, tmp_path, caplog):
+    def _archive_that_moved_on(self, tmp_path) -> pathlib.Path:
+        """An archive whose database was built before the last folder was backed up."""
         archive = self._archive(tmp_path)
         commands.run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
-        # A folder backed up since the database was built.
         writer = metalog.LogWriter(
             archive / metalog.DEFAULT_LOG_DIR, archive / heads.DEFAULT_HEADS_DIR
         )
         writer.add("job", ["Sent"], cas.mail_store(archive).add(b"another")[1])
         writer.seal(datetime(2026, 8, 2, tzinfo=UTC))
+        return archive
+
+    def test_a_search_answer_carries_the_word_that_it_may_be_short(self, tmp_path, capsys):
+        """`db search > hits` kept the hits and left the caveat on the terminal.
+
+        The file then claimed a completeness it did not have. What qualifies an
+        answer goes out with the answer.
+        """
+        archive = self._archive_that_moved_on(tmp_path)
+        capsys.readouterr()  # the report `db create` wrote while setting this up
+
+        commands.run_db(self._db_args(archive, db_command="search"))
+
+        assert "db update" in capsys.readouterr().out
+
+    def test_a_machine_format_keeps_it_in_the_log(self, tmp_path, capsys, caplog):
+        """A JSON array cannot hold a sentence without an envelope, and has none."""
+        archive = self._archive_that_moved_on(tmp_path)
+        capsys.readouterr()  # the report `db create` wrote while setting this up
 
         with caplog.at_level(logging.WARNING):
-            commands.run_db(self._db_args(archive, db_command="search"))
+            commands.run_db(self._db_args(archive, db_command="search", json=True))
 
+        out = capsys.readouterr().out
+        assert "db update" not in out
+        assert isinstance(json.loads(out), list), "still a whole JSON document"
         assert any("db update" in r.getMessage() for r in caplog.records)
 
 
