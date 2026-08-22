@@ -2135,6 +2135,29 @@ class TestBackupReport:
         assert report.stored == 1
         assert not report.complete
 
+    def test_the_query_database_line_counts_places_as_well_as_rows(self, tmp_path, caplog):
+        """ "2 new messages" at the end of a backup is read as "two mails arrived".
+
+        What it counts is rows the projection gained. A message filed into a
+        second folder gains no row and gains a place, so the places are the
+        number that moves in step with the run.
+        """
+        client = _make_mock_client()
+        # A stand-in that really stores and records, so the projection has
+        # something to take in. The first run builds it and reports that; the
+        # line under test is the one the second run writes.
+        client.folder_backup.side_effect = _storing_backup(_eml("<a@example.com>"))
+        self._run(tmp_path, client, index_db=True)
+
+        client.folder_backup.side_effect = _storing_backup(_eml("<b@example.com>"))
+        # `_make_mock_client` hands out an iterator, and the first run drained it.
+        client.folders.return_value = ["INBOX"]
+        with caplog.at_level(logging.INFO):
+            self._run(tmp_path, client, index_db=True, incremental=False)
+
+        assert "new to it" in caplog.text, caplog.text
+        assert "recorded from" in caplog.text, caplog.text
+
     def test_what_left_the_server_is_counted_only_once_it_really_left(self, tmp_path):
         client = _make_mock_client()
         client.folder_backup.return_value = base.BackupResult(

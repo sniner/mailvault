@@ -614,9 +614,15 @@ def _refresh_query_db(store_path: pathlib.Path) -> None:
             utils.counted(result.messages, "message"),
         )
     else:
+        # Two numbers, because the first one alone gets read as "two mails
+        # arrived" -- the obvious sense of a line at the end of a backup, and
+        # not what it says. What it counts is rows the projection gained, and a
+        # message filed into a second folder gains none while gaining a place.
+        # The places are the number that moves in step with the run.
         log.info(
-            "%s: query database updated, %s from %s",
+            "%s: query database updated, %s new to it, %s recorded from %s",
             name,
-            utils.counted(result.messages, "new message"),
+            utils.counted(result.messages, "message"),
+            utils.counted(result.applied, "place"),
             utils.counted(result.files, "log file"),
         )

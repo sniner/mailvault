@@ -31,6 +31,14 @@
   night would teach its owner to stop reading the exit code. A repair that fetched mail and could
   not write down where it belongs is now said out loud and counted as well
 
+### Fixed
+
+- **`index.db: 2 new message(s) from 2 log file(s)` counted something else than it seemed to.** At
+  the end of a backup that line reads as "two mails arrived". What it counts is rows the query
+  database gained, and a message filed into a second folder gains no row while gaining a place --
+  so a run that recorded six locations could report two. It now says both:
+  `index.db: query database updated, 2 messages new to it, 6 places recorded from 2 log files`
+
 ## 0.13.1 (2026-08-17)
 
 ### Fixed
