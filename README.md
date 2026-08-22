@@ -144,7 +144,8 @@ Then run the backup:
 
 ```console
 $ mailvault backup
-2024-08-15 10:05:52,275 INFO -- START -- archive: /srv/archive/private
+2024-08-15 10:05:52,275 INFO -- START
+2024-08-15 10:05:52,275 INFO -- Archive: /srv/archive/private
 2024-08-15 10:05:52,276 INFO -- Job: example.org
 2024-08-15 10:05:52,527 INFO -- example.org::INBOX: found 3 messages
 2024-08-15 10:05:52,799 INFO -- example.org::INBOX[1]: NEW: id=25652e390168...a234

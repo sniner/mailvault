@@ -518,10 +518,13 @@ def main() -> int:
     # is about it, and repeating the path on each of them buries the statement
     # behind it -- over a network share the prefix is routinely longer than what
     # it prefixes. `folders` is the one command that works on no archive at all.
-    if args.command == "folders":
-        log.info("START")
-    else:
-        log.info("START -- archive: %s", commands.archive_path(args))
+    #
+    # On a line of its own, and labelled the way the run labels its other
+    # subject: `Archive:` reads beside `Job:` a moment later, where an appendix
+    # hung on the end of START read as an aside to the word START.
+    log.info("START")
+    if args.command != "folders":
+        log.info("Archive: %s", commands.archive_path(args))
     exit_code = 0
     try:
         if args.command in {"folders", "backup", "verify"}:

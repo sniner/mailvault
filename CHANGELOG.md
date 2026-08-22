@@ -17,6 +17,11 @@
 
 ### Changed
 
+- **The archive a run works on is named on a line of its own.** `START -- archive: /srv/archive`
+  hung the subject of the run on the end of the word START, where it read as an aside. It is now
+  `START` followed by `Archive: /srv/archive`, which is how the run labels its other subject a
+  moment later (`Job: example.org`)
+
 - **A backup that left something behind exits non-zero.** A folder that could not be read, or whose
   messages could not all be stored, has never stopped the folders after it -- which is right -- but
   the run then ended with exit code 0 and was indistinguishable from one where everything worked.

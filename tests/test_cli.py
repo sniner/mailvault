@@ -525,9 +525,14 @@ class TestOutputNobodyIsReading:
         with _stdout_nobody_reads(monkeypatch), caplog.at_level(logging.DEBUG):
             assert cli.main() == 141
 
-        # The run's own START and FINISHED, and not a word about the pipe -- at
-        # any level, `-v`, which is this DEBUG, included.
-        assert len(caplog.records) == 2
+        # The run's own bookkeeping -- what it started, what it worked on, that
+        # it finished -- and not a word about the pipe at any level, `-v`, which
+        # is this DEBUG, included.
+        assert [r.getMessage().split(":")[0] for r in caplog.records] == [
+            "START",
+            "Archive",
+            "FINISHED",
+        ]
 
     def test_it_ends_there_rather_than_failing_every_job_in_turn(self, monkeypatch):
         config = conf.Config(jobs=[conf.JobConfig(name="one"), conf.JobConfig(name="two")])
