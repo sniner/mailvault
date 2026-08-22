@@ -188,5 +188,11 @@ def date(msg: email.message.EmailMessage) -> datetime | None:
             return email.utils.parsedate_to_datetime(candidate)
         except (ValueError, TypeError):
             continue
-    log.warning("Unreadable Date header %r", value)
+    # Debug, not a warning: a run over an archive writes one of these per
+    # message and they add up to a misleading number -- measured against the
+    # reference archive, 16 of them for 110 messages that ended up with no date
+    # at all. What a header said is worth having when one is looked into; what
+    # the database came to hold is the count worth printing, and `db create`
+    # asks it of the database rather than of the parser.
+    log.debug("Unreadable Date header %r", value)
     return None

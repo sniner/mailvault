@@ -492,6 +492,13 @@ def report_create_db(target: pathlib.Path, result: jobs.RebuildResult) -> int:
     of what the log accounts for -- the same command, the same wording, and on an
     archive with mail nothing records a place for, a smaller number. Somebody
     comparing two runs across that change has to be able to see why.
+
+    The dateless messages are named here and nowhere else. `db update` builds on
+    the same database every night and would repeat the same number until
+    somebody stopped reading it -- and it is not a finding that changes: those
+    messages carry what they carry, and the archive holds them whole either way.
+    It is worth saying once, to whoever asked for the database to be built, and
+    it says what it costs them rather than what went wrong reading a header.
     """
     replay = result.replay
     if replay.files:
@@ -504,6 +511,11 @@ def report_create_db(target: pathlib.Path, result: jobs.RebuildResult) -> int:
             print(
                 f"{utils.counted(replay.unknown, 'log entry', 'log entries')} about "
                 f"mail that is not in the archive, ignored"
+            )
+        if result.undated:
+            print(
+                f"{utils.counted(result.undated, 'message')} carry no date that could"
+                f" be read -- `db search --since/--until` will not find them"
             )
     else:
         # An empty database, and the reason has a move: an archive built entirely

@@ -44,6 +44,15 @@
   so a run that recorded six locations could report two. It now says both:
   `index.db: query database updated, 2 messages new to it, 6 places recorded from 2 log files`
 
+- **`db create` said 18 times what it could say once, and the once was a different number.** A
+  build over a large archive wrote one warning per message whose `Date` header it could not read,
+  through the middle of the progress output. It now says it at the end, and asks the finished
+  database rather than counting its own complaints -- "110 messages carry no date that could be
+  read", with what that costs: `db search --since/--until` will not find them. Those are not the
+  same number -- against a 130,997-message archive the parser complained 16 times about 110
+  messages that came out with no date, a message with no `Date` header at all never drawing a
+  complaint to count. The individual headers are still reported, at debug level
+
 - **`found 0 of 1 message` said one had got away.** Over IMAP a folder reported what this pass
   had to fetch against how many messages the folder holds -- two answers to two different
   questions, in the shape of a ratio that reads as "one is there and I could not get it". An

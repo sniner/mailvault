@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from mailvault import mailutils
@@ -291,7 +293,12 @@ def test_date_returns_none_for_a_header_beyond_repair(caplog):
     raw = b"From: a@example.com\r\nDate: yesterday afternoon\r\n\r\n"
     header = mailutils.decode_email_header(raw)
 
-    assert mailutils.date(header) is None
+    with caplog.at_level(logging.DEBUG):
+        assert mailutils.date(header) is None
+
+    # Still reported, one level down: the value is worth having when a message
+    # is looked into, and worthless as a count -- `db create` asks the finished
+    # database how many came out with no date instead.
     assert "Unreadable Date header" in caplog.text
 
 
@@ -393,7 +400,9 @@ class TestDateByConvention:
 
     def test_an_ambiguous_dotted_date_stays_unread(self, caplog):
         """05.03.2002 is March to half the world and May to the other half."""
-        assert self._date("05.03.2002 12:03:27") is None
+        with caplog.at_level(logging.DEBUG):
+            assert self._date("05.03.2002 12:03:27") is None
+
         assert "Unreadable Date header" in caplog.text
 
     def test_a_date_with_no_time_gets_midnight(self):
@@ -405,7 +414,9 @@ class TestDateByConvention:
 
     def test_a_date_with_no_year_stays_unread(self, caplog):
         """A year is never filled in -- it would be this year, not the message's."""
-        assert self._date("Wed, 17 Sep   GMT Daylight Time") is None
+        with caplog.at_level(logging.DEBUG):
+            assert self._date("Wed, 17 Sep   GMT Daylight Time") is None
+
         assert "Unreadable Date header" in caplog.text
 
     def test_an_ordinary_header_never_reaches_any_of_this(self):

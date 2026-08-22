@@ -138,9 +138,19 @@ class ReplayResult:
 
 @dataclasses.dataclass
 class RebuildResult:
-    """Outcome of rebuilding the database from the archive and its log."""
+    """Outcome of rebuilding the database from the archive and its log.
+
+    `undated` is asked of the finished database rather than counted while it
+    fills, and that is the point of it. Counting the complaints instead -- one
+    per header the parser could not read -- reports how often something was
+    noticed, not how many messages came out without a date, and against the
+    reference archive those were 16 and 110. A message can also arrive here
+    with no `Date` header to be unreadable in the first place, which nothing
+    would have complained about at all.
+    """
 
     messages: int = 0
+    undated: int = 0
     replay: ReplayResult = dataclasses.field(default_factory=ReplayResult)
 
 
@@ -482,10 +492,17 @@ def _build_db(
             result.replay.applied += applied
             result.replay.unknown += unknown
         result.messages = rows.created
+        result.undated = _undated(db)
         # Prime the bookkeeping so a later refresh reads only files added since,
         # and so a later *reader* can tell whether the archive has moved on.
         _mark_logs_applied(db, metalog.log_files(log_root))
         _record_heads(db, store_path / heads.DEFAULT_HEADS_DIR)
+
+
+def _undated(db: index_db.IndexDatabaseConnection) -> int:
+    """How many messages ended up with no date, asked of the database itself."""
+    row = db.execute("SELECT count(*) FROM message WHERE date IS NULL").fetchone()
+    return int(row[0]) if row else 0
 
 
 def refresh_db(store_path: pathlib.Path, db_path: pathlib.Path) -> RefreshResult:

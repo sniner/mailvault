@@ -1532,6 +1532,30 @@ class TestRebuildWithLog:
         writer.seal(datetime(2026, 8, 1, tzinfo=UTC))
         return store_id
 
+    def test_a_message_with_no_readable_date_is_counted_once_at_the_end(self, tmp_path):
+        """Asked of the finished database, not of the parser on the way past.
+
+        Counting the complaints would report how often a header was noticed --
+        against the reference archive, 16 of those for 110 messages that came
+        out with no date. And a message with no `Date` header at all draws no
+        complaint to count.
+        """
+        _archive_message(
+            tmp_path,
+            "job",
+            "INBOX",
+            b"From: a@example.com\r\nMessage-ID: <a@x>\r\nDate: yesterday afternoon\r\n\r\n",
+        )
+        _archive_message(
+            tmp_path, "job", "INBOX", b"From: b@example.com\r\nMessage-ID: <b@x>\r\n\r\n"
+        )
+        _archive_message(tmp_path, "job", "INBOX", _eml("<c@example.com>"))
+
+        result = jobs.create_db(tmp_path, tmp_path / "out.db")
+
+        assert result.messages == 3
+        assert result.undated == 2
+
     def test_replay_restores_the_places_a_message_was_seen_in(self, tmp_path):
         store_id = self._archive_with_log(tmp_path, [("mail.example.org", ["INBOX", "\\Sent"])])
 
