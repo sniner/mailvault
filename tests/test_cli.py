@@ -1192,6 +1192,13 @@ class TestVerifyReportRepairCounts:
         assert "0 restored" in capsys.readouterr().out
 
 
+class TestFoldersAnswer:
+    def test_every_folder_is_one_line_and_nothing_else_is(self, capsys):
+        commands.report_folders("proton.me", ["INBOX", "Sent"])
+
+        assert capsys.readouterr().out == "proton.me::INBOX\nproton.me::Sent\n"
+
+
 class TestTheLogIsReadOncePerRun:
     """One archive has one metadata log, however many jobs the run names.
 

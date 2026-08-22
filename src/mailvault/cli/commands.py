@@ -100,6 +100,17 @@ def require_archive(archive: pathlib.Path) -> None:
 # --- folders / backup / verify -------------------------------------------------
 
 
+def report_folders(job_name: str, folders: list[str]) -> None:
+    """Name every folder of the job, one per line, as `job::folder`.
+
+    The answer to a question and nothing else: no count, no heading, nothing
+    that would have to be filtered back out. `folders | grep` is what this is
+    for, and the form is the one every other command takes back.
+    """
+    for folder in folders:
+        print(f"{job_name}::{folder}")
+
+
 def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: bool) -> None:
     """Say what each folder turned out to hold, and whether anything is missing.
 
@@ -172,7 +183,7 @@ def _run_job(
     log.info("Job: %s", job.name)
 
     if args.command == "folders":
-        jobs.folder_list(job)
+        report_folders(job.name, jobs.folder_list(job))
     elif destination is None:
         # `run_mailbox` resolves the archive for every command that works on one,
         # so this does not happen from the CLI. It is here because the argument

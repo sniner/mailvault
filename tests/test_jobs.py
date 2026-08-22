@@ -2062,7 +2062,7 @@ class TestVerify:
 
 
 class TestFolderList:
-    def test_prints_folders(self, capsys):
+    def test_returns_the_folders_the_server_names(self, capsys):
         job = _make_job()
         mock_client = _make_mock_client()
         mock_client.folders.return_value = iter(["INBOX", "Sent", "Archive"])
@@ -2071,12 +2071,12 @@ class TestFolderList:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
 
-            jobs.folder_list(job)
+            folders = jobs.folder_list(job)
 
-        output = capsys.readouterr().out
-        assert "test-job::INBOX" in output
-        assert "test-job::Sent" in output
-        assert "test-job::Archive" in output
+        assert folders == ["INBOX", "Sent", "Archive"]
+        # Putting them into words belongs to the command that asked, and a job
+        # that wrote them out itself would be heard twice.
+        assert capsys.readouterr().out == ""
 
 
 # ---------------------------------------------------------------------------
