@@ -430,7 +430,6 @@ class ImapClient:
         """
         folder_info = self.conn.select_folder(folder_name, readonly=True)
         try:
-            items_in_folder = folder_info[b"EXISTS"]
             above_uid = (
                 resume.accept(folder_info, f"{self.job_name}::{folder_name}")
                 if resume is not None
@@ -444,21 +443,16 @@ class ImapClient:
             items_found = len(message_ids)
             if result is not None:
                 result.total = items_found
-            if items_found != items_in_folder:
-                log.info(
-                    "%s::%s: found %s of %s",
-                    self.job_name,
-                    folder_name,
-                    items_found,
-                    utils.counted(items_in_folder, "message"),
-                )
-            else:
-                log.info(
-                    "%s::%s: found %s",
-                    self.job_name,
-                    folder_name,
-                    utils.counted(items_found, "message"),
-                )
+            # What this pass will work through, and nothing about how full the
+            # folder is. The two were reported as `found 0 of 1` -- two answers
+            # to two different questions, in the shape of a ratio that says one
+            # was missed. A covered folder read that way on every run, for good.
+            log.info(
+                "%s::%s: found %s",
+                self.job_name,
+                folder_name,
+                utils.counted(items_found, "message"),
+            )
             for processed, (msg_id, msg) in enumerate(
                 self._walk_folder(folder_name, message_ids, result=result), 1
             ):

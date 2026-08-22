@@ -39,6 +39,13 @@
   so a run that recorded six locations could report two. It now says both:
   `index.db: query database updated, 2 messages new to it, 6 places recorded from 2 log files`
 
+- **`found 0 of 1 message` said one had got away.** Over IMAP a folder reported what this pass
+  had to fetch against how many messages the folder holds -- two answers to two different
+  questions, in the shape of a ratio that reads as "one is there and I could not get it". An
+  incremental run over a folder that is fully archived wrote that line every night, for good. It
+  now reports what the pass will work through and nothing else, which is what the same line over
+  MS Graph has always said
+
 ## 0.13.1 (2026-08-17)
 
 ### Fixed

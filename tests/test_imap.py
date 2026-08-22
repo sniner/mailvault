@@ -512,6 +512,33 @@ class TestIterFolder:
 
 
 class TestFolderBackup:
+    def test_a_covered_folder_is_not_reported_as_a_message_that_got_away(
+        self, tmp_path, caplog
+    ):
+        """`found 0 of 1` read as a retrieval that fell one short.
+
+        It was two answers to two questions -- what lies in the folder, and what
+        lies above the resume point -- in the shape of a ratio, and an
+        incremental run over a covered folder wrote it every night for good.
+        Only the second question is this pass's business.
+
+        What goes with it is the distinction between an empty folder and a
+        covered one: both now say `found 0 messages`. They call for the same
+        nothing, so there is nothing for the line to tell apart.
+        """
+        conn = _make_mock_conn()
+        conn.select_folder.return_value = {b"EXISTS": 1, b"UIDVALIDITY": 42}
+        conn.search.return_value = []
+        client = _make_client(conn=conn)
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        covered = {"kind": imap.UID_RESUME_KIND, "uidvalidity": 42, "uid": 7}
+
+        with caplog.at_level(logging.INFO):
+            client.folder_backup("INBOX", store, resume=covered)
+
+        assert "found 0 messages" in caplog.text, caplog.text
+        assert " of " not in caplog.text, caplog.text
+
     def test_stores_to_cas(self, tmp_path):
         conn = _make_mock_conn()
         msg_date = datetime(2026, 2, 20, tzinfo=UTC)
