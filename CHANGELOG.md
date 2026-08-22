@@ -1,6 +1,29 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 (2026-08-22)
+
+### Breaking changes
+
+- **A backup that left something behind exits non-zero.** A folder that could not be read, or whose
+  messages could not all be stored, has never stopped the folders after it -- which is right -- but
+  the run then ended with exit code 0 and was indistinguishable from one where everything worked.
+  It now ends with 1. **A cron job that reacts to a non-zero exit will start reporting runs that
+  were already falling short before this, quietly**
+
+- **`verify` answers with its exit code as well.** An archive with a gap in it ended with 0, so a
+  nightly `verify` that found three thousand messages missing looked exactly like one that found
+  none -- while `archive check` has always ended non-zero over the same finding. It now does too,
+  with or without `--repair`. The further copies are deliberately not counted: they are duplicates
+  of mail an archive holds once, a folder can hold thousands, and a run failing over them every
+  night would teach its owner to stop reading the exit code. A repair that fetched mail and could
+  not write down where it belongs is now said out loud and counted as well
+
+  **What to check.** Nothing has to be changed for the archive's sake -- both commands do what
+  they always did, and say the same thing in words that they now say in the exit code. What may
+  need looking at is anything that reads it: a cron entry that mails on failure will start
+  mailing, and the first such mail is worth reading rather than silencing. It reports a run that
+  was already falling short before this, quietly. There is no flag to get the old codes back;
+  a wrapper ending in `|| true` is the honest way to say "I know, and I do not want to hear it"
 
 ### Added
 
@@ -21,20 +44,6 @@
   hung the subject of the run on the end of the word START, where it read as an aside. It is now
   `START` followed by `Archive: /srv/archive`, which is how the run labels its other subject a
   moment later (`Job: example.org`)
-
-- **A backup that left something behind exits non-zero.** A folder that could not be read, or whose
-  messages could not all be stored, has never stopped the folders after it -- which is right -- but
-  the run then ended with exit code 0 and was indistinguishable from one where everything worked.
-  It now ends with 1. **A cron job that reacts to a non-zero exit will start reporting runs that
-  were already falling short before this, quietly**
-
-- **`verify` answers with its exit code as well.** An archive with a gap in it ended with 0, so a
-  nightly `verify` that found three thousand messages missing looked exactly like one that found
-  none -- while `archive check` has always ended non-zero over the same finding. It now does too,
-  with or without `--repair`. The further copies are deliberately not counted: they are duplicates
-  of mail an archive holds once, a folder can hold thousands, and a run failing over them every
-  night would teach its owner to stop reading the exit code. A repair that fetched mail and could
-  not write down where it belongs is now said out loud and counted as well
 
 ### Fixed
 
