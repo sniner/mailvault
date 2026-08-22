@@ -1283,21 +1283,52 @@ class TestBackupVerdict:
 
     @staticmethod
     def _report(**overrides: Any) -> jobs.BackupReport:
-        defaults: dict[str, Any] = dict(folders=15, with_mail=3, stored=1729)
+        defaults: dict[str, Any] = dict(
+            folders=15, with_mail=3, seen=1729, stored=1729, present=0
+        )
         defaults.update(overrides)
         return jobs.BackupReport(**defaults)
 
-    def test_it_says_what_came_in_and_out_of_how_many_folders(self, capsys):
+    def test_it_says_what_was_seen_as_well_as_what_was_taken_in(self, capsys):
         assert commands.report_backup("proton.me", self._report()) == 0
 
         assert (
             capsys.readouterr().out.splitlines()[0]
-            == "proton.me: 1,729 messages stored from 3 of 15 folders"
+            == "proton.me: 1,729 messages seen, 1,729 stored, 0 already archived"
+        )
+
+    def test_mail_that_only_moved_is_not_reported_as_mail_that_arrived(self, capsys):
+        """The night this line exists for: a folder tidied on the server.
+
+        Six messages offered, four of them filed out of the inbox months ago and
+        shown again at their new place. "2 stored" alone reads as "two mails
+        arrived", and the reader is left adding up the log to find out otherwise.
+        """
+        report = self._report(folders=2, with_mail=2, seen=6, stored=2, present=4)
+
+        commands.report_backup("proton.me", report)
+
+        assert (
+            capsys.readouterr().out.splitlines()[0]
+            == "proton.me: 6 messages seen, 2 stored, 4 already archived"
+        )
+
+    def test_a_full_pass_over_an_archived_folder_claims_nothing(self, capsys):
+        """`--full` re-reads everything; none of it is new and it must not say so."""
+        report = self._report(seen=1729, stored=0, present=1729)
+
+        commands.report_backup("proton.me", report)
+
+        assert (
+            capsys.readouterr().out.splitlines()[0]
+            == "proton.me: 1,729 messages seen, 0 stored, 1,729 already archived"
         )
 
     def test_a_quiet_night_says_so_rather_than_saying_nothing(self, capsys):
         """Silence would be indistinguishable from a run that never got started."""
-        assert commands.report_backup("proton.me", self._report(with_mail=0, stored=0)) == 0
+        quiet = self._report(with_mail=0, seen=0, stored=0)
+
+        assert commands.report_backup("proton.me", quiet) == 0
 
         assert capsys.readouterr().out == "proton.me: nothing new in 15 folders\n"
 
@@ -1317,11 +1348,13 @@ class TestBackupVerdict:
         assert code == 1
 
     def test_a_run_that_stored_nothing_and_failed_at_nothing_is_still_sound(self, capsys):
-        assert commands.report_backup("proton.me", self._report(stored=0, with_mail=0)) == 0
+        sound = self._report(seen=0, stored=0, with_mail=0)
+
+        assert commands.report_backup("proton.me", sound) == 0
 
     def test_a_run_that_fell_over_does_not_report_a_quiet_night(self, capsys):
         """ "nothing new" is a claim about the mailbox, and this run never got to see it."""
-        report = self._report(stored=0, with_mail=0, retried=["INBOX", "Sent"])
+        report = self._report(seen=0, stored=0, with_mail=0, retried=["INBOX", "Sent"])
 
         assert commands.report_backup("proton.me", report) == 1
 
@@ -1329,7 +1362,9 @@ class TestBackupVerdict:
         assert first == "proton.me: nothing stored in 15 folders"
 
     def test_a_mailbox_without_folders_does_not_pretend_to_have_read_any(self, capsys):
-        assert commands.report_backup("proton.me", self._report(folders=0, stored=0)) == 0
+        empty = self._report(folders=0, seen=0, stored=0)
+
+        assert commands.report_backup("proton.me", empty) == 0
 
         assert capsys.readouterr().out == "proton.me: no folders to read\n"
 

@@ -2080,8 +2080,22 @@ class TestBackupReport:
         report = self._run(tmp_path, client)
 
         assert report.folders == 2
-        assert report.stored == 10
+        assert (report.seen, report.stored, report.present) == (10, 10, 0)
         assert report.complete
+
+    def test_mail_the_archive_already_had_is_not_counted_as_taken_in(self, tmp_path):
+        """A folder tidied on the server offers old mail again at its new place.
+
+        `BackupResult.stored` counts it -- the pass did record where it now
+        belongs -- and a run that passed that number on as its own would report
+        a busy night for mail it has held for months.
+        """
+        client = _make_mock_client()
+        client.folder_backup.return_value = base.BackupResult(total=6, stored=6, present=4)
+
+        report = self._run(tmp_path, client)
+
+        assert (report.seen, report.stored, report.present) == (6, 2, 4)
 
     def test_a_folder_with_nothing_new_is_read_but_not_counted_as_written(self, tmp_path):
         client = _make_mock_client()

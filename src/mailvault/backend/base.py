@@ -33,6 +33,17 @@ class MailboxError(Exception):
 class BackupResult:
     """Outcome of a folder backup.
 
+    `stored` counts messages this pass took responsibility for -- the bytes are
+    in the store and the location is recorded -- whether or not the store had
+    them already. `present` is how many of those it already had, so the mail
+    that is *new to the archive* is `stored - present`. The two are worth
+    keeping apart at the point where a run sums itself up: a `--full` pass over
+    an archived folder stores nothing and would otherwise report every message
+    in it as archived that night. They are not worth conflating in `stored`,
+    which is what the delta round asks about coverage (see `_delta_token`), and
+    that question is "did this pass account for anything", not "was any of it
+    new".
+
     `failed` counts messages that were seen on the server but could not be
     stored locally. A run with failures is incomplete, so the caller must not
     advance the incremental snapshot — otherwise those messages would sit below
@@ -64,6 +75,7 @@ class BackupResult:
 
     total: int = 0
     stored: int = 0
+    present: int = 0
     failed: int = 0
     resume: dict[str, Any] | None = None
     resume_lost: bool = False
@@ -190,6 +202,7 @@ def store_message(
     """
     status, store_id, _path = store.add(msg)
     log.info("%s: %s: id=%s", log_ctx, status, store_id)
+    already_here = status is cas.AddStatus.EXISTS
     if callback is not None and metadata_fn is not None:
         try:
             metadata = metadata_fn(store_id)
@@ -214,4 +227,6 @@ def store_message(
             result.failed += 1
             return None
     result.stored += 1
+    if already_here:
+        result.present += 1
     return store_id

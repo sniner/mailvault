@@ -117,9 +117,18 @@ class BackupReport:
 
     `folders` is how many were read, `with_mail` how many of them had anything
     new -- the difference is the ordinary shape of an incremental run and not a
-    shortfall. `stored` counts messages that reached the archive on this pass,
-    `deleted` those removed from their source afterwards, which only a job with
-    `delete_after_export` does at all.
+    shortfall. `deleted` counts messages removed from their source afterwards,
+    which only a job with `delete_after_export` does at all.
+
+    `seen`, `stored` and `present` are the three that answer "why only two, I
+    had more mail than that". A message the pass looked at is either new to the
+    archive or already in it, and mail that moves between folders is the second
+    while looking every bit like the first: it is offered again at its new
+    place, and a run that counted it as stored would report a busy night for
+    mail it has held for months. They do not have to add up to `seen` -- a
+    backend may pass over a message without either, an exchange journal item
+    that is not one being the case in hand -- and forcing them to would mean
+    inventing a number rather than reporting one.
 
     `failed` and `retried` are the two ways a pass falls short, and they are
     separate because they count different things: messages the server offered
@@ -131,7 +140,9 @@ class BackupReport:
 
     folders: int = 0
     with_mail: int = 0
+    seen: int = 0
     stored: int = 0
+    present: int = 0
     deleted: int = 0
     failed: int = 0
     retried: list[str] = dataclasses.field(default_factory=list)
@@ -276,7 +287,9 @@ def _backup_folder(
     # Counted from the pass that stands, not from the one the source refused:
     # a void resume point makes the first call do nothing, and the read that
     # replaces it is the one that fetched the mail.
-    report.stored += result.stored
+    report.seen += result.total
+    report.stored += result.stored - result.present
+    report.present += result.present
     report.failed += result.failed
     # Asked before the seal empties the writer: how much this pass observed, and
     # therefore whether the log grew at all.
@@ -440,8 +453,12 @@ def _catch_up_folder(
     )
     # A catch-up stores what the folder was missing, and the copies that turned
     # out to differ after all. Both are mail that was not in the archive before
-    # this pass, which is what the count outside means.
+    # this pass, which is what the count outside means -- and everything the
+    # listing matched to something already archived is what `present` means,
+    # whether it was matched once or three times over.
+    report.seen += result.on_server
     report.stored += result.restored + result.recovered_copies
+    report.present += result.on_server - result.missing
     report.failed += result.failed
     if not result.complete:
         log.warning(

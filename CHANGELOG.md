@@ -7,10 +7,12 @@
 - **A backup says what it did when it is done.** `mailvault backup` reported nothing at all: a
   run's entire account of itself was in the log, so finding out whether anything was missing meant
   reading a night's worth of lines, and a script had no way of asking. It now ends with a line of
-  its own -- `proton.me: 1,729 messages stored from 3 of 15 folders` -- naming what came in, out of
-  how many folders were read, and what was removed from the server where a job deletes after
-  export. A folder the run could not finish is named under it, along with what becomes of it: it is
-  read again next run. A run with nothing to do says `nothing new in 15 folders` rather than
+  its own -- `ruhlgroup.com: 6 messages seen, 2 stored, 4 already archived` -- and what was removed
+  from the server where a job deletes after export. Three numbers rather than one, because
+  `2 stored` on its own is read as "two mails arrived": mail filed from one folder into another is
+  offered again at its new place, and it is the third number that tells a quiet night from a
+  tidy-up. A folder the run could not finish is named under it, along with what becomes of it: it
+  is read again next run. A run with nothing to do says `nothing new in 15 folders` rather than
   saying nothing
 
 ### Changed

@@ -114,11 +114,20 @@ def report_folders(job_name: str, folders: list[str]) -> None:
 def report_backup(job_name: str, report: jobs.BackupReport) -> int:
     """Say what the run took in, and whether it got through everything.
 
-    The two numbers of the first line are meant to be read together: how many
-    folders were looked at, and how few of them had anything. That is the
-    ordinary shape of an incremental run -- fifteen folders read, one with new
-    mail -- and a reader who is shown only the second number has no way of
-    telling a quiet night from a run that stopped early.
+    Three numbers where one would do, and the two extra ones are the point.
+    "2 stored" on its own is read as "two mails arrived", and the night that
+    prompted this said exactly that after a folder had been tidied on the
+    server: six messages offered, four of them mail from months ago that had
+    been filed into another folder and was being shown again at its new place.
+    Every number was right and the reader was left to work that out by adding
+    up nine lines and knowing what `EXISTS` means. `6 seen, 2 stored, 4 already
+    archived` is the same run saying it itself.
+
+    Not shown: how many folders had anything. It answers no question a reader
+    of this line is asking, and the counts above already separate a quiet night
+    from a busy one. A run that saw nothing at all is the exception, because
+    then there is nothing else to say and how much was looked through is the
+    whole statement.
 
     A folder that fell short is named, because it is the one thing here that a
     reader can act on: it is read again next run, and if the same name keeps
@@ -129,10 +138,10 @@ def report_backup(job_name: str, report: jobs.BackupReport) -> int:
     if not report.folders:
         print(f"{job_name}: no folders to read")
         return 0
-    if report.stored:
+    if report.seen:
         line = (
-            f"{job_name}: {utils.counted(report.stored, 'message')} stored"
-            f" from {report.with_mail:,} of {utils.counted(report.folders, 'folder')}"
+            f"{job_name}: {utils.counted(report.seen, 'message')} seen,"
+            f" {report.stored:,} stored, {report.present:,} already archived"
         )
     elif report.complete:
         line = f"{job_name}: nothing new in {utils.counted(report.folders, 'folder')}"
