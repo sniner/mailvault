@@ -111,6 +111,46 @@ def report_folders(job_name: str, folders: list[str]) -> None:
         print(f"{job_name}::{folder}")
 
 
+def report_backup(job_name: str, report: jobs.BackupReport) -> int:
+    """Say what the run took in, and whether it got through everything.
+
+    The two numbers of the first line are meant to be read together: how many
+    folders were looked at, and how few of them had anything. That is the
+    ordinary shape of an incremental run -- fifteen folders read, one with new
+    mail -- and a reader who is shown only the second number has no way of
+    telling a quiet night from a run that stopped early.
+
+    A folder that fell short is named, because it is the one thing here that a
+    reader can act on: it is read again next run, and if the same name keeps
+    coming back, that is the folder to look into. The messages that failed are
+    counted and not named -- there is nothing to look up, and their folders are
+    on the lines below.
+    """
+    if not report.folders:
+        print(f"{job_name}: no folders to read")
+        return 0
+    if report.stored:
+        line = (
+            f"{job_name}: {utils.counted(report.stored, 'message')} stored"
+            f" from {report.with_mail:,} of {utils.counted(report.folders, 'folder')}"
+        )
+    elif report.complete:
+        line = f"{job_name}: nothing new in {utils.counted(report.folders, 'folder')}"
+    else:
+        # "nothing new" is a statement about the mailbox and would be a lie
+        # here: a run whose folders fell over stored nothing and found out
+        # nothing either. What is left to say is what it did, not what was
+        # there -- and the lines below say why.
+        line = f"{job_name}: nothing stored in {utils.counted(report.folders, 'folder')}"
+    if report.deleted:
+        line += f", {utils.counted(report.deleted, 'message')} removed from the server"
+    print(line)
+    if report.failed:
+        print(f"{utils.counted(report.failed, 'message')} could not be stored")
+    _report_items(report.retried, "folder", "not finished -- read again next run")
+    return 0 if report.complete else 1
+
+
 def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: bool) -> None:
     """Say what each folder turned out to hold, and whether anything is missing.
 
@@ -179,7 +219,15 @@ def _run_job(
     config: conf.Config,
     destination: pathlib.Path | None = None,
     places: jobs.ArchivedPlaces | None = None,
-) -> None:
+) -> int:
+    """Run one job, and say whether it got through what it was asked to do.
+
+    The answer comes back as an exit code rather than being printed here,
+    because it is the run as a whole that is sound or not: a configuration with
+    four jobs where one folder fell short has to end non-zero, whatever the
+    other three did. A run that reported only in words left cron with nothing
+    to react to and a script no way of asking.
+    """
     log.info("Job: %s", job.name)
 
     if args.command == "folders":
@@ -196,13 +244,16 @@ def _run_job(
         # follow the `args.x or config.x` pattern of the two above: `--full` is
         # a veto on the configured default, not an addition to it.
         incremental = config.incremental and not args.full
-        jobs.backup(
-            job,
-            destination,
-            compress=compress,
-            index_db=index_db,
-            incremental=incremental,
-            places=places,
+        return report_backup(
+            job.name,
+            jobs.backup(
+                job,
+                destination,
+                compress=compress,
+                index_db=index_db,
+                incremental=incremental,
+                places=places,
+            ),
         )
     elif args.command == "verify":
         compress = args.compress or config.compress
@@ -210,6 +261,7 @@ def _run_job(
             job, destination, repair=args.repair, compress=compress, places=places
         )
         report_verify(job.name, results, repaired=args.repair)
+    return 0
 
 
 def run_mailbox(args: argparse.Namespace) -> int:
@@ -271,7 +323,7 @@ def run_mailbox(args: argparse.Namespace) -> int:
         # One broken job must not stop the remaining ones, but the run as a
         # whole reports failure so callers/cron can react.
         try:
-            _run_job(job, args, config, destination, places)
+            exit_code |= _run_job(job, args, config, destination, places)
         except EXPECTED_ERRORS as exc:
             # A misconfigured or refused job is a user error, not a crash --
             # reported as one line here for the same reason `main` does it.

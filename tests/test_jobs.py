@@ -2057,6 +2057,94 @@ class TestVerify:
 
 
 # ---------------------------------------------------------------------------
+# what a backup run comes to
+# ---------------------------------------------------------------------------
+
+
+class TestBackupReport:
+    """A run says what it did, so the caller does not have to read the log."""
+
+    @staticmethod
+    def _run(tmp_path, client, **kwargs) -> jobs.BackupReport:
+        job = _make_job(**kwargs.pop("job", {}))
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+            return jobs.backup(job, tmp_path, **kwargs)
+
+    def test_it_counts_what_was_read_and_what_was_stored(self, tmp_path):
+        client = _make_mock_client()
+        client.folders.return_value = iter(["INBOX", "Sent"])
+        client.folder_backup.return_value = base.BackupResult(total=5, stored=5)
+
+        report = self._run(tmp_path, client)
+
+        assert report.folders == 2
+        assert report.stored == 10
+        assert report.complete
+
+    def test_a_folder_with_nothing_new_is_read_but_not_counted_as_written(self, tmp_path):
+        client = _make_mock_client()
+        client.folders.return_value = iter(["INBOX", "Sent"])
+        client.folder_backup.return_value = base.BackupResult()
+
+        report = self._run(tmp_path, client)
+
+        assert (report.folders, report.with_mail, report.stored) == (2, 0, 0)
+        # Nothing to do is not something going wrong.
+        assert report.complete
+
+    def test_a_message_that_could_not_be_stored_is_counted_and_the_folder_retried(
+        self, tmp_path
+    ):
+        client = _make_mock_client()
+        client.folder_backup.return_value = base.BackupResult(total=5, stored=3, failed=2)
+
+        report = self._run(tmp_path, client)
+
+        assert report.failed == 2
+        assert report.retried == ["INBOX"]
+        assert not report.complete
+
+    def test_a_folder_that_could_not_be_read_at_all_is_read_again_next_run(self, tmp_path):
+        client = _make_mock_client()
+        client.folders.return_value = iter(["INBOX", "Sent"])
+        client.folder_backup.side_effect = [
+            base.MailboxError("connection reset"),
+            base.BackupResult(total=1, stored=1),
+        ]
+
+        report = self._run(tmp_path, client)
+
+        assert report.retried == ["INBOX"]
+        assert report.folders == 2
+        assert report.stored == 1
+        assert not report.complete
+
+    def test_what_left_the_server_is_counted_only_once_it_really_left(self, tmp_path):
+        client = _make_mock_client()
+        client.folder_backup.return_value = base.BackupResult(
+            total=2, stored=2, deletable=[1, 2]
+        )
+
+        report = self._run(tmp_path, client, job={"delete_after_export": True})
+
+        client.purge.assert_called_once()
+        assert report.deleted == 2
+
+    def test_a_purge_that_failed_deleted_nothing(self, tmp_path):
+        client = _make_mock_client()
+        client.folder_backup.return_value = base.BackupResult(
+            total=2, stored=2, deletable=[1, 2]
+        )
+        client.purge.side_effect = base.MailboxError("no")
+
+        report = self._run(tmp_path, client, job={"delete_after_export": True})
+
+        assert report.deleted == 0
+
+
+# ---------------------------------------------------------------------------
 # folder_list
 # ---------------------------------------------------------------------------
 

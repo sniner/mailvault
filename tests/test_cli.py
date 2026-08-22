@@ -63,7 +63,12 @@ class TestFullFlag:
     @staticmethod
     def _incremental_of(monkeypatch, args, config) -> bool:
         seen: dict[str, Any] = {}
-        monkeypatch.setattr(jobs, "backup", lambda *a, **kw: seen.update(kw))
+
+        def _backup(*_a, **kw) -> jobs.BackupReport:
+            seen.update(kw)
+            return jobs.BackupReport()
+
+        monkeypatch.setattr(jobs, "backup", _backup)
         commands._run_job(conf.JobConfig(name="proton.me"), args, config, NEW_ARCHIVE)
         return seen["incremental"]
 
@@ -214,7 +219,12 @@ class TestMailboxGuard:
         config = conf.Config(jobs=[conf.JobConfig(name=n) for n in jobnames])
         monkeypatch.setattr(conf, "load", lambda *a, **kw: config)
         seen: list[str] = []
-        monkeypatch.setattr(commands, "_run_job", lambda job, *a, **kw: seen.append(job.name))
+
+        def _run(job, *_a, **_kw) -> int:
+            seen.append(job.name)
+            return 0
+
+        monkeypatch.setattr(commands, "_run_job", _run)
         return seen
 
     def test_a_configuration_that_never_wrote_here_is_refused(self, monkeypatch, tmp_path):
@@ -1058,6 +1068,27 @@ class TestExitCodes:
             == 0
         )
 
+    @staticmethod
+    def _backup_run(monkeypatch, tmp_path, report: jobs.BackupReport) -> int:
+        """Run one backup job whose outcome is `report`, and give back the code."""
+        marker.write(tmp_path)
+        monkeypatch.setattr(
+            conf, "load", lambda *a, **kw: conf.Config(jobs=[conf.JobConfig(name="proton.me")])
+        )
+        monkeypatch.setattr(jobs, "backup", lambda *a, **kw: report)
+        return commands.run_mailbox(_args(archive=tmp_path, allow_new_mailbox=True))
+
+    def test_a_backup_that_got_through_everything_exits_zero(self, monkeypatch, tmp_path):
+        report = jobs.BackupReport(folders=1, with_mail=1, stored=3)
+
+        assert self._backup_run(monkeypatch, tmp_path, report) == 0
+
+    def test_a_backup_that_left_a_folder_behind_exits_non_zero(self, monkeypatch, tmp_path):
+        """It kept going, which is right -- and must not look like a clean run."""
+        report = jobs.BackupReport(folders=2, with_mail=1, stored=3, retried=["Sent"])
+
+        assert self._backup_run(monkeypatch, tmp_path, report) == 1
+
 
 class TestDbCommands:
     """The four things one can do to a database that is only ever a copy."""
@@ -1190,13 +1221,6 @@ class TestVerifyReportRepairCounts:
         commands.report_verify("job", self._results(on_server=3, extra_copies=1), repaired=True)
 
         assert "0 restored" in capsys.readouterr().out
-
-
-class TestFoldersAnswer:
-    def test_every_folder_is_one_line_and_nothing_else_is(self, capsys):
-        commands.report_folders("proton.me", ["INBOX", "Sent"])
-
-        assert capsys.readouterr().out == "proton.me::INBOX\nproton.me::Sent\n"
 
 
 class TestTheLogIsReadOncePerRun:

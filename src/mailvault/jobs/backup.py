@@ -107,15 +107,39 @@ def _location_writer(
 
 
 @dataclasses.dataclass
-class _Recorded:
-    """Whether this job wrote anything down, counted as it goes.
+class BackupReport:
+    """What a run of this job came to, counted as it goes.
 
-    Held in an object rather than returned, because it has to survive a job that
-    fails part way through: what was written before the failure is written, and
-    the projection that comes after must not skip it because the run ended badly.
+    Filled in through the pass rather than assembled at the end, because it has
+    to survive a job that fails part way through: what was written before the
+    failure is written, the projection that comes after must not skip it, and a
+    run that ended badly still owes its caller an account of what it did manage.
+
+    `folders` is how many were read, `with_mail` how many of them had anything
+    new -- the difference is the ordinary shape of an incremental run and not a
+    shortfall. `stored` counts messages that reached the archive on this pass,
+    `deleted` those removed from their source afterwards, which only a job with
+    `delete_after_export` does at all.
+
+    `failed` and `retried` are the two ways a pass falls short, and they are
+    separate because they count different things: messages the server offered
+    and the archive could not take, and folders whose resume point therefore
+    did not move -- including one that could not be read at all. Both mean the
+    same for the next run, which reads those folders again; only the second is
+    a list, because a folder is worth naming and a message is not.
     """
 
     folders: int = 0
+    with_mail: int = 0
+    stored: int = 0
+    deleted: int = 0
+    failed: int = 0
+    retried: list[str] = dataclasses.field(default_factory=list)
+
+    @property
+    def complete(self) -> bool:
+        """True when every folder was read to the end and everything seen was stored."""
+        return not self.failed and not self.retried
 
 
 def _backup_to_log(
@@ -123,7 +147,7 @@ def _backup_to_log(
     store: cas.ContentAddressedStorage,
     job: conf.JobConfig,
     store_path: pathlib.Path,
-    recorded: _Recorded,
+    report: BackupReport,
     places: ArchivedPlaces,
     incremental: bool = True,
 ) -> None:
@@ -132,6 +156,7 @@ def _backup_to_log(
     log_root = store_path / metalog.DEFAULT_LOG_DIR
     folders = job.folders if job.folders else mb.folders()
     for folder in folders:
+        report.folders += 1
         try:
             if _backup_folder(
                 mb,
@@ -141,10 +166,16 @@ def _backup_to_log(
                 heads_root,
                 log_root,
                 places,
+                report,
                 incremental,
             ):
-                recorded.folders += 1
+                report.with_mail += 1
         except Exception as exc:
+            # Nothing of this folder is durable, so its resume point stands
+            # where it stood and the next run comes back to it. Said here
+            # rather than in the report, which counts what a pass came to and
+            # not why -- the reason is the line below.
+            report.retried.append(folder)
             # One folder that cannot be read must not cost the remaining ones;
             # its snapshot simply does not advance and the next run tries again.
             # A diagnosed failure -- the server said what was wrong -- is one
@@ -188,13 +219,16 @@ def _backup_folder(
     heads_root: pathlib.Path,
     log_root: pathlib.Path,
     places: ArchivedPlaces,
+    report: BackupReport,
     incremental: bool = True,
 ) -> bool:
     """Back up one folder, recording where its messages were seen.
 
     Returns whether anything was written down. An incremental pass over a folder
     that has had no mail since the last run records nothing, and that answer is
-    what spares the query database a refresh with nothing to take in.
+    what spares the query database a refresh with nothing to take in. What the
+    pass came to goes into `report` on the way, which is a different question:
+    a folder can store nothing and still have gone perfectly well.
 
     The resume point is the backend's to make and the backend's to read; nothing
     here looks inside it. `--full` (`incremental=False`) simply withholds it,
@@ -203,7 +237,9 @@ def _backup_folder(
     """
     previous = _resume_point(heads_root, job.name, folder) if incremental else None
     if previous is None and incremental:
-        caught_up = _catch_up_if_possible(mb, store, job, folder, heads_root, log_root, places)
+        caught_up = _catch_up_if_possible(
+            mb, store, job, folder, heads_root, log_root, places, report
+        )
         if caught_up is not None:
             return caught_up
 
@@ -226,7 +262,7 @@ def _backup_folder(
         # path below either earns a new one or must forget this one.
         void = True
         caught_up = _catch_up_if_possible(
-            mb, store, job, folder, heads_root, log_root, places, void_previous=True
+            mb, store, job, folder, heads_root, log_root, places, report, void_previous=True
         )
         if caught_up is not None:
             return caught_up
@@ -237,6 +273,11 @@ def _backup_folder(
             resume=None,
             callback=_location_writer(log_writer),
         )
+    # Counted from the pass that stands, not from the one the source refused:
+    # a void resume point makes the first call do nothing, and the read that
+    # replaces it is the one that fetched the mail.
+    report.stored += result.stored
+    report.failed += result.failed
     # Asked before the seal empties the writer: how much this pass observed, and
     # therefore whether the log grew at all.
     recorded = len(log_writer) > 0
@@ -263,6 +304,7 @@ def _backup_folder(
             result.failed,
             utils.counted(result.total, "message"),
         )
+        report.retried.append(folder)
     else:
         # Downloads were clean but the location log did not reach disk. Holding
         # the point back re-fetches the folder next run and writes the log
@@ -272,10 +314,11 @@ def _backup_folder(
             job.name,
             folder,
         )
+        report.retried.append(folder)
     # Written whatever the outcome: the folder *was* read, and that is all
     # `last_run` claims. Only `resume` is held back when the pass fell short.
     _record_pass(heads_root, job.name, folder, observed_at, resume, void_previous=void)
-    _purge_after_seal(mb, job, folder, result, sealed)
+    _purge_after_seal(mb, job, folder, result, sealed, report)
     return recorded
 
 
@@ -306,6 +349,7 @@ def _catch_up_if_possible(
     heads_root: pathlib.Path,
     log_root: pathlib.Path,
     places: ArchivedPlaces,
+    report: BackupReport,
     void_previous: bool = False,
 ) -> bool | None:
     """Bring the folder back in step by listing it, and say whether it wrote.
@@ -344,7 +388,15 @@ def _catch_up_if_possible(
     if not archived:
         return None
     return _catch_up_folder(
-        mb, store, job, folder, heads_root, log_root, archived, void_previous=void_previous
+        mb,
+        store,
+        job,
+        folder,
+        heads_root,
+        log_root,
+        archived,
+        report,
+        void_previous=void_previous,
     )
 
 
@@ -356,6 +408,7 @@ def _catch_up_folder(
     heads_root: pathlib.Path,
     log_root: pathlib.Path,
     archived: set[str],
+    report: BackupReport,
     void_previous: bool = False,
 ) -> bool:
     """Read a folder in full, downloading only what the archive does not have.
@@ -385,6 +438,11 @@ def _catch_up_folder(
     result = reconcile_folder(
         mb, store, log_root, heads_root, archived, job.name, folder, repair=True
     )
+    # A catch-up stores what the folder was missing, and the copies that turned
+    # out to differ after all. Both are mail that was not in the archive before
+    # this pass, which is what the count outside means.
+    report.stored += result.restored + result.recovered_copies
+    report.failed += result.failed
     if not result.complete:
         log.warning(
             "%s::%s: %s of %s failed, resume point not started",
@@ -394,6 +452,7 @@ def _catch_up_folder(
             utils.counted(result.missing, "message"),
         )
         resume = None
+        report.retried.append(folder)
     elif not result.sealed:
         # Downloads were clean but the locations did not reach disk. The same
         # rule as the ordinary pass in `_backup_folder`: holding the point back
@@ -406,6 +465,7 @@ def _catch_up_folder(
             folder,
         )
         resume = None
+        report.retried.append(folder)
     _record_pass(heads_root, job.name, folder, observed_at, resume, void_previous=void_previous)
     return result.restored + result.recovered_copies > 0
 
@@ -416,6 +476,7 @@ def _purge_after_seal(
     folder: str,
     result: base.BackupResult,
     sealed: bool,
+    report: BackupReport,
 ) -> None:
     """Delete the archived messages from the server, but only once the log is on disk.
 
@@ -449,6 +510,8 @@ def _purge_after_seal(
         # The log is already durable, so a failed purge costs nothing but server
         # space: the messages stay and are deleted on the next clean run.
         log.error("%s::%s: purge failed: %s", job.name, folder, exc)
+        return
+    report.deleted += len(result.deletable)
 
 
 def backup(
@@ -458,12 +521,17 @@ def backup(
     index_db: bool = False,
     incremental: bool = True,
     places: ArchivedPlaces | None = None,
-) -> None:
+) -> BackupReport:
     """Back up one job's folders into the archive at `store_path`.
 
     `compress` stores the messages zstd-compressed; `index_db` refreshes the
     queryable `index.db` projection in the archive once the backup is done;
     `incremental` resumes each folder from its snapshot instead of re-fetching it.
+
+    What the run came to comes back, for the caller to say out loud: the mail is
+    in the archive either way, but a run whose whole account of itself was the
+    log left the person who started it to read a night's worth of lines to find
+    out whether anything is missing -- and left a script no way of asking at all.
 
     **The projection is only refreshed when this job wrote something down.** A
     job that had no new mail has nothing to add to it, and finding that out costs
@@ -485,23 +553,22 @@ def backup(
     starts, rather than after a silent connect.
     """
     migrate_archive(store_path)
-    recorded = _Recorded()
+    report = BackupReport()
     if places is None:
         places = ArchivedPlaces(store_path / metalog.DEFAULT_LOG_DIR)
     try:
         with session.open_mailbox(job) as mb:
             store = cas.mail_store(store_path, compress=compress)
-            _backup_to_log(
-                mb, store, job, store_path, recorded, places, incremental=incremental
-            )
+            _backup_to_log(mb, store, job, store_path, report, places, incremental=incremental)
     finally:
-        if index_db and recorded.folders:
+        if index_db and report.with_mail:
             _refresh_query_db(store_path)
         elif index_db:
             log.debug(
                 "%s: nothing was recorded, the query database has nothing to take in",
                 job.name,
             )
+    return report
 
 
 def _refresh_query_db(store_path: pathlib.Path) -> None:

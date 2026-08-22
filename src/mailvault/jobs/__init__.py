@@ -7,7 +7,7 @@ and friends. Pieces shared between commands live in ``common``.
 from __future__ import annotations
 
 from mailvault.jobs.adoption import AdoptResult, adopt
-from mailvault.jobs.backup import backup
+from mailvault.jobs.backup import BackupReport, backup
 from mailvault.jobs.check import CheckResult, check
 from mailvault.jobs.common import JobError, check_place_name
 from mailvault.jobs.db import (
@@ -40,6 +40,7 @@ __all__ = [
     "DEFAULT_QUERY_DB_NAME",
     "AdoptResult",
     "ArchivedPlaces",
+    "BackupReport",
     "CheckResult",
     "DocuwareMailArchive",
     "ExternalMailArchive",

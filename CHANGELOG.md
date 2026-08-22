@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **A backup says what it did when it is done.** `mailvault backup` reported nothing at all: a
+  run's entire account of itself was in the log, so finding out whether anything was missing meant
+  reading a night's worth of lines, and a script had no way of asking. It now ends with a line of
+  its own -- `proton.me: 1,729 messages stored from 3 of 15 folders` -- naming what came in, out of
+  how many folders were read, and what was removed from the server where a job deletes after
+  export. A folder the run could not finish is named under it, along with what becomes of it: it is
+  read again next run. A run with nothing to do says `nothing new in 15 folders` rather than
+  saying nothing
+
+### Changed
+
+- **A backup that left something behind exits non-zero.** A folder that could not be read, or whose
+  messages could not all be stored, has never stopped the folders after it -- which is right -- but
+  the run then ended with exit code 0 and was indistinguishable from one where everything worked.
+  It now ends with 1. **A cron job that reacts to a non-zero exit will start reporting runs that
+  were already falling short before this, quietly**
+
 ## 0.13.1 (2026-08-17)
 
 ### Fixed
