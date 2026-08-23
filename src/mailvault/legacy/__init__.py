@@ -17,8 +17,8 @@ what a legacy module is:
   archive still kept its truth in SQLite
 
 Read-only by construction. None of these formats is ever written again, so
-nothing here can write one: the readers have no schema, no `setup()`, and no
-insert. What builds one is the test suite, which needs a specimen -- and keeping
+nothing here can write one: the readers carry no schema, nothing that creates
+one, and no insert. What builds one is the test suite, which needs a specimen -- and keeping
 the recipe there rather than here is what stops an old format from quietly
 following a new one when the projection's schema moves.
 """

@@ -68,17 +68,19 @@ _ABOVE_ANY_DATE = "\uffff"
 _MISSING = object()
 
 
-def _unreadable(db_name: str, outdated_shape: bool) -> str:
-    """The line a projection this version cannot query is answered with."""
+def _unreadable(db_name: str, outdated_shape: bool, note: str = "") -> str:
+    """The line a projection this version cannot query is answered with.
+
+    `note` is what became of the file, and it belongs inside the sentence rather
+    than after it: a message names the state first and the move last, and a
+    reader told what to run before being told what happened has to put the two
+    back in order themselves.
+    """
     if outdated_shape:
-        return (
-            f"{db_name}: built by an earlier version of mailvault and not readable"
-            f" by this one -- build it again with `{REBUILD_COMMAND}`"
-        )
-    return (
-        f"{db_name}: not the query database this version reads -- build it again"
-        f" with `{REBUILD_COMMAND}`"
-    )
+        state = "built by an earlier version of mailvault and not readable by this one"
+    else:
+        state = "not the query database this version reads"
+    return f"{db_name}: {state}{note} -- build it again with `{REBUILD_COMMAND}`"
 
 
 @dataclasses.dataclass
@@ -586,8 +588,12 @@ def refresh_db(store_path: pathlib.Path, db_path: pathlib.Path) -> RefreshResult
                 # source of truth; whoever wants it back says so.
                 result.unreadable = True
                 log.warning(
-                    "%s -- left untouched and NOT updated",
-                    _unreadable(utils.under(store_path, db_path), db.outdated),
+                    "%s",
+                    _unreadable(
+                        utils.under(store_path, db_path),
+                        db.outdated,
+                        ", left untouched and NOT updated",
+                    ),
                 )
                 log.debug(
                     "%s: shape %d, this version writes %d; missing: %s",

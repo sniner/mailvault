@@ -5,11 +5,11 @@ The specimen the migration tests need. It lives here and not in
 
 Nothing in mailvault ever writes this format. The reader in
 `mailvault.legacy.store_db` opens a database somebody else left behind, and
-giving it a `setup()` that only a test calls would be production code with no
-production caller.
+giving it a schema of its own, called only by a test, would be production code
+with no production caller.
 
-And the schema here is **frozen**. Until now these fixtures were built with the
-projection's own `setup()`, because one class served both -- so the day the
+And the schema here is **frozen**. Until now these fixtures were built from the
+projection's own schema, because one class served both -- so the day the
 projection's schema moves, every migration test would quietly start building a
 database no version of mailvault ever wrote, and go on passing. What it tests
 has to be what existed, which means keeping a copy of what existed.

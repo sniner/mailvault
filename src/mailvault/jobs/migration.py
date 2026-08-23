@@ -352,7 +352,7 @@ def _migrate_database(store_path: pathlib.Path) -> MigrationResult:
     heads_root = store_path / heads.DEFAULT_HEADS_DIR
     date = datetime.now(UTC)
     # Read-only: the legacy database is only queried here and then renamed aside,
-    # so setup() must not write DDL into it (nor demand write access to read it).
+    # so nothing may write DDL into it, nor demand write access to read it.
     with store_db.StoreDatabase(legacy) as db:
         result.snapshots = _adopt_database_snapshots(heads_root, db)
         written = _export_metalog(db, log_root, heads_root, date, result)

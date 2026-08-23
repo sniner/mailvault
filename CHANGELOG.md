@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The line a backup leaves about a query database it cannot read named the way out in the
+  middle of it.** What became of the file -- left untouched and not updated -- came after the
+  command to run about it, in a second dashed clause. It names the state, then what that means
+  for the file, then the move, in that order
+
 ## 0.14.2 (2026-08-23)
 
 ### Breaking changes

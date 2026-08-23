@@ -81,14 +81,15 @@ def test_a_database_without_a_snapshot_table_does_not_raise(tmp_path):
 def test_the_reader_cannot_create_what_it_did_not_find(tmp_path):
     """Read-only by construction: no schema, so nothing to write into.
 
-    Opening a database that is not there yields an empty file and no tables --
-    it must not quietly furnish one, which is exactly what the shared `setup()`
-    used to do when the migration opened an archive that had none.
+    Opening a database that is not there yields an empty file and no tables. A
+    reader that quietly furnished one would turn "this archive has no `store.db`"
+    into "this archive has an empty one", and the migration reads that as an
+    archive with nothing in it rather than as an archive it must not touch.
     """
     path = tmp_path / "store.db"
 
     with store_db.StoreDatabase(path) as db:
-        assert not hasattr(db, "setup")
+        assert not hasattr(db, "create")
         tables = [
             row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
         ]

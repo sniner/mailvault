@@ -6,8 +6,8 @@ is read exactly once per archive, by `mailvault.jobs.migration`, which writes
 what it finds into the metadata log and then renames the file to
 `store.db.migrated`.
 
-Only what the migration needs, and only reading. There is no `setup()` here and
-no insert: the format is never written again, a database that is about to be set
+Only what the migration needs, and only reading. Nothing here creates a schema
+and nothing inserts: the format is never written again, a database that is about to be set
 aside should not be written to, and asking for write access to read it would be
 worse than pointless. A specimen for the tests is built by the test suite, from
 a schema frozen there -- see `tests/legacy_store_db.py`.

@@ -1315,7 +1315,7 @@ class TestMigration:
         result = jobs.migrate_archive(tmp_path)
 
         assert result.needed is True
-        # setup() is skipped for the read, so not one byte of it changed.
+        # Nothing wrote to it on the way past, so not one byte of it changed.
         assert (tmp_path / "store.db.migrated").read_bytes() == before
 
     def test_a_second_run_has_nothing_to_do(self, tmp_path):
@@ -2315,17 +2315,13 @@ class TestRefreshDb:
     def test_a_projection_from_an_earlier_version_is_left_alone_and_reported(
         self, tmp_path, caplog
     ):
-        """The trap the shape marker exists to close.
+        """What a backup does about a projection it cannot read: says so, and stops.
 
-        The tables are created with IF NOT EXISTS, so an older projection would
-        quietly gain the new ones and keep the old -- and `applied_log`, which
-        survives untouched, reports every log file as already folded in. The new
-        tables would then stay empty for good, on a database that answers every
-        query without complaint.
-
-        Rebuilding it here is not this routine's decision to make: it runs at the
-        end of a backup, and reading every message in the archive is half an hour
-        on a large one. So it says what it found and touches nothing.
+        Rebuilding it is not this routine's decision to make -- it runs at the end
+        of a backup, and reading every message in the archive is half an hour on a
+        large one. The line it leaves behind is the only thing that tells anybody,
+        so it names the state, what became of the file, and the way out, in that
+        order.
         """
         _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
         db_path = tmp_path / DEFAULT_QUERY_DB_NAME
@@ -2341,14 +2337,22 @@ class TestRefreshDb:
         assert result.unreadable is True
         assert result.rebuilt is False
         assert db_path.read_bytes() == before, "an unreadable shape must not be written to"
-        assert any("build it again" in r.getMessage() for r in caplog.records)
+        warning = next(
+            r.getMessage()
+            for r in caplog.records
+            if "not readable by this one" in r.getMessage()
+        )
+        assert "left untouched and NOT updated" in warning
+        # The way out comes last, and once: a reader told what to run before
+        # being told what happened has to put the sentence back in order.
+        assert warning.endswith("build it again with `mailvault db create --force`")
+        assert warning.count(" -- ") == 1
 
     def test_the_shape_of_an_old_projection_is_never_stamped_as_current(self, tmp_path):
         """Or the complaint would be made once and never again.
 
-        `setup()` stamps the version, so an old file that got as far as being
-        opened for writing would come away claiming to be this shape -- still
-        holding the old tables, and no longer recognisable as old.
+        A file that came away stamped with the current version would be claiming
+        a shape it does not have, and nothing would ever look at it twice again.
         """
         _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
         db_path = tmp_path / DEFAULT_QUERY_DB_NAME
