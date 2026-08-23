@@ -543,6 +543,33 @@ class ContentAddressedStorage:
         path, filename = self._destination(hashval)
         return path / filename
 
+    def matching(self, prefix: str) -> list[str]:
+        """The ids of every entry whose own begins with `prefix`, sorted.
+
+        A message id is ninety-six characters and nobody types one. The beginning
+        of one names an entry just as well as long as it names only one, and it
+        costs a single directory listing to find out -- the store is filed by
+        exactly that beginning.
+
+        The beginning of an id is the directory the entry lies in, so `depth * 2`
+        characters have to be given before there is a place to look; anything
+        shorter raises rather than walking the store. A prefix that is a whole id
+        is answered the same way as any other, with the one entry it names or with
+        nothing.
+        """
+        prefix = normalize_hashval(prefix)
+        if len(prefix) < self.depth * 2:
+            raise ValueError(f"a prefix of at least {self.depth * 2} characters is needed")
+        shard = self._path(prefix)
+        if not shard.is_dir():
+            return []
+        found = [
+            hashval
+            for path in shard.iterdir()
+            if (hashval := self.hashval_of(path)) is not None and hashval.startswith(prefix)
+        ]
+        return sorted(found)
+
     def _convert_all(
         self,
         skip_suffix: str,

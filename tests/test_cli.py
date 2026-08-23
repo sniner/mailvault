@@ -489,6 +489,37 @@ class TestExport:
 
         assert (tmp_path / "o").read_bytes() == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
 
+    @staticmethod
+    def _entry(tmp_path, hashval: str, body: bytes) -> None:
+        """A message filed under an id of our choosing, which the store cannot give."""
+        store = cas.mail_store(tmp_path)
+        shard = store.root_dir / hashval[:2] / hashval[2:4]
+        shard.mkdir(parents=True, exist_ok=True)
+        (shard / f"{hashval}.eml").write_bytes(body)
+
+    def test_the_beginning_of_an_id_is_enough(self, tmp_path, capsysbinary):
+        """What a search prints is the first twelve characters, and it has to work."""
+        store_id, _path = self._archive(tmp_path)
+
+        assert commands.run_archive(self._export_args(tmp_path, [store_id[:12]])) == 0
+
+        assert capsysbinary.readouterr().out == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
+
+    def test_a_beginning_that_names_more_than_one_message_is_refused(self, tmp_path):
+        """Handing over either of them would be a coin toss nobody asked for."""
+        marker.write(tmp_path)
+        self._entry(tmp_path, "abcdef" + "1" * 90, b"one")
+        self._entry(tmp_path, "abcdef" + "2" * 90, b"another")
+
+        with pytest.raises(jobs.JobError, match="whole id"):
+            commands.run_archive(self._export_args(tmp_path, ["abcdef"]))
+
+    def test_too_little_of_an_id_to_look_one_up(self, tmp_path):
+        store_id, _path = self._archive(tmp_path)
+
+        with pytest.raises(jobs.JobError, match="at least its first 6"):
+            commands.run_archive(self._export_args(tmp_path, [store_id[:5]]))
+
 
 @contextlib.contextmanager
 def _stdout_nobody_reads(monkeypatch):
@@ -1183,6 +1214,35 @@ class TestDbCommands:
         assert printed
         for store_id in printed:
             assert cas.is_hashval(store_id), store_id
+
+    def test_the_id_a_table_prints_is_one_export_takes(self, tmp_path, capsys):
+        """The column is a handle, so nothing may cling to it that has to be cut off.
+
+        A shortened id used to be printed with an ellipsis after it, which came
+        along whenever somebody selected the column and went straight back out of
+        `archive export` as an id it could not read.
+        """
+        archive = self._archive(tmp_path)
+        commands.run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
+        capsys.readouterr()  # what building it said is not what is under test
+
+        commands.run_db(self._db_args(archive, db_command="search"))
+        printed = capsys.readouterr().out.splitlines()[0].split()[1]
+
+        assert cas.is_hashval(printed), printed
+        target = tmp_path / "out.eml"
+        assert (
+            commands.run_archive(
+                argparse.Namespace(
+                    archive_command="export",
+                    archive=archive,
+                    entry=[printed],
+                    output=target,
+                )
+            )
+            == 0
+        )
+        assert target.is_file()
 
     def _archive_that_moved_on(self, tmp_path) -> pathlib.Path:
         """An archive whose database was built before the last folder was backed up."""

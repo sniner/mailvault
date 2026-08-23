@@ -1,5 +1,62 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- **The query database is built in a new shape, and one from an earlier version is refused.**
+  `index.db` is not read, not written and not lifted into the new shape -- `mailvault db create
+  --force` builds it again, which is the only thing that ever happens to a projection: everything
+  in it comes from the archive and nothing in it is lost. Until that has run, `db search` refuses
+  with the same sentence, and a backup with `index_db = true` leaves the file exactly as it is and
+  says so
+
+  **What to check.** A scheduled `db update` starts exiting non-zero over it. That is the state
+  being reported rather than a new failure, and one `db create --force` ends it
+
+- **`IndexDatabase` opens a database and no longer creates one.** For anything using the library
+  rather than the command: `IndexDatabase(path, create=True)` writes the schema into a new file,
+  and that is the only way one is made. `setup()` is gone -- `create()` writes the schema,
+  `missing()` names the objects a file does not have, and `usable` answers whether it can be
+  queried at all. The `bulk` argument is gone with it, because every connection now gets the page
+  cache a build used to ask for. `RefreshResult.outdated` is now `RefreshResult.unreadable`: it
+  covers every shape that cannot be queried, not only an older version's
+
+### Added
+
+- **`archive export` takes the beginning of a message id.** A report prints the first twelve
+  characters of one, and those are now enough -- as much of an id as names a single message works,
+  the way a short commit hash does. A beginning that fits several messages is refused by saying so
+  rather than by handing over whichever came first, and one too short to look up asks for six
+  characters, which is where a prefix starts naming a single message
+
+### Fixed
+
+- **Opening the query database rebuilt two of its indexes, every single time.** A migration that
+  had to drop and recreate the recipient indexes ran on every open, including for a search that
+  only meant to read. On an archive of 131,504 messages on an SMB share that was 16.5 s per open,
+  and a search opens the database twice. Opening it now writes nothing at all: what is there is
+  checked, and a file that is not the current shape is named and left alone
+
+- **A date filter looked through every message in the archive.** `--since` and `--until` were
+  computed for each row, so no index could answer them and every search that named a day read the
+  whole database. They are compared against the stored date itself now, and there is an index over
+  it. The day named is still the whole day it names, down to its last second, whatever offset the
+  message was written with
+
+### Changed
+
+- **`db search` prints the shortened id with nothing after it.** The ellipsis said the id was
+  shortened and got selected along with it, so what was pasted into `archive export` was an id it
+  could not read. The column is a handle; nothing clings to it
+
+- **A search over a network share costs seconds instead of a minute.** Along with the two fixes
+  above, the database is written in larger pages and read with a page cache to match -- over a
+  share, a page is a round trip, and the default two megabytes of cache held thirty-two of them.
+  Measured on the same archive: `db search --since` went from 60 s to 0.4 s, `--from` (a substring
+  match, so it has to look at every message) from 30 s to 3.6 s, and reading out all 131,504
+  messages takes 4.7 s
+
 ## 0.14.1 (2026-08-22)
 
 ### Fixed
@@ -64,7 +121,7 @@
 - **A backup says what it did when it is done.** `mailvault backup` reported nothing at all: a
   run's entire account of itself was in the log, so finding out whether anything was missing meant
   reading a night's worth of lines, and a script had no way of asking. It now ends with a line of
-  its own -- `ruhlgroup.com: 6 messages seen, 2 stored, 4 already archived` -- and what was removed
+  its own -- `example.com: 6 messages seen, 2 stored, 4 already archived` -- and what was removed
   from the server where a job deletes after export. Three numbers rather than one, because
   `2 stored` on its own is read as "two mails arrived": mail filed from one folder into another is
   offered again at its new place, and it is the third number that tells a quiet night from a

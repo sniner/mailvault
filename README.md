@@ -249,15 +249,17 @@ case:
 
 ```console
 $ mailvault db search --from example.com --since 2024-01-01
-2024-03-11  a3f1c8e04b71…  info@example.com                Invoice 4711
-2024-05-02  9b0d47f2a180…  info@example.com                Delivery note 8842
+2024-03-11  a3f1c8e04b71  info@example.com                Invoice 4711
+2024-05-02  9b0d47f2a180  info@example.com                Delivery note 8842
 2 messages
 ```
 
 `--from`, `--to`, `--subject`, `--mailbox`, `--folder`, `--since`, `--until` and
-`--limit`. The message id in the table is shortened to be read, not typed -- for
-anything that goes on to another program there is `--ids`, so a search and an
-export make a pipeline:
+`--limit`. The message id in the table is shortened to be read, and it is enough
+to work with: `archive export` takes the beginning of an id the way git takes a
+short commit hash, and says so when the one you gave fits more than one message.
+For anything that goes on to another program there is `--ids`, which prints them
+whole and nothing else, so a search and an export make a pipeline:
 
 ```console
 $ mailvault db search --from example.com --ids \
@@ -348,8 +350,8 @@ An empty mailbox column is an import: there is no mailbox behind it.
 print. Name several and give `--output` a directory to get one file each:
 
 ```console
-$ mailvault archive export 6f3ac1… | head -20
-$ mailvault archive export 6f3ac1… -o message.eml
+$ mailvault archive export a3f1c8e04b71 | head -20
+$ mailvault archive export a3f1c8e04b71 -o message.eml
 ```
 
 **Compress** or **decompress** the whole archive after the fact:

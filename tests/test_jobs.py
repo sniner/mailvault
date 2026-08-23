@@ -1524,6 +1524,7 @@ class TestRebuildWithLog:
 
     @staticmethod
     def _archive_with_log(tmp_path, places):
+        marker.write(tmp_path)
         store = cas.mail_store(tmp_path)
         _status, store_id, _path = store.add(DUMMY_EML)
         writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
@@ -1597,6 +1598,7 @@ class TestRebuildWithLog:
 
     def test_log_entries_for_absent_messages_are_counted_not_invented(self, tmp_path):
         """A blob removed from the archive must not reappear as a database row."""
+        marker.write(tmp_path)
         writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         writer.add("job", ["INBOX"], "deadbeef")
         writer.seal(datetime(2026, 8, 1, tzinfo=UTC))
@@ -1610,6 +1612,7 @@ class TestRebuildWithLog:
 
     def test_an_existing_database_is_refused(self, tmp_path):
         """ "create" creates; filling an existing file would make it an accumulation."""
+        marker.write(tmp_path)
         store = cas.mail_store(tmp_path)
         store.add(DUMMY_EML)
         target = tmp_path / "out.db"
@@ -1619,6 +1622,7 @@ class TestRebuildWithLog:
             jobs.create_db(tmp_path, target)
 
     def test_force_replaces_rather_than_adds(self, tmp_path):
+        marker.write(tmp_path)
         store = cas.mail_store(tmp_path)
         store.add(DUMMY_EML)
         target = tmp_path / "out.db"
@@ -1650,6 +1654,7 @@ class TestRebuildWithLog:
         Not the database falling short but the archive being incomplete --
         `archive check` reports such a message and `archive adopt` takes it in.
         """
+        marker.write(tmp_path)
         store = cas.mail_store(tmp_path)
         store.add(DUMMY_EML)
 
@@ -1662,6 +1667,7 @@ class TestRebuildWithLog:
 
     def test_and_is_in_it_once_it_has_a_place(self, tmp_path):
         """What `archive adopt` writes: a place with a name and no mailbox."""
+        marker.write(tmp_path)
         store = cas.mail_store(tmp_path)
         _status, store_id, _path = store.add(DUMMY_EML)
         writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
@@ -1675,6 +1681,7 @@ class TestRebuildWithLog:
 
     def test_a_message_at_three_places_is_read_once(self, tmp_path):
         """The expensive part is opening it, and its headers cannot have changed."""
+        marker.write(tmp_path)
         store = cas.mail_store(tmp_path)
         _status, store_id, _path = store.add(DUMMY_EML)
         writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
@@ -1712,6 +1719,8 @@ def _eml(message_id: str, subject: str = "Subject") -> bytes:
 
 def _archive_message(store_path, job_name: str, folder: str, msg: bytes) -> None:
     """Put a message into the archive the way a successful backup would."""
+    store_path.mkdir(parents=True, exist_ok=True)
+    marker.write(store_path)
     store = cas.mail_store(store_path)
     _status, store_id, _path = store.add(msg)
     writer = metalog.LogWriter(
@@ -2329,7 +2338,7 @@ class TestRefreshDb:
         with caplog.at_level(logging.WARNING):
             result = refresh_db(tmp_path, db_path)
 
-        assert result.outdated is True
+        assert result.unreadable is True
         assert result.rebuilt is False
         assert db_path.read_bytes() == before, "an unreadable shape must not be written to"
         assert any("build it again" in r.getMessage() for r in caplog.records)
@@ -2349,7 +2358,7 @@ class TestRefreshDb:
             db.commit()
 
         for _ in range(3):
-            assert refresh_db(tmp_path, db_path).outdated is True
+            assert refresh_db(tmp_path, db_path).unreadable is True
 
     def test_a_refreshed_projection_reports_itself_current(self, tmp_path):
         _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
@@ -2446,8 +2455,7 @@ class TestRefreshDb:
         db_path = tmp_path / DEFAULT_QUERY_DB_NAME
         store = cas.mail_store(tmp_path)
 
-        with index_db.IndexDatabase(db_path) as db:
-            db.setup()
+        with index_db.IndexDatabase(db_path, create=True) as db:
             db_module._apply_new_logs(
                 db,
                 store,
@@ -2487,6 +2495,53 @@ def _storing_backup(eml: bytes):
         return base.BackupResult(total=1, stored=1)
 
     return run
+
+
+class TestAProjectionThatDoesNotFit:
+    """Two different states, two different moves -- and the archive decides which."""
+
+    def test_one_that_lost_an_object_is_answered_with_a_rebuild(self, tmp_path):
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+        refresh_db(tmp_path, db_path)
+        with index_db.IndexDatabase(db_path) as db:
+            db.execute("DROP INDEX idx_message_2")
+            db.commit()
+
+        state = freshness(tmp_path, db_path)
+
+        assert state.incomplete is True
+        assert state.is_usable is False
+        complaint = state.complaint(db_path.name)
+        assert complaint is not None
+        assert "db create --force" in complaint
+
+    def test_an_unmigrated_archive_is_lifted_before_anything_is_thrown_away(self, tmp_path):
+        """Its mail is recorded in a database of its own, and there is no log yet
+        to build a projection from. Telling somebody to replace it would be
+        telling them to destroy the only record of where their mail came from."""
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+        refresh_db(tmp_path, db_path)
+        with index_db.IndexDatabase(db_path) as db:
+            db.execute("PRAGMA user_version = 0")
+            db.commit()
+        (tmp_path / marker.FORMAT_NAME).unlink()
+
+        state = freshness(tmp_path, db_path)
+
+        assert state.unmigrated_archive is True
+        complaint = state.complaint(db_path.name)
+        assert complaint is not None
+        assert "archive migrate" in complaint
+        assert "db create" not in complaint
+
+    def test_a_database_is_not_built_for_an_archive_that_has_no_log(self, tmp_path):
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+        (tmp_path / marker.FORMAT_NAME).unlink()
+
+        with pytest.raises(jobs.JobError, match="archive migrate"):
+            jobs.create_db(tmp_path, tmp_path / "out.db")
 
 
 class TestBackupIndexDb:

@@ -483,8 +483,12 @@ answers the same question before anything is typed, which is the better way roun
 ### Exporting a single message
 
 Every report names a message by its id, and that id is what `archive export`
-takes. What comes out is the message exactly as it was stored -- whether it lies
-compressed, and where in the archive it lies, is the store's business.
+takes -- whole, or as much of the beginning of one as names a single message, the
+way git takes a short commit hash. The twelve characters `db search` prints are
+enough for an archive of any size anybody has; a beginning that fits several
+messages is refused rather than resolved to whichever of them came first. What
+comes out is the message exactly as it was stored -- whether it lies compressed,
+and where in the archive it lies, is the store's business.
 
 ### Compressing and decompressing
 

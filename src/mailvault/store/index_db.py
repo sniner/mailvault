@@ -11,78 +11,329 @@ change to the schema costs a rebuild rather than a migration path. That is the
 right answer for a projection and must never be the answer for the archive.
 
 Not to be confused with `mailvault.legacy.store_db`, which reads the `store.db`
-that *was* the truth in archives written before 0.8.0. The two were one class
-until they were told apart: one `setup()` created the union of both schemas,
-which is how a table nothing reads ended up in every projection built since.
-They share the plumbing in `mailvault.store.sqlite` and nothing else.
+that *was* the truth in archives written before 0.8.0. They share the plumbing in
+`mailvault.store.sqlite` and nothing else.
 """
 
 from __future__ import annotations
 
 import collections.abc
+import dataclasses
 import pathlib
 import sqlite3
+import textwrap
 import types
 from datetime import datetime
 
 from mailvault.store.sqlite import DatabaseConnection, connect
 
-# The shape this version writes, kept in SQLite's own `user_version`. It exists
-# so that a projection built by an earlier version can be *recognised* rather
-# than silently used: the tables are created with IF NOT EXISTS, so an old file
-# would quietly gain the new ones, keep the old ones, and go on being read
-# through a view that no longer says what it says here -- while `applied_log`
-# reports every log file as folded in, so nothing would ever fill the new tables.
+
+class SchemaError(Exception):
+    """A database was asked for something its shape does not allow."""
+
+
+# The shape this version writes, kept in SQLite's own `user_version`. It is what
+# lets a projection built by another version be *recognised* rather than silently
+# used, and it is the whole recognition: a file stamped with anything else is not
+# read and not written, it is built again.
 #
 # There is no upgrade path and there must not be one. Everything here can be
 # rebuilt from the archive, so the answer to a mismatch is to build it again.
-# Raise this whenever the schema changes in a way a reader would notice.
-SCHEMA_VERSION = 1
+# Raise this whenever `SCHEMA` changes in a way a reader would notice -- an added
+# index counts, because what a reader gets without it is the right answer at a
+# cost nothing would explain to them.
+SCHEMA_VERSION = 2
 
-# How much page cache a connection that fills a database in one go may use, in
-# KiB. SQLite's default is two megabytes, and a build overruns that within the
-# first few thousand messages: from then on it evicts pages it is about to touch
-# again, because a B-tree being filled keeps coming back to the same interior
-# nodes. What that costs is not memory but *writes*, and it grows with the file.
+# Page size of a database this version creates. SQLite reads a page at a time,
+# and over a network share every page is a round trip -- a query that has to look
+# through the message table touches the whole file, which at the 4 KiB default is
+# tens of thousands of them. Against an archive of 131,504 messages on an SMB
+# share, the same scan took 25 s at 4 KiB, 8 s at 16 KiB and 2.8 s at 64 KiB.
 #
-# Measured on 30,000 messages, an 18.4 MiB database: 166.8 MiB written with the
-# default cache, 18.7 MiB with this one -- nine times the traffic against once.
-# On a local disk it makes no difference in time, because the page cache of the
-# operating system absorbs it; over a network share it is the difference between
-# writing the database once and writing it nine times.
+# It can only be set on a file that has nothing in it yet, which is why it is
+# applied where the database is created and nowhere else.
+PAGE_SIZE = 65536
+
+# How much page cache a connection may use, in KiB. SQLite's default is two
+# megabytes, which at the page size above is thirty-two pages -- and a B-tree
+# keeps coming back to the same interior nodes, so a cache that small evicts
+# exactly what is about to be read again. Over a network share every one of
+# those is a round trip.
 #
-# Allocated on demand, so a build that stays small never takes it.
-BULK_CACHE_KIB = 65536
+# It matters in both directions. Filling a database: 30,000 messages into an
+# 18.4 MiB file wrote 166.8 MiB with the default cache and 18.7 MiB with this
+# one. Reading one: a search over 131,504 messages that answered with 3,084 of
+# them took 25.0 s against 0.5 s, because every hit follows a handful of
+# scattered index entries.
+#
+# Allocated on demand, so a small database never takes it.
+CACHE_KIB = 65536
+
+
+# --- the shape of a projection -------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class SchemaObject:
+    """One table, index or view of a projection, and the statement that makes it.
+
+    Written down once and read twice: to create a database, and to recognise one
+    that is already there. A check driven by a second list would go on passing a
+    file that is missing whatever the list forgot.
+    """
+
+    kind: str
+    name: str
+    sql: str
+
+    def __str__(self) -> str:
+        return f"{self.kind} {self.name}"
+
+
+def _body(text: str, indent: str = "") -> str:
+    """A statement as it will be stored: dedented, without the blank edges."""
+    return textwrap.indent(textwrap.dedent(text).strip(), indent)
+
+
+def _table(name: str, columns: str) -> SchemaObject:
+    return SchemaObject("table", name, f"CREATE TABLE {name} (\n{_body(columns, '    ')}\n)")
+
+
+def _index(name: str, on: str, unique: bool = False) -> SchemaObject:
+    unique_sql = "UNIQUE " if unique else ""
+    return SchemaObject("index", name, f"CREATE {unique_sql}INDEX {name} ON {on}")
+
+
+def _view(name: str, select: str) -> SchemaObject:
+    return SchemaObject("view", name, f"CREATE VIEW {name} AS\n{_body(select)}")
+
+
+# Every object a current projection holds, in the order they are made. Nothing
+# here is conditional: these statements run against a file that has nothing in
+# it, and a file that holds something is asked what it holds instead.
+SCHEMA: tuple[SchemaObject, ...] = (
+    _table(
+        "mailbox",
+        """
+        mailbox_id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        UNIQUE(name) ON CONFLICT IGNORE
+        """,
+    ),
+    _table(
+        "address",
+        """
+        address_id INTEGER PRIMARY KEY,
+        address TEXT NOT NULL,
+        UNIQUE(address) ON CONFLICT IGNORE
+        """,
+    ),
+    _index("idx_address_1", "address(address)", unique=True),
+    # Not "label". Gmail has labels where IMAP has folders, and the difference is
+    # how many of them a message may carry, not what they are -- so one word
+    # covers both, and it is the one everybody uses.
+    _table(
+        "folder",
+        """
+        folder_id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        UNIQUE(name) ON CONFLICT IGNORE
+        """,
+    ),
+    _index("idx_folder_1", "folder(name)", unique=True),
+    _table(
+        "subject",
+        """
+        subject_id INTEGER PRIMARY KEY,
+        text TEXT NOT NULL,
+        UNIQUE(text) ON CONFLICT IGNORE
+        """,
+    ),
+    _index("idx_subject_1", "subject(text)", unique=True),
+    _table(
+        "message",
+        """
+        message_id INTEGER PRIMARY KEY,
+        store_id TEXT NOT NULL,
+        email_id TEXT,
+        date TEXT,
+        subject_id INTEGER,
+        FOREIGN KEY(subject_id) REFERENCES subject(subject_id),
+        UNIQUE(store_id) ON CONFLICT IGNORE
+        """,
+    ),
+    _index("idx_message_1", "message(store_id)"),
+    # A date filter is a range over this index, so `--since` reads the days it
+    # names instead of the whole table. It only works while the filter compares
+    # the column itself: `substr(date, 1, 10) >= ?` cannot use it and scans.
+    _index("idx_message_2", "message(date)"),
+    # One row is one place: "this message was seen in that folder of that
+    # mailbox". Both halves may be NULL, and both cases are real. A mailbox with
+    # no folder is an archive whose history did not record one. A folder with no
+    # mailbox is what an import writes -- the place is named, and the name is
+    # deliberately not in the mailbox field, because that field is read as a job
+    # name by the guard, by `verify` and by the catch-up. What must never happen
+    # is a pairing invented to satisfy a NOT NULL.
+    _table(
+        "message_location",
+        """
+        message_id INTEGER NOT NULL,
+        mailbox_id INTEGER,
+        folder_id INTEGER,
+        FOREIGN KEY(message_id) REFERENCES message(message_id),
+        FOREIGN KEY(mailbox_id) REFERENCES mailbox(mailbox_id),
+        FOREIGN KEY(folder_id) REFERENCES folder(folder_id)
+        """,
+    ),
+    # The uniqueness has to be spelt out over IFNULL, not as a plain
+    # UNIQUE(message_id, mailbox_id, folder_id): SQLite holds every NULL to be
+    # distinct from every other NULL, so `INSERT OR IGNORE` would not recognise a
+    # repeat of a place whose folder or mailbox is unknown -- three inserts of the
+    # same folderless location give three rows. Replaying the log is meant to be
+    # idempotent, and the log is replayed on every refresh.
+    _index(
+        "idx_message_location_1",
+        "message_location(message_id, IFNULL(mailbox_id, -1), IFNULL(folder_id, -1))",
+        unique=True,
+    ),
+    _index("idx_message_location_2", "message_location(mailbox_id)"),
+    _index("idx_message_location_3", "message_location(folder_id)"),
+    _table(
+        "message_sender",
+        """
+        message_id INTEGER NOT NULL,
+        address_id INTEGER NOT NULL,
+        FOREIGN KEY(message_id) REFERENCES message(message_id),
+        FOREIGN KEY(address_id) REFERENCES address(address_id),
+        UNIQUE(message_id, address_id) ON CONFLICT IGNORE
+        """,
+    ),
+    _index("idx_message_sender_1", "message_sender(message_id)"),
+    _index("idx_message_sender_2", "message_sender(address_id)"),
+    _table(
+        "message_recipient",
+        """
+        message_id INTEGER NOT NULL,
+        address_id INTEGER NOT NULL,
+        FOREIGN KEY(message_id) REFERENCES message(message_id),
+        FOREIGN KEY(address_id) REFERENCES address(address_id),
+        UNIQUE(message_id, address_id) ON CONFLICT IGNORE
+        """,
+    ),
+    _index("idx_message_recipient_1", "message_recipient(message_id)"),
+    _index("idx_message_recipient_2", "message_recipient(address_id)"),
+    # Which log files have already been folded in, by content hash (their name),
+    # and which chain head of each place that added up to. No query reads either,
+    # and both are part of the file's shape all the same: without them a refresh
+    # cannot say what it has seen, and a reader cannot be told that the archive
+    # has moved on since.
+    #
+    # The heads are held in plain text and not as ids. This is a statement about
+    # the archive, not about the mail: a place the projection has never seen a
+    # message from still has a head, and interning it would put a row in
+    # `mailbox` for a mailbox no query can find anything in.
+    _table(
+        "applied_log",
+        """
+        hash TEXT PRIMARY KEY
+        """,
+    ),
+    _table(
+        "folded_head",
+        """
+        mailbox TEXT,
+        folder TEXT,
+        log TEXT
+        """,
+    ),
+    # Same reason as in `message_location`: a place may name no mailbox.
+    _index(
+        "idx_folded_head_1",
+        "folded_head(IFNULL(mailbox, ''), IFNULL(folder, ''))",
+        unique=True,
+    ),
+    # Every join to the left. An inner join would drop a message the view cannot
+    # complete, and a message with no readable recipient is not a rarity in an
+    # archive that goes back to the nineties -- it is the group address, the
+    # malformed header, the `Undisclosed recipients:;`. A view that silently
+    # holds fewer messages than the archive is the worst kind of wrong here:
+    # nothing about it looks like an error, and `SELECT count(*)` lies.
+    _view(
+        "v_messages",
+        """
+        SELECT
+        msg.message_id,
+        msg.email_id,
+        msg.store_id,
+        msg.date,
+        mb.name "mailbox",
+        f.name "folder",
+        addr_send.address "sender",
+        addr_rcpt.address "recipient",
+        subject.text "subject"
+        FROM message msg
+        LEFT JOIN subject USING (subject_id)
+        LEFT JOIN message_sender send USING (message_id)
+        LEFT JOIN address addr_send ON addr_send.address_id=send.address_id
+        LEFT JOIN message_recipient rcpt USING (message_id)
+        LEFT JOIN address addr_rcpt ON addr_rcpt.address_id=rcpt.address_id
+        LEFT JOIN message_location loc USING (message_id)
+        LEFT JOIN mailbox mb ON mb.mailbox_id=loc.mailbox_id
+        LEFT JOIN folder f ON f.folder_id=loc.folder_id
+        """,
+    ),
+    _view(
+        "v_duplicates",
+        """
+        SELECT DISTINCT
+        msg.message_id,
+        msg.email_id,
+        msg.store_id,
+        msg.date
+        FROM message msg
+        INNER JOIN message dup
+        ON msg.email_id=dup.email_id
+          AND msg.date=dup.date
+          AND msg.store_id<>dup.store_id
+        ORDER BY msg.date, msg.email_id, msg.message_id
+        """,
+    ),
+)
 
 
 class IndexDatabase:
-    """Open the projection as a context manager, creating its schema on entry.
+    """Open the projection as a context manager.
 
     `with IndexDatabase(path) as db:` yields an `IndexDatabaseConnection` and
-    closes the connection on exit. The schema is created for a database that is
-    not there yet, which is the ordinary case.
+    closes the connection on exit.
 
-    **A database whose shape this version does not know is not touched at all.**
-    Not created into, not stamped, not written -- `outdated` says so and the
-    caller decides. Running `setup()` on one would add this version's tables
-    beside the old ones and stamp the file as current, which turns a database
-    that can be recognised as old into one that cannot: the complaint would be
-    made once and never again, over a projection that is still wrong.
+    **Opening writes nothing.** A database that is already there is opened and
+    asked what it holds -- `outdated`, `missing()` and `usable` answer that, and
+    the caller decides what to say about it. Making an object that is not there,
+    or lifting one that is of an older shape, would put DDL on the path of every
+    query that only meant to read: over a network share, rebuilding an index the
+    way a database is opened costs seconds each time.
+
+    `create=True` says the file may be a new one and its schema is to be written
+    -- `db create` and nothing else. An existing database is left alone even
+    then, whatever shape it turns out to be in.
     """
 
-    def __init__(self, path: pathlib.Path | str, bulk: bool = False):
+    def __init__(self, path: pathlib.Path | str, create: bool = False):
         self.dbconn: sqlite3.Connection | None = None
         self.client: IndexDatabaseConnection | None = None
         self.path = path
-        self.bulk = bulk
+        self.create = create
 
     def __enter__(self) -> IndexDatabaseConnection:
         self.dbconn = connect(self.path)
-        if self.bulk:
-            self.dbconn.execute(f"PRAGMA cache_size = -{BULK_CACHE_KIB}")
+        self.dbconn.execute(f"PRAGMA cache_size = -{CACHE_KIB}")
         self.client = IndexDatabaseConnection(self.dbconn)
-        if not self.client.outdated:
-            self.client.setup()
+        if self.create and self.client.is_new:
+            # Before the first byte of content: a page size is fixed when a
+            # database gets its first page and is ignored afterwards.
+            self.dbconn.execute(f"PRAGMA page_size = {PAGE_SIZE:d}")
+            self.client.create()
         return self.client
 
     def __exit__(
@@ -100,21 +351,20 @@ class IndexDatabase:
 class IndexDatabaseConnection(DatabaseConnection):
     """The projection's schema and the operations that fill and query it.
 
-    `setup()` creates the tables and the `v_messages` / `v_duplicates` views; the
-    rest insert messages, addresses, subjects and locations, interning the
-    lookup-table values through per-instance id caches.
+    `create()` writes the schema, `missing()` and `usable` say whether a file
+    already there still holds it, and the rest insert messages, addresses,
+    subjects and locations, interning the lookup-table values through
+    per-instance id caches.
     """
 
     def __init__(self, dbconn: sqlite3.Connection):
         super().__init__(dbconn)
-        # What shape the file was in when it was opened, read here because this
-        # is the last moment it can be: `setup()` stamps the current version, so
-        # anyone asking afterwards is told what this version writes rather than
-        # what it found. 0 for a file nobody has stamped -- a fresh one, or one
-        # from before the shape was recorded at all, which is what the emptiness
-        # below tells apart.
-        self.shape_on_open = self.schema_version()
-        self._new_file = (
+        # Which shape this file is in: what was found when it was opened, and
+        # what `create()` wrote once it has. 0 for a file nobody has stamped -- a
+        # fresh one, or one from before the shape was recorded at all, which is
+        # what `is_new` tells apart.
+        self.shape = self.schema_version()
+        self.is_new = (
             self.execute("SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
             == 0
         )
@@ -170,195 +420,50 @@ class IndexDatabaseConnection(DatabaseConnection):
         ):
             cache.clear()
 
-    def setup(self) -> None:
+    def create(self) -> None:
+        """Write the schema into a database that has nothing in it, and stamp it.
+
+        The one place that writes DDL. Everything in `SCHEMA` is created outright
+        -- a file that already holds objects is refused here, because making the
+        missing ones would leave a database that is half of two shapes.
+        """
+        if not self.is_new:
+            raise SchemaError("a database that already holds a projection is not created into")
         with self.transaction():
-            self.execute("""
-                CREATE TABLE IF NOT EXISTS mailbox (
-                mailbox_id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                UNIQUE(name) ON CONFLICT IGNORE)
-            """)
+            for obj in SCHEMA:
+                self.execute(obj.sql)
+            self.execute(f"PRAGMA user_version = {SCHEMA_VERSION:d}")
+        self.is_new = False
+        self.shape = SCHEMA_VERSION
 
-            self.execute("""
-                CREATE TABLE IF NOT EXISTS address (
-                address_id INTEGER PRIMARY KEY,
-                address TEXT NOT NULL,
-                UNIQUE(address) ON CONFLICT IGNORE)
-            """)
-            self.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_address_1 ON address(address)")
+    def missing(self) -> list[SchemaObject]:
+        """Which objects of `SCHEMA` this file does not have, in creation order.
 
-            # Not "label". Gmail has labels where IMAP has folders, and the
-            # difference is how many of them a message may carry, not what they
-            # are -- so one word covers both, and it is the one everybody uses.
-            # Carrying "label" as a separate idea is what let the two halves of
-            # a place drift into two relations in the first place.
-            self.execute("""
-                CREATE TABLE IF NOT EXISTS folder (
-                folder_id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                UNIQUE(name) ON CONFLICT IGNORE)
-            """)
-            self.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_folder_1 ON folder(name)")
+        One query against `sqlite_master`, which the connection reads when it
+        opens anyway. Objects beyond these are not looked at: SQLite makes its own
+        indexes for a UNIQUE column, and what matters is that everything a query
+        needs is there.
+        """
+        present = {row[0] for row in self.execute("SELECT name FROM sqlite_master")}
+        return [obj for obj in SCHEMA if obj.name not in present]
 
-            self.execute("""
-                CREATE TABLE IF NOT EXISTS subject (
-                subject_id INTEGER PRIMARY KEY,
-                text TEXT NOT NULL,
-                UNIQUE(text) ON CONFLICT IGNORE)
-            """)
-            self.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_subject_1 ON subject(text)")
+    @property
+    def usable(self) -> bool:
+        """Whether a query can be run against this file and its answer believed."""
+        return not self.outdated and not self.missing()
 
-            self.execute("""
-                CREATE TABLE IF NOT EXISTS message (
-                message_id INTEGER PRIMARY KEY,
-                store_id TEXT NOT NULL,
-                email_id TEXT,
-                date TEXT,
-                subject_id INTEGER,
-                FOREIGN KEY(subject_id) REFERENCES subject(subject_id),
-                UNIQUE(store_id) ON CONFLICT IGNORE)
-            """)
-            self.execute("CREATE INDEX IF NOT EXISTS idx_message_1 ON message(store_id)")
+    def migrate(self) -> None:
+        """Lift a projection of an older shape to the current one, in place.
 
-            # One row is one place: "this message was seen in that folder of that
-            # mailbox". It used to be two independent relations, `message_mailbox`
-            # and `message_label`, which is a normalisation mistake rather than a
-            # bug in any function -- one fact split across two tables loses the
-            # pairing at write time. On the reference archive that was 61.6 % of
-            # 130,887 messages: everything in more than one mailbox, where "which
-            # folder of which mailbox" could no longer be answered.
-            #
-            # Both halves may be NULL, and both cases are real. A mailbox with no
-            # folder is an archive whose history did not record one. A folder with
-            # no mailbox is what an import writes -- the place is named, and the
-            # name is deliberately not in the mailbox field, because that field is
-            # read as a job name by the guard, by `verify` and by the catch-up.
-            # What must never happen is a pairing invented to satisfy a NOT NULL.
-            self.execute("""
-                CREATE TABLE IF NOT EXISTS message_location (
-                message_id INTEGER NOT NULL,
-                mailbox_id INTEGER,
-                folder_id INTEGER,
-                FOREIGN KEY(message_id) REFERENCES message(message_id),
-                FOREIGN KEY(mailbox_id) REFERENCES mailbox(mailbox_id),
-                FOREIGN KEY(folder_id) REFERENCES folder(folder_id))
-            """)
-            # The uniqueness has to be spelt out over IFNULL, not as a plain
-            # UNIQUE(message_id, mailbox_id, folder_id): SQLite holds every NULL
-            # to be distinct from every other NULL, so `INSERT OR IGNORE` would
-            # not recognise a repeat of a place whose folder or mailbox is
-            # unknown. Measured -- three inserts of the same folderless location
-            # gave three rows. Replaying the log is meant to be idempotent, and
-            # the log is replayed on every refresh, so that is a row per run for
-            # every message an old archive has no folder for.
-            self.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_message_location_1 "
-                "ON message_location(message_id, IFNULL(mailbox_id, -1), IFNULL(folder_id, -1))"
-            )
-            self.execute(
-                "CREATE INDEX IF NOT EXISTS idx_message_location_2 "
-                "ON message_location(mailbox_id)"
-            )
-            self.execute(
-                "CREATE INDEX IF NOT EXISTS idx_message_location_3 "
-                "ON message_location(folder_id)"
-            )
+        Deprecated, and empty. A projection is rebuildable from the archive, so
+        the answer to a file of the wrong shape is `db create --force`; this is
+        the slot for the one case where rebuilding is too expensive to ask for,
+        and it holds the statements of a single lift for a single release.
 
-            self.execute("""
-                CREATE TABLE IF NOT EXISTS message_sender (
-                message_id INTEGER NOT NULL,
-                address_id INTEGER NOT NULL,
-                FOREIGN KEY(message_id) REFERENCES message(message_id),
-                FOREIGN KEY(address_id) REFERENCES address(address_id),
-                UNIQUE(message_id, address_id) ON CONFLICT IGNORE)
-            """)
-            self.execute(
-                "CREATE INDEX IF NOT EXISTS idx_message_sender_1 ON message_sender(message_id)"
-            )
-            self.execute(
-                "CREATE INDEX IF NOT EXISTS idx_message_sender_2 ON message_sender(address_id)"
-            )
-
-            self.execute("""
-                CREATE TABLE IF NOT EXISTS message_recipient (
-                message_id INTEGER NOT NULL,
-                address_id INTEGER NOT NULL,
-                FOREIGN KEY(message_id) REFERENCES message(message_id),
-                FOREIGN KEY(address_id) REFERENCES address(address_id),
-                UNIQUE(message_id, address_id) ON CONFLICT IGNORE)
-            """)
-            # Migration: earlier versions created these indexes with a different
-            # definition; drop the old ones before (re)creating them below.
-            self.execute("DROP INDEX IF EXISTS idx_message_recipient_1")
-            self.execute("DROP INDEX IF EXISTS idx_message_recipient_2")
-            self.execute(
-                "CREATE INDEX IF NOT EXISTS idx_message_recipient_1 "
-                "ON message_recipient(message_id)"
-            )
-            self.execute(
-                "CREATE INDEX IF NOT EXISTS idx_message_recipient_2 "
-                "ON message_recipient(address_id)"
-            )
-
-            # `snapshot` is gone. It held the resume timestamps of an archive
-            # that kept its truth in SQLite, and nothing has written it since
-            # 0.8.0 -- resume points live in `heads/`. A current projection
-            # created the table and left it empty, on every rebuild. The reader
-            # it still had is where it belongs: `mailvault.legacy.store_db`,
-            # which opens the old database that really does hold them.
-
-            # Every join to the left, and that is the whole change. It used to
-            # inner-join sender, recipient and subject, so a message the view
-            # could not complete simply was not in it -- and a message with no
-            # readable recipient is not a rarity in an archive that goes back to
-            # the nineties, it is the group address, the malformed header, the
-            # `Undisclosed recipients:;`. A view that silently holds fewer
-            # messages than the archive is the worst kind of wrong here: nothing
-            # about it looks like an error, and `SELECT count(*)` lies.
-            self.execute("""
-                CREATE VIEW IF NOT EXISTS v_messages AS
-                SELECT
-                msg.message_id,
-                msg.email_id,
-                msg.store_id,
-                msg.date,
-                mb.name "mailbox",
-                f.name "folder",
-                addr_send.address "sender",
-                addr_rcpt.address "recipient",
-                subject.text "subject"
-                FROM message msg
-                LEFT JOIN subject USING (subject_id)
-                LEFT JOIN message_sender send USING (message_id)
-                LEFT JOIN address addr_send ON addr_send.address_id=send.address_id
-                LEFT JOIN message_recipient rcpt USING (message_id)
-                LEFT JOIN address addr_rcpt ON addr_rcpt.address_id=rcpt.address_id
-                LEFT JOIN message_location loc USING (message_id)
-                LEFT JOIN mailbox mb ON mb.mailbox_id=loc.mailbox_id
-                LEFT JOIN folder f ON f.folder_id=loc.folder_id
-            """)
-
-            self.execute("""
-                CREATE VIEW IF NOT EXISTS v_duplicates AS
-                SELECT DISTINCT
-                msg.message_id,
-                msg.email_id,
-                msg.store_id,
-                msg.date
-                FROM message msg
-                INNER JOIN message dup
-                ON msg.email_id=dup.email_id
-                  AND msg.date=dup.date
-                  AND msg.store_id<>dup.store_id
-                ORDER BY msg.date, msg.email_id, msg.message_id
-            """)
-
-            # Stamped last, and only on a file that was empty when it was
-            # opened. Stamping one that already held a projection would be a
-            # claim nobody checked -- the tables above are created IF NOT
-            # EXISTS, so they say nothing about what else is in there.
-            if self._new_file:
-                self.execute(f"PRAGMA user_version = {SCHEMA_VERSION:d}")
+        Nothing calls it, and nothing should: `SCHEMA_VERSION` moves whenever the
+        shape does, so a file that would need lifting is refused as unreadable
+        before anything gets this far.
+        """
 
     def schema_version(self) -> int:
         """Which shape this file was written in; 0 for anything before stamping."""
@@ -372,7 +477,7 @@ class IndexDatabaseConnection(DatabaseConnection):
         are told apart by whether there were any tables, and not by the version
         alone: both answer 0.
         """
-        return not self._new_file and self.shape_on_open != SCHEMA_VERSION
+        return not self.is_new and self.shape != SCHEMA_VERSION
 
     def add_mailbox(self, mailbox_name: str) -> int:
         return self._intern(self._mailbox_ids, "mailbox", "mailbox_id", "name", mailbox_name)

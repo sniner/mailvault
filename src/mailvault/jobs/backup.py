@@ -605,7 +605,7 @@ def _refresh_query_db(store_path: pathlib.Path) -> None:
     except Exception as exc:
         log.error("%s: query database not updated: %s", name, exc)
         return
-    if result.outdated:
+    if result.unreadable:
         return
     if result.rebuilt:
         log.info(

@@ -534,7 +534,7 @@ def report_update_db(target: pathlib.Path, result: jobs.RefreshResult) -> int:
     Non-zero for a database this version cannot read: it was not updated, and a
     caller that only reads the exit code must not file that as a success.
     """
-    if result.outdated:
+    if result.unreadable:
         # `refresh_db` has already said what it is and what to do about it.
         return 1
     if result.rebuilt:
@@ -944,7 +944,11 @@ def report_conversion(
 
 
 def _entry_path(store: cas.ContentAddressedStorage, wanted: str) -> pathlib.Path:
-    """Find the entry a message id names.
+    """Find the entry a message id names, given whole or only begun.
+
+    A message id is ninety-six characters and the reports print the first twelve
+    of them, so that is what a reader has to hand and that is what this takes --
+    as long as it belongs to one message and not to several.
 
     A path is accepted too, and only its file name is looked at -- someone who
     has been in the directory with `ls` should not be sent away. But an id is
@@ -959,10 +963,27 @@ def _entry_path(store: cas.ContentAddressedStorage, wanted: str) -> pathlib.Path
         if not cas.is_hashval(wanted):
             raise jobs.JobError(f"{wanted}: neither a store id nor the path of an entry")
         hashval = cas.normalize_hashval(wanted)
+    if len(hashval) < MIN_ID_PREFIX:
+        raise jobs.JobError(
+            f"{wanted}: too little of an id to look one up -- give at least its"
+            f" first {MIN_ID_PREFIX} characters"
+        )
     found = store.locate(hashval, exists=True)
-    if found is None:
+    if found is not None:
+        return found
+    matches = store.matching(hashval)
+    if not matches:
         raise jobs.JobError(f"{hashval}: not in this archive")
-    return found
+    if len(matches) > 1:
+        log.debug("%s: begins %s", hashval, ", ".join(matches))
+        raise jobs.JobError(
+            f"{hashval}: the beginning of {utils.counted(len(matches), 'message id')}"
+            f" in this archive -- name the one you mean by its whole id"
+        )
+    entry = store.locate(matches[0], exists=True)
+    if entry is None:
+        raise jobs.JobError(f"{matches[0]}: not in this archive")
+    return entry
 
 
 def export_entries(
@@ -1047,10 +1068,21 @@ def _provenance(archive: pathlib.Path, name: str) -> jobs.Provenance:
 
 
 # How much of a message id a table shows. The full value is 96 characters and
-# would be three lines of terminal for a column nobody reads across -- it is
-# there to be recognised, not typed. Every machine-readable format prints it
-# whole, and `--ids` exists precisely so nothing has to be copied off a table.
+# would be three lines of terminal for a column nobody reads across. It is
+# printed bare, with no ellipsis after it: this much of an id is what `archive
+# export` takes, and a mark saying "shortened" is a character that gets selected
+# along with the id and handed on to whatever it was pasted into. Every
+# machine-readable format prints the id whole, because a pipeline should not have
+# to be lucky.
 ID_PREVIEW = 12
+
+# How much of an id `archive export` asks for when it was given too little. The
+# store can look up four characters -- that is the shard directory -- but four
+# names the whole shard, which in an archive of any size is several messages, so
+# asking for four sends the reader back for more. Six is where a prefix starts
+# naming one message: 16^6 is 16.7 million, and 131,000 messages meet one of them
+# less than once in a hundred.
+MIN_ID_PREFIX = 6
 
 # How much of a subject a table shows before it costs the line its shape.
 SUBJECT_WIDTH = 60
@@ -1075,7 +1107,7 @@ def report_search(hits: list[jobs.SearchHit], query: jobs.SearchQuery) -> int:
     for hit in hits:
         day = (hit.date or "")[:10] or "??????????"
         print(
-            f"{day}  {hit.store_id[:ID_PREVIEW]}…  "
+            f"{day}  {hit.store_id[:ID_PREVIEW]}  "
             f"{_cut(hit.sender, 32):32}  {_cut(hit.subject, SUBJECT_WIDTH)}"
         )
     if not hits:
@@ -1177,6 +1209,8 @@ def run_db(args: argparse.Namespace) -> int:
         # first thing a machine-readable result owes its consumer.
         state = jobs.freshness(archive, db_path)
         complaint = state.complaint(db_path.name)
+        if complaint and not state.is_usable:
+            raise jobs.JobError(complaint)
         if complaint:
             if args.ids or args.csv or args.json:
                 log.warning("%s", complaint)

@@ -31,7 +31,7 @@ import tempfile
 
 from mailvault import mailutils, utils
 from mailvault.jobs.common import JobError
-from mailvault.store import cas, heads, index_db, metalog
+from mailvault.store import cas, heads, index_db, marker, metalog
 
 log = logging.getLogger(__name__)
 
@@ -46,36 +46,6 @@ CREATE_DB_BATCH = 2000
 # away on the next backup.
 DEFAULT_QUERY_DB_NAME = "index.db"
 
-# Bookkeeping table: which log files have already been folded into this database.
-# Not part of the queryable schema -- it exists only so an incremental refresh
-# knows what it has seen. A file is recorded by its content hash (its name).
-_APPLIED_LOG_DDL = "CREATE TABLE IF NOT EXISTS applied_log (hash TEXT PRIMARY KEY)"
-
-# Which chain head of each place the projection has folded in. Bookkeeping like
-# `applied_log` and no part of the queryable schema, but it answers a question
-# `applied_log` cannot: not "what have I read" but "was that everything". The
-# archive's own `heads/` is one flat directory naming the current head of every
-# place, so comparing the two says whether the database is behind -- before
-# somebody bases an answer on it, rather than after.
-#
-# The names are held in plain text and not as ids. This is a statement about the
-# archive, not about the mail: a place the projection has never seen a message
-# from still has a head, and interning it would put a row in `mailbox` for a
-# mailbox no query can find anything in.
-_HEAD_DDL = """
-    CREATE TABLE IF NOT EXISTS folded_head (
-    mailbox TEXT,
-    folder TEXT,
-    log TEXT)
-"""
-# Same reason as in `message_location`: a place may name no mailbox, and SQLite
-# holds every NULL distinct, so the uniqueness has to be spelt over IFNULL.
-_HEAD_INDEX_DDL = """
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_folded_head_1
-    ON folded_head(IFNULL(mailbox, ''), IFNULL(folder, ''))
-"""
-
-
 # The two moves a reader can be told to make, and they are not interchangeable.
 # Building again reads every message in the archive; updating reads what has been
 # added since. Naming the expensive one where the cheap one would do is a wrong
@@ -84,6 +54,13 @@ _HEAD_INDEX_DDL = """
 # until the projection got its own namespace.
 REBUILD_COMMAND = "mailvault db create --force"
 UPDATE_COMMAND = "mailvault db update"
+MIGRATE_COMMAND = "mailvault archive migrate"
+
+# Appended to `--until` to make an upper bound the whole day named lies under.
+# Every character a stored date can hold sorts before this one, so a message at
+# `2026-08-20T23:59:59+02:00` is inside the bound `2026-08-20` and the first
+# message of the day after is not.
+_ABOVE_ANY_DATE = "\uffff"
 
 # A sentinel, because None is a legitimate recorded value: a place whose chain
 # has no head yet is recorded with one, and it must not compare equal to a place
@@ -91,29 +68,62 @@ UPDATE_COMMAND = "mailvault db update"
 _MISSING = object()
 
 
+def _unreadable(db_name: str, outdated_shape: bool) -> str:
+    """The line a projection this version cannot query is answered with."""
+    if outdated_shape:
+        return (
+            f"{db_name}: built by an earlier version of mailvault and not readable"
+            f" by this one -- build it again with `{REBUILD_COMMAND}`"
+        )
+    return (
+        f"{db_name}: not the query database this version reads -- build it again"
+        f" with `{REBUILD_COMMAND}`"
+    )
+
+
 @dataclasses.dataclass
 class Freshness:
     """What is wrong with the projection somebody is about to read, if anything.
 
-    Two complaints, and they are different in kind. `outdated_shape` means the
-    file was written by another version and cannot be read at all; `behind` names
-    the places whose log has moved on since it was last brought up to date, so
-    what it holds is true and incomplete.
+    Three complaints, and they differ in what can be done about them.
+
+    `outdated_shape` and `incomplete` both mean the file is not a projection this
+    version can query -- one was written by another version, the other has lost
+    something a query needs -- and both are answered by building it again.
+
+    `unmigrated_archive` says the archive still keeps its metadata in a database
+    of its own. Nothing may be built or replaced there, because there is no log
+    to build it from yet, and what looks like a stale projection may be the only
+    record the archive has.
+
+    `behind` names the places whose log has moved on since the projection was
+    last brought up to date, so what it holds is true and incomplete.
     """
 
     outdated_shape: bool = False
+    incomplete: bool = False
+    unmigrated_archive: bool = False
     behind: list[str] = dataclasses.field(default_factory=list)
 
+    @property
+    def is_usable(self) -> bool:
+        """Whether a query may be run against it and its answer believed."""
+        return not (self.outdated_shape or self.incomplete or self.unmigrated_archive)
+
     def is_current(self) -> bool:
-        return not self.outdated_shape and not self.behind
+        return self.is_usable and not self.behind
 
     def complaint(self, db_name: str) -> str | None:
         """One line naming the state and the move, or None when there is none."""
-        if self.outdated_shape:
+        if self.unmigrated_archive:
             return (
-                f"{db_name}: built by an earlier version of mailvault and not"
-                f" readable by this one -- build it again with `{REBUILD_COMMAND}`"
+                f"{db_name}: does not fit this archive, and the archive is an older"
+                f" one that still keeps its own record of the mail -- lift it with"
+                f" `{MIGRATE_COMMAND}` first, and nothing here is thrown away in the"
+                f" meantime"
             )
+        if self.outdated_shape or self.incomplete:
+            return _unreadable(db_name, self.outdated_shape)
         if not self.behind:
             return None
         places = ", ".join(self.behind[:3])
@@ -156,10 +166,15 @@ class RebuildResult:
 
 @dataclasses.dataclass
 class RefreshResult:
-    """Outcome of bringing a kept-fresh projection up to date with the archive."""
+    """Outcome of bringing a kept-fresh projection up to date with the archive.
+
+    `unreadable` says the file was left exactly as it was because it is not a
+    projection this version queries -- another version's shape, or one an object
+    is missing from. Nothing else in here is filled in when that happens.
+    """
 
     rebuilt: bool = False
-    outdated: bool = False
+    unreadable: bool = False
     files: int = 0
     messages: int = 0
     applied: int = 0
@@ -168,14 +183,6 @@ class RefreshResult:
 
 def _log_hash(path: pathlib.Path) -> str:
     return path.name.removesuffix(".jsonl")
-
-
-def _ensure_bookkeeping(db: index_db.IndexDatabaseConnection) -> None:
-    """The two tables that record what the projection has taken in."""
-    with db.transaction():
-        db.execute(_APPLIED_LOG_DDL)
-        db.execute(_HEAD_DDL)
-        db.execute(_HEAD_INDEX_DDL)
 
 
 def _archive_heads(heads_root: pathlib.Path) -> dict[tuple[str | None, str | None], str | None]:
@@ -203,25 +210,43 @@ def _folded_heads(
     db: index_db.IndexDatabaseConnection,
 ) -> dict[tuple[str | None, str | None], str | None]:
     """The heads the projection recorded, or nothing when it has none."""
-    try:
-        rows = db.execute("SELECT mailbox, folder, log FROM folded_head").fetchall()
-    except sqlite3.OperationalError:
-        # A projection built before this table existed. It is not wrong, only
-        # unable to say how far it got -- and the caller is told the same thing
-        # it would be told about a place that has moved on.
-        return {}
+    rows = db.execute("SELECT mailbox, folder, log FROM folded_head").fetchall()
     return {(row[0], row[1]): row[2] for row in rows}
 
 
-def freshness(store_path: pathlib.Path, db_path: pathlib.Path) -> Freshness:
-    """Ask the projection whether what it holds is still what the archive holds.
+def _unfit(store_path: pathlib.Path, result: Freshness) -> Freshness:
+    """Decide what a projection that cannot be queried means for this archive.
 
-    For whoever is about to read it. The archive's `heads/` names the current
-    chain head of every place; the projection records the head it folded in. A
-    difference means mail has been archived since, and a place the projection
-    has never heard of means the same. Neither is an error -- the projection is
-    rebuildable by definition -- but a reader who is not told will take an
-    answer from it and believe the answer is complete.
+    An archive that carries the mark holds its metadata in the log, so a
+    projection is a convenience and building it again is the answer. An archive
+    without one predates all of that: there is no log to build a projection from,
+    and a database lying in it may be the only record of where its mail came
+    from. Which of the two it is has to be settled before anybody is told to
+    throw a database away.
+    """
+    if not marker.is_archive(store_path):
+        result.unmigrated_archive = True
+    return result
+
+
+def freshness(store_path: pathlib.Path, db_path: pathlib.Path) -> Freshness:
+    """Ask the projection whether it can be read, and whether it is still current.
+
+    For whoever is about to read it. It answers two questions, and the first one
+    decides whether the second is worth asking: is this a projection this version
+    queries at all, and does it still hold what the archive holds.
+
+    The archive's `heads/` names the current chain head of every place; the
+    projection records the head it folded in. A difference means mail has been
+    archived since, and a place the projection has never heard of means the same.
+    Neither is an error -- the projection is rebuildable by definition -- but a
+    reader who is not told will take an answer from it and believe the answer is
+    complete.
+
+    Nothing here writes to the database, including when it turns out to be of the
+    wrong shape. Reading is not the moment to change a file, and a projection
+    that can be recognised as unreadable is worth more than one quietly patched
+    into looking current.
     """
     result = Freshness()
     if not db_path.exists():
@@ -231,12 +256,21 @@ def freshness(store_path: pathlib.Path, db_path: pathlib.Path) -> Freshness:
         with index_db.IndexDatabase(path=db_path) as db:
             if db.outdated:
                 result.outdated_shape = True
-                return result
+                return _unfit(store_path, result)
+            absent = db.missing()
+            if absent:
+                log.debug(
+                    "%s: %s missing from the query database",
+                    db_path.name,
+                    ", ".join(str(obj) for obj in absent),
+                )
+                result.incomplete = True
+                return _unfit(store_path, result)
             folded = _folded_heads(db)
     except sqlite3.DatabaseError:
         # Unreadable is its own answer, and `refresh_db` rebuilds it anyway.
         result.outdated_shape = True
-        return result
+        return _unfit(store_path, result)
 
     for place, head_log in _archive_heads(heads_root).items():
         if folded.get(place, _MISSING) != head_log:
@@ -382,7 +416,7 @@ def _building(
 
     `temp_dir` builds it somewhere else and copies it over at the end, which is
     for one case: a database on a network share. Even with the page cache a build
-    is given (`index_db.BULK_CACHE_KIB`), SQLite writes a database in scattered
+    is given (`index_db.CACHE_KIB`), SQLite writes a database in scattered
     pages, and every one of them is a round trip over a share. Building elsewhere
     turns the whole thing into one sequential copy at the end.
 
@@ -464,6 +498,12 @@ def create_db(
     """
     if db_path.exists() and not force:
         raise JobError(f"{db_path}: already exists, use --force to replace it")
+    if not marker.is_archive(store_path):
+        raise JobError(
+            f"{store_path}: an older archive that still keeps its own record of the"
+            f" mail -- there is no log here to build a query database from, lift it"
+            f" with `{MIGRATE_COMMAND}` first"
+        )
     store = cas.mail_store(store_path)
     result = RebuildResult()
     with _building(db_path, temp_dir) as build_path:
@@ -479,8 +519,7 @@ def _build_db(
 ) -> None:
     """Fill a fresh database from the archive's log and the messages it names."""
     log_root = store_path / metalog.DEFAULT_LOG_DIR
-    with index_db.IndexDatabase(path=db_path, bulk=True) as db:
-        _ensure_bookkeeping(db)
+    with index_db.IndexDatabase(path=db_path, create=True) as db:
         rows = _Rows(db, store)
         for logfile in metalog.read_all(log_root):
             result.replay.files += 1
@@ -538,22 +577,24 @@ def refresh_db(store_path: pathlib.Path, db_path: pathlib.Path) -> RefreshResult
     heads_root = store_path / heads.DEFAULT_HEADS_DIR
     try:
         with index_db.IndexDatabase(path=db_path) as db:
-            if db.outdated:
+            if not db.usable:
                 # Left exactly as it is, and said out loud. Rebuilding it here
                 # would be a backup deciding on its own to spend half an hour
                 # reading every message in the archive, for a file that is a
                 # convenience -- and doing it without being asked, at the end of
                 # a run that had nothing else to do. The projection is not a
                 # source of truth; whoever wants it back says so.
-                result.outdated = True
+                result.unreadable = True
                 log.warning(
-                    "%s: built by an earlier version of mailvault (shape %d, this"
-                    " one writes %d) -- left untouched and NOT updated, build it"
-                    " again with `%s`",
-                    utils.under(store_path, db_path),
-                    db.shape_on_open,
+                    "%s -- left untouched and NOT updated",
+                    _unreadable(utils.under(store_path, db_path), db.outdated),
+                )
+                log.debug(
+                    "%s: shape %d, this version writes %d; missing: %s",
+                    db_path.name,
+                    db.shape,
                     index_db.SCHEMA_VERSION,
-                    REBUILD_COMMAND,
+                    ", ".join(str(obj) for obj in db.missing()) or "nothing",
                 )
                 return result
             _apply_new_logs(db, store, log_root, result)
@@ -584,7 +625,6 @@ def _apply_new_logs(
     A message row is created the first time a store id is seen; after that only
     its location is added.
     """
-    _ensure_bookkeeping(db)
     applied = {row[0] for row in db.execute("SELECT hash FROM applied_log")}
     rows = _Rows(db, store)
     for path in metalog.log_files(log_root):
@@ -709,15 +749,18 @@ def _conditions(query: SearchQuery) -> tuple[list[str], list[str]]:
         place_in("mailbox_id", "mailbox", query.mailbox)
     if query.folder:
         place_in("folder_id", "folder", query.folder)
-    # Compared on the day alone. A stored date carries the offset it was written
-    # with, so a lexicographic comparison of whole timestamps would put an hour
-    # of one day on the wrong side of a boundary the user thinks in days.
+    # Compared against the column itself, so the index over it can answer the
+    # range instead of every message in the archive being read to be measured.
+    # A stored date begins with the day it names -- `2026-08-20T21:03:11+02:00`
+    # -- so comparing the whole value against a day is the comparison wanted,
+    # and the offset it carries can no longer move an hour across a boundary the
+    # reader thinks of in days.
     if query.since:
-        where.append("substr(m.date, 1, 10) >= ?")
+        where.append("m.date >= ?")
         values.append(query.since)
     if query.until:
-        where.append("substr(m.date, 1, 10) <= ?")
-        values.append(query.until)
+        where.append("m.date < ?")
+        values.append(query.until + _ABOVE_ANY_DATE)
     return where, values
 
 
@@ -759,11 +802,8 @@ def search(db_path: pathlib.Path, query: SearchQuery) -> list[SearchHit]:
         sql += f" LIMIT {int(query.limit):d}"
 
     with index_db.IndexDatabase(path=db_path) as db:
-        if db.outdated:
-            raise JobError(
-                f"{db_path.name}: built by an earlier version of mailvault and not"
-                f" readable by this one -- build it again with `{REBUILD_COMMAND}`"
-            )
+        if not db.usable:
+            raise JobError(_unreadable(db_path.name, db.outdated))
         rows = db.execute(sql, values).fetchall()
     return [
         SearchHit(

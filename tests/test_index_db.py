@@ -24,7 +24,7 @@ def _places(db, message_id) -> list[tuple[str | None, str | None]]:
 
 def test_index_db_setup(tmp_path):
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db:
+    with index_db.IndexDatabase(db_path, create=True) as db:
         res = db.dbconn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         tables = [r[0] for r in res]
         assert "mailbox" in tables
@@ -47,7 +47,7 @@ def test_index_db_setup(tmp_path):
 
 def test_index_db_setup_views(tmp_path):
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db:
+    with index_db.IndexDatabase(db_path, create=True) as db:
         res = db.dbconn.execute("SELECT name FROM sqlite_master WHERE type='view'").fetchall()
         views = [r[0] for r in res]
         assert "v_messages" in views
@@ -57,7 +57,7 @@ def test_index_db_setup_views(tmp_path):
 def test_index_db_setup_indexes(tmp_path):
     """Verify that message_recipient indexes are on the correct table (B1 fix)."""
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db:
+    with index_db.IndexDatabase(db_path, create=True) as db:
         indexes = db.dbconn.execute(
             "SELECT name, tbl_name FROM sqlite_master "
             "WHERE type='index' AND name LIKE 'idx_message_recipient%'"
@@ -70,7 +70,7 @@ def test_index_db_setup_indexes(tmp_path):
 
 def test_index_db_add_mailbox(tmp_path):
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db:
+    with index_db.IndexDatabase(db_path, create=True) as db:
         mb_id = db.add_mailbox("INBOX")
         assert mb_id > 0
         # Adding same mailbox should return same id
@@ -80,7 +80,7 @@ def test_index_db_add_mailbox(tmp_path):
 
 def test_index_db_a_place_goes_in_as_one_row(tmp_path):
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db:
+    with index_db.IndexDatabase(db_path, create=True) as db:
         msg_id = db.add_message(
             store_id="hash123",
             email_id="<message-id@example.com>",
@@ -97,7 +97,7 @@ def test_index_db_a_place_goes_in_as_one_row(tmp_path):
 
 def test_index_db_add_message_with_a_place(tmp_path):
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db:
+    with index_db.IndexDatabase(db_path, create=True) as db:
         msg_id = db.add_message(
             store_id="hash_mb",
             email_id="<mb@example.com>",
@@ -112,7 +112,7 @@ def test_index_db_add_message_with_a_place(tmp_path):
 
 def test_index_db_the_same_place_twice_is_one_row(tmp_path):
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db:
+    with index_db.IndexDatabase(db_path, create=True) as db:
         msg_id = db.add_message(
             store_id="hash_assign",
             email_id="<assign@example.com>",
@@ -133,7 +133,7 @@ def test_index_db_an_unknown_half_of_a_place_is_null_not_invented(tmp_path):
     thing this must not do.
     """
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db:
+    with index_db.IndexDatabase(db_path, create=True) as db:
         no_folder = db.add_message("h1", "<a@example.com>", None, "A")
         db.add_message_location(no_folder, "example.com", None)
         no_mailbox = db.add_message("h2", "<b@example.com>", None, "B")
@@ -151,7 +151,7 @@ def test_index_db_a_repeated_place_with_an_unknown_half_is_still_one_row(tmp_pat
     on an archive migrated from an old format is most of them.
     """
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db:
+    with index_db.IndexDatabase(db_path, create=True) as db:
         msg_id = db.add_message("h1", "<a@example.com>", None, "A")
         for _ in range(3):
             db.add_message_location(msg_id, "example.com", None)
@@ -162,7 +162,7 @@ def test_index_db_a_repeated_place_with_an_unknown_half_is_still_one_row(tmp_pat
 
 def test_index_db_sender_and_recipients(tmp_path):
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db:
+    with index_db.IndexDatabase(db_path, create=True) as db:
         msg_id = db.add_message(
             store_id="hash_addr",
             email_id="<addr@example.com>",
@@ -190,7 +190,7 @@ def test_index_db_sender_and_recipients(tmp_path):
 def test_index_db_labels_are_committed_without_a_following_write(tmp_path):
     """Places added last must survive the connection closing."""
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db:
+    with index_db.IndexDatabase(db_path, create=True) as db:
         msg_id = db.add_message("aaa", "<a@example.com>", None, "Subject")
         db.add_message_location(msg_id, "gmail.com", "INBOX")
         db.add_message_location(msg_id, "gmail.com", "Archiv/2016")
@@ -205,7 +205,7 @@ def test_index_db_labels_are_committed_without_a_following_write(tmp_path):
 
 def test_index_db_transaction_rollback(tmp_path):
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db:
+    with index_db.IndexDatabase(db_path, create=True) as db:
         db.add_mailbox("BeforeRollback")
 
         with pytest.raises(sqlite.RollbackException):
@@ -227,7 +227,7 @@ def test_a_deliberate_rollback_reports_nothing(tmp_path, caplog):
     # "Transaction failed:" and then nothing -- the exception carries no
     # message, and the operation is not a failure to begin with.
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db, caplog.at_level(logging.DEBUG):
+    with index_db.IndexDatabase(db_path, create=True) as db, caplog.at_level(logging.DEBUG):
         with pytest.raises(sqlite.RollbackException):
             with db.transaction(), db.transaction(), db.transaction():
                 db.execute("INSERT OR IGNORE INTO mailbox(name) VALUES (?)", ("RolledBack",))
@@ -242,7 +242,7 @@ def test_a_rollback_takes_the_interned_ids_with_it(tmp_path):
     # inside a larger block that is undone afterwards. Keeping it would hand out
     # a foreign key to a row that is not there.
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db:
+    with index_db.IndexDatabase(db_path, create=True) as db:
         with pytest.raises(sqlite.RollbackException):
             with db.transaction():
                 db.add_mailbox("RolledBack")
@@ -258,7 +258,7 @@ def test_a_rollback_takes_the_interned_ids_with_it(tmp_path):
 
 def test_a_real_failure_is_reported_once_and_with_its_stack(tmp_path, caplog):
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db, caplog.at_level(logging.ERROR):
+    with index_db.IndexDatabase(db_path, create=True) as db, caplog.at_level(logging.ERROR):
         with pytest.raises(ValueError):
             with db.transaction(), db.transaction():
                 raise ValueError("something nobody diagnosed")
@@ -269,7 +269,7 @@ def test_a_real_failure_is_reported_once_and_with_its_stack(tmp_path, caplog):
 
 def test_index_db_v_messages_view(tmp_path):
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db:
+    with index_db.IndexDatabase(db_path, create=True) as db:
         msg_id = db.add_message(
             store_id="hash_view",
             email_id="<view@example.com>",
@@ -300,7 +300,7 @@ def test_index_db_v_messages_holds_every_message_the_archive_holds(tmp_path):
     asked, and looked like an answer to the one they did.
     """
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db:
+    with index_db.IndexDatabase(db_path, create=True) as db:
         complete = db.add_message("h1", "<a@example.com>", None, "A")
         db.add_message_sender(complete, "from@example.com")
         db.add_message_recipients(complete, "to@example.com")
@@ -319,7 +319,7 @@ def test_index_db_v_messages_holds_every_message_the_archive_holds(tmp_path):
 
 def test_index_db_v_duplicates_view(tmp_path):
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db:
+    with index_db.IndexDatabase(db_path, create=True) as db:
         date = datetime(2026, 3, 27, tzinfo=UTC)
         # Two messages with same email_id and date but different store_id = duplicates
         db.add_message(
@@ -344,8 +344,55 @@ def test_index_db_v_duplicates_view(tmp_path):
 def test_index_db_add_message_idempotent(tmp_path):
     """Adding same store_id twice should not create duplicate (ON CONFLICT IGNORE)."""
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path) as db:
+    with index_db.IndexDatabase(db_path, create=True) as db:
         date = datetime(2026, 1, 1, tzinfo=UTC)
         id1 = db.add_message(store_id="same_hash", email_id="<a@b>", date=date, subject="First")
         id2 = db.add_message(store_id="same_hash", email_id="<a@b>", date=date, subject="First")
         assert id1 == id2
+
+
+def test_a_projection_that_lost_an_object_is_recognised(tmp_path):
+    """`missing` names it, and `usable` is what a reader is turned away by."""
+    db_path = tmp_path / "test.db"
+    with index_db.IndexDatabase(db_path, create=True) as db:
+        assert db.usable
+        assert db.missing() == []
+
+    with index_db.IndexDatabase(db_path) as db:
+        db.execute("DROP INDEX idx_message_recipient_1")
+
+    with index_db.IndexDatabase(db_path) as db:
+        assert [str(obj) for obj in db.missing()] == ["index idx_message_recipient_1"]
+        assert not db.usable
+
+
+def test_an_object_that_is_missing_is_not_made_on_the_way_past(tmp_path):
+    """The file comes back exactly as it was, however it was opened."""
+    db_path = tmp_path / "test.db"
+    with index_db.IndexDatabase(db_path, create=True) as db:
+        db.add_message("a" * 96, "<a@example.com>", None, "Subject")
+    with index_db.IndexDatabase(db_path) as db:
+        db.execute("DROP INDEX idx_message_2")
+    before = db_path.read_bytes()
+
+    for _ in range(2):
+        with index_db.IndexDatabase(db_path, create=True) as db:
+            assert not db.usable
+
+    assert db_path.read_bytes() == before
+
+
+def test_a_file_that_already_holds_a_projection_is_not_created_into(tmp_path):
+    """Half of one shape and half of another is worse than either."""
+    db_path = tmp_path / "test.db"
+    with index_db.IndexDatabase(db_path, create=True) as db:
+        with pytest.raises(index_db.SchemaError):
+            db.create()
+
+
+def test_a_new_database_carries_the_page_size_this_version_writes(tmp_path):
+    """It can only be set before the first page, so nothing later can put it right."""
+    db_path = tmp_path / "test.db"
+    with index_db.IndexDatabase(db_path, create=True) as db:
+        assert db.execute("PRAGMA page_size").fetchone()[0] == index_db.PAGE_SIZE
+        assert db.schema_version() == index_db.SCHEMA_VERSION

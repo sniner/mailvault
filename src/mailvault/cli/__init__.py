@@ -295,8 +295,9 @@ def build_parser() -> argparse.ArgumentParser:
         "export",
         help="Write out a stored message, decompressed and unchanged",
         description=(
-            "Write out a message, exactly as it was stored. Takes the message id"
-            " the reports print; without --output the message goes to standard"
+            "Write out a message, exactly as it was stored. Takes the message id the"
+            " reports print, whole or just its beginning -- as much of one as names a"
+            " single message is enough. Without --output the message goes to standard"
             " output, which is the way to look at one the reports could only name."
         ),
     )
@@ -310,7 +311,7 @@ def build_parser() -> argparse.ArgumentParser:
         "entry",
         nargs="+",
         metavar="ID",
-        help="Message id, as the reports print it",
+        help="Message id, whole or the beginning of one, as the reports print it",
     )
 
     asub.add_parser(
