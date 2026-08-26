@@ -124,7 +124,7 @@ class TestResults:
         assert len(search(db_path, SearchQuery(limit=2))) == 2
 
     def test_the_full_message_id_comes_back(self, db_path):
-        """What `archive export` takes -- the whole point of the two commands."""
+        """What `get` takes -- the whole point of the two commands."""
         (hit,) = search(db_path, SearchQuery(subject="4711"))
 
         assert hit.store_id == "a" * 96

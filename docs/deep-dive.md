@@ -480,15 +480,20 @@ what catches a mistyped name: three messages adopted into a place that now holds
 five thousand were not adopted where they were meant to go. `archive places`
 answers the same question before anything is typed, which is the better way round.
 
-### Exporting a single message
+### Getting a single message out
 
-Every report names a message by its id, and that id is what `archive export`
-takes -- whole, or as much of the beginning of one as names a single message, the
-way git takes a short commit hash. The twelve characters `db search` prints are
-enough for an archive of any size anybody has; a beginning that fits several
-messages is refused rather than resolved to whichever of them came first. What
-comes out is the message exactly as it was stored -- whether it lies compressed,
-and where in the archive it lies, is the store's business.
+Every report names a message by its id, and that id is what `get` takes -- whole,
+or as much of the beginning of one as names a single message, the way git takes a
+short commit hash. The twelve characters `db search` prints are enough for an
+archive of any size anybody has; a beginning that fits several messages is
+refused rather than resolved to whichever of them came first. What comes out is
+the message exactly as it was stored -- whether it lies compressed, and where in
+the archive it lies, is the store's business.
+
+`--path` is how that question is asked anyway. It answers with where the entry
+lies instead of handing the message over, one path per line, and it is meant for
+a script that has to point something else at the file. What it names is the
+archive's own: write-protected, and a `.eml.zst` where the archive is compressed.
 
 ### Compressing and decompressing
 
@@ -670,7 +675,7 @@ twice](#why-the-same-mail-can-be-in-there-twice).
 
 The columns are `message_id` (the row's own id, internal to the database),
 `email_id` (the `Message-ID` header) and `store_id` (the content hash, which is
-what `archive export` takes).
+what `get` takes).
 
 **Archives that predate the location record** have no metadata log to say where
 a message came from, and such a message is not in the database at all: the log is
@@ -738,8 +743,9 @@ name, and the mode says as much to whatever opens the file -- viewers that
 all. Comfort, not protection: it stops a slip, not a decision, and it has nothing
 to say about deletion. Not every filesystem carries a mode; on a desktop-mounted
 SMB share the archive looks exactly as it did before, and nothing is lost by
-that. `archive export` hands out a normal, writable file, which is the way to
-look at a message.
+that. `get` hands out a normal, writable file, which is the way to look at a
+message; `get --path` names the archive's own file, protection and compression
+and all.
 
 ### `meta/` — where each message was seen
 

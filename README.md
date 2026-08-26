@@ -256,14 +256,14 @@ $ mailvault db search --from example.com --since 2024-01-01
 
 `--from`, `--to`, `--subject`, `--mailbox`, `--folder`, `--since`, `--until` and
 `--limit`. The message id in the table is shortened to be read, and it is enough
-to work with: `archive export` takes the beginning of an id the way git takes a
+to work with: `get` takes the beginning of an id the way git takes a
 short commit hash, and says so when the one you gave fits more than one message.
 For anything that goes on to another program there is `--ids`, which prints them
 whole and nothing else, so a search and an export make a pipeline:
 
 ```console
 $ mailvault db search --from example.com --ids \
-    | xargs mailvault archive export --output ./invoices/
+    | xargs mailvault get --output ./invoices/
 ```
 
 `--csv` and `--json` print the whole result with the ids in full. It is also an
@@ -310,6 +310,29 @@ import made before `archive import` took a `--name` has none, and
 is what gives that mail a place.
 
 
+## Getting a message out
+
+`mailvault get` hands over a single message, exactly as it was stored, by the id
+the reports print -- whole or just its beginning. Name several and give
+`--output` a directory to get one file each:
+
+```console
+$ mailvault get a3f1c8e04b71 | head -20
+$ mailvault get a3f1c8e04b71 -o message.eml
+```
+
+`--path` answers with where the message lies instead of handing it over, one
+path per line, which is the form a script wants:
+
+```console
+$ mailvault get --path a3f1c8e04b71
+/srv/archive/private/mail/a3/f1/a3f1c8e04b71….eml.zst
+```
+
+That file belongs to the archive: it is write-protected, and compressed where the
+archive is. So `--path` says where a message is; handing one over ready to read
+is what `get` does without it.
+
 ## Working on the archive
 
 `mailvault archive` is the group of commands that work on the archive itself,
@@ -345,14 +368,6 @@ gmail.com  [Google Mail]/All Mails     4,001  2026-08-12
 ```
 
 An empty mailbox column is an import: there is no mailbox behind it.
-
-**Export** a single message, exactly as it was stored, by the id the reports
-print. Name several and give `--output` a directory to get one file each:
-
-```console
-$ mailvault archive export a3f1c8e04b71 | head -20
-$ mailvault archive export a3f1c8e04b71 -o message.eml
-```
 
 **Compress** or **decompress** the whole archive after the fact:
 

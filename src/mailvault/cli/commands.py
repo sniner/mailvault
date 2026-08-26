@@ -801,7 +801,7 @@ def _report_orphans(store_ids: list[str]) -> None:
     what it records cannot be wrong. Naming it the other way round would offer a
     move that leads nowhere for most readers, which costs more than it is worth.
 
-    This one prints no list. A store id is the right handle for `archive export`
+    This one prints no list. A store id is the right handle for `get`
     and useless to a person deciding whether their archive is all right, and
     twenty of a hundred and ten is neither a list to work from nor short enough
     to skim. They go to the debug log, whole.
@@ -851,7 +851,7 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
     store = cas.mail_store(source)
 
     def ids(paths: list[pathlib.Path]) -> list[str]:
-        """The message ids of entries -- what `archive export` and the log take."""
+        """The message ids of entries -- what `get` and the log take."""
         return [store.hashval_of(path) or str(path) for path in paths]
 
     print(
@@ -1028,6 +1028,26 @@ def export_entries(
     return 0
 
 
+def locate_entries(source: pathlib.Path, wanted: list[str]) -> int:
+    """Say where each message lies, one path per line.
+
+    The answer a script wants: `export` hands over the message and this hands
+    over its place in the archive, so that a run can be told which file to look
+    at, back up, or hand to something else.
+
+    What lies there is the entry, not a message ready to read -- it is
+    write-protected and it may be a zstd frame. That is what the help says, and
+    it is why this prints a path instead of pretending to be a cheaper `export`.
+    """
+    store = cas.mail_store(source)
+    # Every id is looked up before the first line is printed. Half a list
+    # followed by a refusal is the worst shape for something a script reads.
+    paths = [_entry_path(store, one) for one in wanted]
+    for path in paths:
+        print(f"{path}")
+    return 0
+
+
 def _refuse_importing_the_archive(archive: pathlib.Path, source: pathlib.Path) -> None:
     """Refuse an import whose source and destination are the same mail.
 
@@ -1069,14 +1089,14 @@ def _provenance(archive: pathlib.Path, name: str) -> jobs.Provenance:
 
 # How much of a message id a table shows. The full value is 96 characters and
 # would be three lines of terminal for a column nobody reads across. It is
-# printed bare, with no ellipsis after it: this much of an id is what `archive
-# export` takes, and a mark saying "shortened" is a character that gets selected
+# printed bare, with no ellipsis after it: this much of an id is what `get`
+# takes, and a mark saying "shortened" is a character that gets selected
 # along with the id and handed on to whatever it was pasted into. Every
 # machine-readable format prints the id whole, because a pipeline should not have
 # to be lucky.
 ID_PREVIEW = 12
 
-# How much of an id `archive export` asks for when it was given too little. The
+# How much of an id `get` asks for when it was given too little. The
 # store can look up four characters -- that is the shard directory -- but four
 # names the whole shard, which in an archive of any size is several messages, so
 # asking for four sends the reader back for more. Six is where a prefix starts
@@ -1231,6 +1251,20 @@ def run_db(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_get(args: argparse.Namespace) -> int:
+    """Run `get`: hand over a message, or say where it lies.
+
+    Its own command and not a corner of `archive`, because `archive` is where an
+    archive is looked after -- taking a message out of one is using it, which is
+    what `backup` and `verify` are, and it belongs beside them.
+    """
+    archive = archive_path(args)
+    require_archive(archive)
+    if args.path:
+        return locate_entries(archive, args.entry)
+    return export_entries(archive, args.entry, args.output)
+
+
 def run_archive(args: argparse.Namespace) -> int:
     """Run an `archive` subcommand (stats/import/compress/check/...).
 
@@ -1248,8 +1282,6 @@ def run_archive(args: argparse.Namespace) -> int:
         # `git init [<directory>]`, and the same default: where you are standing.
         target = args.directory if args.directory is not None else archive
         return report_init(target, jobs.init_archive(target, DEFAULT_CONFIG_NAME))
-    elif cmd == "export":
-        return export_entries(archive, args.entry, args.output)
     elif cmd == "stats":
         count, size = _external(archive, args.docuware).stats()
         print(f"{count:,} emails, {_human_size(size)} total")

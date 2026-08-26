@@ -167,6 +167,43 @@ def build_parser() -> argparse.ArgumentParser:
         help="Store the messages compressed with zstd",
     )
 
+    p_get = sub.add_parser(
+        "get",
+        help="Hand over a stored message, or say where it lies",
+        description=(
+            "Write out a message, exactly as it was stored. Takes the message id the"
+            " reports print, whole or just its beginning -- as much of one as names a"
+            " single message is enough. Without --output the message goes to standard"
+            " output, which is the way to look at one the reports could only name."
+            " With --path nothing is written out and the answer is where the message"
+            " lies, one path per line: that file is read-only and may be compressed,"
+            " so it says where the message is rather than handing over a message"
+            " ready to read."
+        ),
+    )
+    # Two answers to the same question, and only one of them can be the answer:
+    # `--output` writes the message out, `--path` says where it already lies.
+    # Refused here rather than later, where the file would be written and the
+    # path printed and neither would be what was asked for.
+    g_answer = p_get.add_mutually_exclusive_group()
+    g_answer.add_argument(
+        "--output",
+        "-o",
+        type=pathlib.Path,
+        help="Write to this file, or into this directory when several are named",
+    )
+    g_answer.add_argument(
+        "--path",
+        action="store_true",
+        help="Print where the message lies in the archive instead of writing it out",
+    )
+    p_get.add_argument(
+        "entry",
+        nargs="+",
+        metavar="ID",
+        help="Message id, whole or the beginning of one, as the reports print it",
+    )
+
     p_archive = sub.add_parser(
         "archive",
         help="Maintain the local archive (stats, import, compress, ...)",
@@ -289,29 +326,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Only count what would be recorded: nothing is written",
-    )
-
-    a_export = asub.add_parser(
-        "export",
-        help="Write out a stored message, decompressed and unchanged",
-        description=(
-            "Write out a message, exactly as it was stored. Takes the message id the"
-            " reports print, whole or just its beginning -- as much of one as names a"
-            " single message is enough. Without --output the message goes to standard"
-            " output, which is the way to look at one the reports could only name."
-        ),
-    )
-    a_export.add_argument(
-        "--output",
-        "-o",
-        type=pathlib.Path,
-        help="Write to this file, or into this directory when several are named",
-    )
-    a_export.add_argument(
-        "entry",
-        nargs="+",
-        metavar="ID",
-        help="Message id, whole or the beginning of one, as the reports print it",
     )
 
     asub.add_parser(
@@ -464,7 +478,7 @@ def build_db_parser(sub: argparse._SubParsersAction) -> None:
             "Find archived messages by who sent them, who received them, what they"
             " are about, when they were sent, or where they were kept. Every filter"
             " given has to match; text matches anywhere in the value and ignores"
-            " case. Prints the message ids `archive export` takes, so a search and"
+            " case. Prints the message ids `get` takes, so a search and"
             " an export make a pipeline."
         ),
     )
@@ -530,6 +544,8 @@ def main() -> int:
     try:
         if args.command in {"folders", "backup", "verify"}:
             exit_code = commands.run_mailbox(args)
+        elif args.command == "get":
+            exit_code = commands.run_get(args)
         elif args.command == "archive":
             exit_code = commands.run_archive(args)
         elif args.command == "db":

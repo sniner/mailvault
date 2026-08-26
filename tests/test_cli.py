@@ -416,7 +416,7 @@ def test_archive_check_quarantine_without_the_integrity_check_is_refused(tmp_pat
         commands.run_archive(_check_args(tmp_path, quarantine=True, no_integrity_check=True))
 
 
-class TestExport:
+class TestGet:
     """Getting a stored message back out, by store id or by the path a report printed."""
 
     @staticmethod
@@ -427,22 +427,20 @@ class TestExport:
         return store_id, path
 
     @staticmethod
-    def _export_args(archive, entry, output=None):
-        return argparse.Namespace(
-            archive_command="export", archive=archive, entry=entry, output=output
-        )
+    def _get_args(archive, entry, output=None, path=False):
+        return argparse.Namespace(archive=archive, entry=entry, output=output, path=path)
 
     def test_a_store_id_goes_to_standard_output(self, tmp_path, capsysbinary):
         store_id, _path = self._archive(tmp_path)
 
-        assert commands.run_archive(self._export_args(tmp_path, [store_id])) == 0
+        assert commands.run_get(self._get_args(tmp_path, [store_id])) == 0
 
         assert capsysbinary.readouterr().out == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
 
     def test_the_path_a_report_printed_works_just_as_well(self, tmp_path, capsysbinary):
         _store_id, path = self._archive(tmp_path)
 
-        assert commands.run_archive(self._export_args(tmp_path, [str(path)])) == 0
+        assert commands.run_get(self._get_args(tmp_path, [str(path)])) == 0
 
         assert capsysbinary.readouterr().out == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
 
@@ -451,7 +449,7 @@ class TestExport:
         store_id, path = self._archive(tmp_path, compress=True)
         assert path.suffix == ".zst"
 
-        commands.run_archive(self._export_args(tmp_path, [store_id]))
+        commands.run_get(self._get_args(tmp_path, [store_id]))
 
         assert capsysbinary.readouterr().out == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
 
@@ -459,7 +457,7 @@ class TestExport:
         store_id, _path = self._archive(tmp_path)
         target = tmp_path / "out.eml"
 
-        commands.run_archive(self._export_args(tmp_path, [store_id], output=target))
+        commands.run_get(self._get_args(tmp_path, [store_id], output=target))
 
         assert target.read_bytes() == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
 
@@ -467,25 +465,25 @@ class TestExport:
         store_id, _path = self._archive(tmp_path)
 
         with pytest.raises(jobs.JobError, match="need --output"):
-            commands.run_archive(self._export_args(tmp_path, [store_id, store_id]))
+            commands.run_get(self._get_args(tmp_path, [store_id, store_id]))
 
     def test_a_store_id_the_archive_does_not_have(self, tmp_path):
         self._archive(tmp_path)
 
         with pytest.raises(jobs.JobError, match="not in this archive"):
-            commands.run_archive(self._export_args(tmp_path, ["ab" * 48]))
+            commands.run_get(self._get_args(tmp_path, ["ab" * 48]))
 
     def test_something_that_is_neither_an_id_nor_a_path(self, tmp_path):
         self._archive(tmp_path)
 
         with pytest.raises(jobs.JobError, match="neither a store id nor the path"):
-            commands.run_archive(self._export_args(tmp_path, ["Subject: hello"]))
+            commands.run_get(self._get_args(tmp_path, ["Subject: hello"]))
 
     def test_a_bare_file_name_is_enough(self, tmp_path):
         """What is left after copying a path out of a report and cutting it short."""
         _store_id, path = self._archive(tmp_path)
 
-        commands.run_archive(self._export_args(tmp_path, [path.name], output=tmp_path / "o"))
+        commands.run_get(self._get_args(tmp_path, [path.name], output=tmp_path / "o"))
 
         assert (tmp_path / "o").read_bytes() == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
 
@@ -501,7 +499,7 @@ class TestExport:
         """What a search prints is the first twelve characters, and it has to work."""
         store_id, _path = self._archive(tmp_path)
 
-        assert commands.run_archive(self._export_args(tmp_path, [store_id[:12]])) == 0
+        assert commands.run_get(self._get_args(tmp_path, [store_id[:12]])) == 0
 
         assert capsysbinary.readouterr().out == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
 
@@ -512,13 +510,47 @@ class TestExport:
         self._entry(tmp_path, "abcdef" + "2" * 90, b"another")
 
         with pytest.raises(jobs.JobError, match="whole id"):
-            commands.run_archive(self._export_args(tmp_path, ["abcdef"]))
+            commands.run_get(self._get_args(tmp_path, ["abcdef"]))
 
     def test_too_little_of_an_id_to_look_one_up(self, tmp_path):
         store_id, _path = self._archive(tmp_path)
 
         with pytest.raises(jobs.JobError, match="at least its first 6"):
-            commands.run_archive(self._export_args(tmp_path, [store_id[:5]]))
+            commands.run_get(self._get_args(tmp_path, [store_id[:5]]))
+
+    def test_path_says_where_the_message_lies_and_writes_nothing(self, tmp_path, capsys):
+        store_id, path = self._archive(tmp_path)
+
+        assert commands.run_get(self._get_args(tmp_path, [store_id], path=True)) == 0
+
+        assert capsys.readouterr().out == f"{path}\n"
+
+    def test_path_answers_for_every_id_named_one_per_line(self, tmp_path, capsys):
+        marker.write(tmp_path)
+        store = cas.mail_store(tmp_path)
+        _status, first, first_path = store.add(b"one")
+        _status, second, second_path = store.add(b"another")
+
+        commands.run_get(self._get_args(tmp_path, [first, second], path=True))
+
+        assert capsys.readouterr().out.splitlines() == [str(first_path), str(second_path)]
+
+    def test_path_names_the_compressed_file_that_is_really_there(self, tmp_path, capsys):
+        """The entry is what lies in the archive, not a message ready to read."""
+        store_id, _path = self._archive(tmp_path, compress=True)
+
+        commands.run_get(self._get_args(tmp_path, [store_id], path=True))
+
+        assert capsys.readouterr().out.strip().endswith(".eml.zst")
+
+    def test_a_refused_id_leaves_no_half_written_list(self, tmp_path, capsys):
+        """A script reads this: better nothing at all than the first of two paths."""
+        store_id, _path = self._archive(tmp_path)
+
+        with pytest.raises(jobs.JobError, match="not in this archive"):
+            commands.run_get(self._get_args(tmp_path, [store_id, "ab" * 48], path=True))
+
+        assert capsys.readouterr().out == ""
 
 
 @contextlib.contextmanager
@@ -619,6 +651,11 @@ class TestWhereTheOptionsLive:
     def test_a_command_that_writes_can_be_told_a_job_is_new(self):
         assert self._parse(["backup", "--allow-new-mailbox"]).allow_new_mailbox is True
         assert self._parse(["verify", "--allow-new-mailbox"]).allow_new_mailbox is True
+
+    def test_get_cannot_both_write_the_message_out_and_say_where_it_is(self):
+        """One question, two answers -- refused before anything is read."""
+        with pytest.raises(SystemExit):
+            self._parse(["get", "--path", "--output", "out.eml", "abcdef123456"])
 
     def test_an_archive_command_has_no_use_for_any_of_them(self):
         args = self._parse(["archive", "check"])
@@ -1215,12 +1252,12 @@ class TestDbCommands:
         for store_id in printed:
             assert cas.is_hashval(store_id), store_id
 
-    def test_the_id_a_table_prints_is_one_export_takes(self, tmp_path, capsys):
+    def test_the_id_a_table_prints_is_one_get_takes(self, tmp_path, capsys):
         """The column is a handle, so nothing may cling to it that has to be cut off.
 
         A shortened id used to be printed with an ellipsis after it, which came
         along whenever somebody selected the column and went straight back out of
-        `archive export` as an id it could not read.
+        `get` as an id it could not read.
         """
         archive = self._archive(tmp_path)
         commands.run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
@@ -1232,12 +1269,12 @@ class TestDbCommands:
         assert cas.is_hashval(printed), printed
         target = tmp_path / "out.eml"
         assert (
-            commands.run_archive(
+            commands.run_get(
                 argparse.Namespace(
-                    archive_command="export",
                     archive=archive,
                     entry=[printed],
                     output=target,
+                    path=False,
                 )
             )
             == 0

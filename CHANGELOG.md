@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- **`archive export` is now `mailvault get`.** The old name is gone; a script or cron job that
+  calls `mailvault archive export …` has to say `mailvault get …` instead, and nothing else about
+  it changes -- the same ids, the same `--output`, the same output. `archive` is the group that
+  looks after an archive (`init`, `migrate`, `compact`, `check`); taking a message out of one is
+  using it, which is what `backup` and `verify` are, and it belongs beside them
+
+### Added
+
+- **`get --path` says where a message lies instead of handing it over.** One path per line, which
+  is the form a script wants when it has to point something else at the file. What it names is the
+  archive's own entry -- write-protected, and a `.eml.zst` where the archive is compressed -- so it
+  answers where the message is; `get` without it is what hands one over ready to read. Naming both
+  `--path` and `--output` is refused: they are two answers to the same question
+
 ### Changed
 
 - **A log file's header no longer says how many lines follow it.** The `messages` count in the
