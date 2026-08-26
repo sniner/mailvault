@@ -166,11 +166,12 @@ class TestWriting:
 
         assert [p.suffix for p in root.glob("*/*")] == [".jsonl"]
 
-    def test_declared_count_matches_what_is_written(self, tmp_path):
+    def test_the_header_holds_no_count_of_what_follows(self, tmp_path):
+        """A count would have to be known before the first line is written."""
         (path,) = _write(tmp_path / "meta", store_ids=["aaa", "bbb"])
 
         header = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
-        assert header["messages"] == 2
+        assert set(header) == {"version", "mailbox", "folder", "date", "prev"}
 
     def test_writer_is_reusable_after_sealing(self, tmp_path):
         writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
@@ -209,7 +210,8 @@ class TestReading:
         assert logfile.store_ids == ["aaa"]
 
     def test_truncation_on_a_line_boundary_is_reported(self, tmp_path, caplog):
-        """A file cut at a newline parses cleanly and is still short."""
+        """A file cut at a newline parses cleanly and is still short -- only its
+        name, which is the hash of what it should hold, notices."""
         (path,) = _write(tmp_path / "meta", store_ids=["aaa", "bbb", "ccc"])
         lines = path.read_text(encoding="utf-8").splitlines()
         tamper(path, "\n".join(lines[:-1]) + "\n")
@@ -218,7 +220,7 @@ class TestReading:
         assert logfile is not None
 
         assert logfile.store_ids == ["aaa", "bbb"]
-        assert "header declares 3 messages but only 2 could be read" in caplog.text
+        assert "damaged -- content does not match its name" in caplog.text
 
     def test_unknown_version_is_rejected(self, tmp_path, caplog):
         path = tmp_path / "log.jsonl"

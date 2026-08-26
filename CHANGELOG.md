@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **A log file's header no longer says how many lines follow it.** The `messages` count in the
+  first line of a `meta/….jsonl` file was what the lines below it already are, and it is knowable
+  up front only because this writer happens to hold a whole place before it writes -- a format
+  written a line at a time generally cannot say. The one thing the count caught, a file cut short
+  exactly at a line boundary, the file's name catches as well: that name is the hash of the whole
+  content. Files written before this keep the field and are read exactly as they were
+
 ## 0.14.3 (2026-08-23)
 
 ### Fixed

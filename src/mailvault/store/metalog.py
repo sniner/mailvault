@@ -50,7 +50,7 @@ is the gap the chain closes.
 
 File content -- a header line, then one line per message:
 
-    {"version":1,"mailbox":"mail.example.org","folder":"INBOX","date":"...","messages":2}
+    {"version":2,"mailbox":"mail.example.org","folder":"INBOX","date":"...","prev":null}
     {"store_id":"df3823f1..."}
     {"store_id":"60f57aa7..."}
 
@@ -208,7 +208,6 @@ def _serialize(
         "mailbox": mailbox,
         "folder": folder,
         "date": date,
-        "messages": len(store_ids),
         "prev": prev,
     }
     body = json.dumps(header, ensure_ascii=False) + "\n"
@@ -466,6 +465,9 @@ def read_log(path: pathlib.Path) -> LogFile | None:
     # check -- the same guarantee the mail store gives, and it catches what syntax
     # never could: a flipped bit inside an otherwise well-formed line.
     #
+    # It is also what catches a truncation that ends on a line boundary: such a
+    # file parses cleanly and is still short, and only the hash notices.
+    #
     # A mismatch is reported but does not discard the file. A log records
     # observations and never claims to be exhaustive, so whatever still parses is
     # a subset of the truth -- which is what every log file is anyway. Throwing
@@ -494,18 +496,6 @@ def read_log(path: pathlib.Path) -> LogFile | None:
         store_id = _parse_store_id(path, number, line)
         if store_id is not None:
             store_ids.append(store_id)
-
-    # The header's count is what catches a truncation that happens to end on a
-    # line boundary: such a file parses cleanly and is still short. A torn line
-    # already reports itself, this covers the case that otherwise passes unseen.
-    declared = header.get("messages")
-    if isinstance(declared, int) and declared != len(store_ids):
-        log.warning(
-            "%s: header declares %s but only %s could be read, file is damaged",
-            where(path),
-            utils.counted(declared, "message"),
-            f"{len(store_ids):,}",
-        )
 
     prev = header.get("prev")
     return LogFile(
