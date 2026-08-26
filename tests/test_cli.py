@@ -972,6 +972,20 @@ class TestAdoptReport:
         assert "belong to no known place" in out
         assert "archive adopt --name NAME" in out
 
+    def test_the_check_does_not_send_them_to_a_query_database(self, tmp_path, capsys):
+        """It is built from the log, and these are the messages the log names nowhere.
+
+        The line that did offer it read plausibly enough to survive several
+        readings, which is why the absence is pinned rather than assumed.
+        """
+        archive = self._archive_with_orphans(tmp_path)
+
+        report_check(archive, jobs.check(archive, contents=False))
+
+        out = capsys.readouterr().out
+        assert "db create" not in out
+        assert "a query database leaves them out" in out
+
 
 class TestAnArchiveIsAMarkedDirectory:
     """`FORMAT` answers "is this an archive", the way `.git` does for a repository.

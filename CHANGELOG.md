@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The `check` report sent a reader off to build a query database that leaves out the very
+  messages it was recommended for.** A message the log names nowhere is what `archive check`
+  reports as belonging to no known place -- and the query database is built from the log, so
+  `db create`, which the report named as the way to find them, is the one thing that does not.
+  On a large archive that is half an hour of building a database and then not finding what it was
+  built for. The report names `archive adopt` and says on the same line that a query database
+  leaves them out until it has run
+
 ## 0.15.0 (2026-08-26)
 
 ### Breaking changes

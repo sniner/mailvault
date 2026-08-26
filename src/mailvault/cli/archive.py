@@ -339,6 +339,13 @@ def _report_orphans(store_ids: list[str]) -> None:
     what it records cannot be wrong. Naming it the other way round would offer a
     move that leads nowhere for most readers, which costs more than it is worth.
 
+    `db create` is not among them, and the reason is worth writing down because
+    the opposite reads so plausibly: the query database is built from the log,
+    and these are the messages the log names nowhere. Sending a reader off to
+    build one is sending them to spend half an hour on a database that leaves out
+    exactly what they went looking for. Adopting them first is what puts them in
+    it, and that is why it is said on the same line as the move.
+
     This one prints no list. A store id is the right handle for `get`
     and useless to a person deciding whether their archive is all right, and
     twenty of a hundred and ten is neither a list to work from nor short enough
@@ -352,10 +359,9 @@ def _report_orphans(store_ids: list[str]) -> None:
         " came from"
     )
     print(
-        "  they are found like any other message: `db create` builds a"
-        " query database with sender, subject and date"
+        "  `archive adopt --name NAME` takes them into a place you name -- until then"
+        " a query database leaves them out, because it is built from the log"
     )
-    print("  `archive adopt --name NAME` takes them into a place you name")
     print(
         "  where an import read them from a directory that is still there,"
         " importing it again under a --name is better: it records only what"
