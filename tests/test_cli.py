@@ -17,7 +17,20 @@ import pytest
 
 from mailvault import cli, conf, jobs
 from mailvault.backend import base
-from mailvault.cli import commands
+from mailvault.cli import archive, mailbox
+from mailvault.cli.archive import report_check, report_places
+from mailvault.cli.archive import run as run_archive
+from mailvault.cli.common import (
+    DEFAULT_CONFIG_NAME,
+    DEFAULT_DB_NAME,
+    EXPECTED_ERRORS,
+    archive_path,
+    config_file,
+)
+from mailvault.cli.mailbox import report_backup, report_folders, report_verify
+from mailvault.cli.mailbox import run as run_mailbox
+from mailvault.cli.message import run as run_get
+from mailvault.cli.query import run as run_db
 from mailvault.store import cas, heads, marker, metalog
 from tests.tamper import tamper
 
@@ -55,7 +68,7 @@ def _one_job(monkeypatch, failure: Exception) -> None:
     def _fail(*_a, **_kw):
         raise failure
 
-    monkeypatch.setattr(commands, "_run_job", _fail)
+    monkeypatch.setattr(mailbox, "_run_job", _fail)
 
 
 class TestFullFlag:
@@ -70,7 +83,7 @@ class TestFullFlag:
             return jobs.BackupReport()
 
         monkeypatch.setattr(jobs, "backup", _backup)
-        commands._run_job(conf.JobConfig(name="proton.me"), args, config, NEW_ARCHIVE)
+        mailbox._run_job(conf.JobConfig(name="proton.me"), args, config, NEW_ARCHIVE)
         return seen["incremental"]
 
     def test_full_switches_the_incremental_run_off(self, monkeypatch):
@@ -96,7 +109,7 @@ class TestJobFailureReporting:
         _one_job(monkeypatch, base.MailboxError("login refused for 'user': no such user"))
 
         with caplog.at_level(logging.DEBUG):
-            assert commands.run_mailbox(_args()) == 1
+            assert run_mailbox(_args()) == 1
 
         errors = [r for r in caplog.records if r.levelno == logging.ERROR]
         assert len(errors) == 1
@@ -107,7 +120,7 @@ class TestJobFailureReporting:
     def test_a_broken_config_is_reported_the_same_way(self, monkeypatch, caplog):
         _one_job(monkeypatch, conf.ConfigError("job 'proton.me': no such backend"))
 
-        assert commands.run_mailbox(_args()) == 1
+        assert run_mailbox(_args()) == 1
 
         errors = [r for r in caplog.records if r.levelno == logging.ERROR]
         assert len(errors) == 1
@@ -118,7 +131,7 @@ class TestJobFailureReporting:
         _one_job(monkeypatch, base.MailboxError("login refused"))
 
         with caplog.at_level(logging.DEBUG):
-            commands.run_mailbox(_args())
+            run_mailbox(_args())
 
         debug = [r for r in caplog.records if r.levelno == logging.DEBUG]
         assert any(r.exc_info for r in debug)
@@ -126,7 +139,7 @@ class TestJobFailureReporting:
     def test_an_unexpected_error_keeps_its_traceback(self, monkeypatch, caplog):
         _one_job(monkeypatch, ValueError("something nobody thought of"))
 
-        assert commands.run_mailbox(_args()) == 1
+        assert run_mailbox(_args()) == 1
 
         errors = [r for r in caplog.records if r.levelno == logging.ERROR]
         assert len(errors) == 1
@@ -142,9 +155,9 @@ class TestJobFailureReporting:
             if job.name == "broken":
                 raise base.MailboxError("login refused")
 
-        monkeypatch.setattr(commands, "_run_job", _run)
+        monkeypatch.setattr(mailbox, "_run_job", _run)
 
-        assert commands.run_mailbox(_args()) == 1
+        assert run_mailbox(_args()) == 1
         assert seen == ["broken", "fine"]
 
 
@@ -154,20 +167,20 @@ class TestArchiveAndConfig:
     def test_the_archive_is_where_you_are_standing(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
 
-        assert commands.archive_path(_args(archive=None)) == tmp_path
+        assert archive_path(_args(archive=None)) == tmp_path
 
     def test_or_wherever_the_option_points(self):
-        assert commands.archive_path(_args(archive=NEW_ARCHIVE)) == NEW_ARCHIVE
+        assert archive_path(_args(archive=NEW_ARCHIVE)) == NEW_ARCHIVE
 
     def test_the_configuration_comes_out_of_the_archive(self):
-        wanted = NEW_ARCHIVE / commands.DEFAULT_CONFIG_NAME
+        wanted = NEW_ARCHIVE / DEFAULT_CONFIG_NAME
 
-        assert commands.config_file(_args(), NEW_ARCHIVE) == wanted
+        assert config_file(_args(), NEW_ARCHIVE) == wanted
 
     def test_unless_one_is_named(self):
         named = pathlib.Path("/home/jd/private.toml")
 
-        assert commands.config_file(_args(config=named), NEW_ARCHIVE) == named
+        assert config_file(_args(config=named), NEW_ARCHIVE) == named
 
     def test_a_named_configuration_without_an_archive_is_refused(self, monkeypatch, tmp_path):
         """Reaching elsewhere for the file says one is not standing in the archive.
@@ -180,7 +193,7 @@ class TestArchiveAndConfig:
         args = _args(archive=None, config=pathlib.Path("/home/jd/private.toml"))
 
         with pytest.raises(conf.ConfigError, match="no archive"):
-            commands.run_mailbox(args)
+            run_mailbox(args)
 
     def test_an_archive_without_a_configuration_says_which_rule_looked(
         self, monkeypatch, tmp_path
@@ -190,7 +203,7 @@ class TestArchiveAndConfig:
         monkeypatch.chdir(tmp_path)
 
         with pytest.raises(conf.ConfigError, match="an archive carries its own"):
-            commands.run_mailbox(_args(archive=None))
+            run_mailbox(_args(archive=None))
 
     def test_folders_needs_no_archive_and_so_takes_one_anyway(self, monkeypatch, tmp_path):
         """It only talks to the server, so nothing about it can go anywhere wrong."""
@@ -198,7 +211,7 @@ class TestArchiveAndConfig:
         monkeypatch.setattr(conf, "load", lambda *a, **kw: conf.Config())
         args = _args(command="folders", archive=None, config=pathlib.Path("/home/jd/p.toml"))
 
-        assert commands.run_mailbox(args) == 0
+        assert run_mailbox(args) == 0
 
 
 class TestMailboxGuard:
@@ -225,7 +238,7 @@ class TestMailboxGuard:
             seen.append(job.name)
             return 0
 
-        monkeypatch.setattr(commands, "_run_job", _run)
+        monkeypatch.setattr(mailbox, "_run_job", _run)
         return seen
 
     def test_a_configuration_that_never_wrote_here_is_refused(self, monkeypatch, tmp_path):
@@ -233,7 +246,7 @@ class TestMailboxGuard:
         ran = self._jobs_run(monkeypatch, ["example.com"])
 
         with pytest.raises(jobs.JobError, match="wrong configuration"):
-            commands.run_mailbox(_args(archive=archive))
+            run_mailbox(_args(archive=archive))
 
         assert ran == []
 
@@ -243,7 +256,7 @@ class TestMailboxGuard:
         ran = self._jobs_run(monkeypatch, ["gmail.com", "example.com"])
 
         with pytest.raises(jobs.JobError):
-            commands.run_mailbox(_args(archive=archive))
+            run_mailbox(_args(archive=archive))
 
         assert ran == []
 
@@ -251,14 +264,14 @@ class TestMailboxGuard:
         archive = self._archive(tmp_path, "gmail.com")
         ran = self._jobs_run(monkeypatch, ["posteo.de"])
 
-        assert commands.run_mailbox(_args(archive=archive, allow_new_mailbox=True)) == 0
+        assert run_mailbox(_args(archive=archive, allow_new_mailbox=True)) == 0
         assert ran == ["posteo.de"]
 
     def test_a_known_job_needs_no_flag(self, monkeypatch, tmp_path):
         archive = self._archive(tmp_path, "gmail.com", "posteo.de")
         ran = self._jobs_run(monkeypatch, ["gmail.com"])
 
-        assert commands.run_mailbox(_args(archive=archive)) == 0
+        assert run_mailbox(_args(archive=archive)) == 0
         assert ran == ["gmail.com"]
 
     def test_a_new_job_among_known_ones_reads_as_a_new_job(self, monkeypatch, tmp_path):
@@ -267,14 +280,14 @@ class TestMailboxGuard:
         self._jobs_run(monkeypatch, ["gmail.com", "posteo.de"])
 
         with pytest.raises(jobs.JobError, match="posteo.de has not written here before"):
-            commands.run_mailbox(_args(archive=archive))
+            run_mailbox(_args(archive=archive))
 
     def test_a_job_the_config_no_longer_has_is_nobodys_business(self, monkeypatch, tmp_path):
         """Removing a job cannot put a message anywhere, so it is not reported."""
         archive = self._archive(tmp_path, "gmail.com", "posteo.de", "proton.me")
         ran = self._jobs_run(monkeypatch, ["gmail.com"])
 
-        assert commands.run_mailbox(_args(archive=archive)) == 0
+        assert run_mailbox(_args(archive=archive)) == 0
         assert ran == ["gmail.com"]
 
     def test_an_empty_archive_takes_anything(self, monkeypatch, tmp_path):
@@ -283,14 +296,14 @@ class TestMailboxGuard:
         fresh.mkdir()
         marker.write(fresh)
 
-        assert commands.run_mailbox(_args(archive=fresh)) == 0
+        assert run_mailbox(_args(archive=fresh)) == 0
         assert ran == ["gmail.com"]
 
     def test_folders_needs_no_archive_at_all(self, monkeypatch):
         """It only ever talks to the server, so there is nothing to guard."""
         ran = self._jobs_run(monkeypatch, ["gmail.com"])
 
-        assert commands.run_mailbox(_args(command="folders", archive=None)) == 0
+        assert run_mailbox(_args(command="folders", archive=None)) == 0
         assert ran == ["gmail.com"]
 
 
@@ -299,7 +312,7 @@ class TestMailboxGuard:
     [conf.ConfigError("x"), jobs.JobError("x"), base.MailboxError("x")],
 )
 def test_every_expected_error_is_recognised_as_one(error):
-    assert isinstance(error, commands.EXPECTED_ERRORS)
+    assert isinstance(error, EXPECTED_ERRORS)
 
 
 def test_archive_decompress_reports_what_it_could_not_convert(tmp_path, capsys):
@@ -317,9 +330,7 @@ def test_archive_decompress_reports_what_it_could_not_convert(tmp_path, capsys):
     _, _, broken = store.add(b"about to be corrupted")
     tamper(broken, b"this is not a zstd frame")
 
-    exit_code = commands.run_archive(
-        argparse.Namespace(archive_command="decompress", archive=root)
-    )
+    exit_code = run_archive(argparse.Namespace(archive_command="decompress", archive=root))
 
     assert exit_code == 1
     out = capsys.readouterr().out
@@ -338,9 +349,7 @@ def test_archive_decompress_that_works_exits_zero(tmp_path, capsys):
     store = cas.mail_store(root, compress=True)
     store.add(b"a real message")
 
-    exit_code = commands.run_archive(
-        argparse.Namespace(archive_command="decompress", archive=root)
-    )
+    exit_code = run_archive(argparse.Namespace(archive_command="decompress", archive=root))
 
     assert exit_code == 0
     assert "failed" not in capsys.readouterr().out
@@ -368,7 +377,7 @@ def _archive_with_a_log(root, extra_store_ids=()):
 def test_archive_check_that_finds_nothing_exits_zero(tmp_path, capsys):
     _archive_with_a_log(tmp_path)
 
-    exit_code = commands.run_archive(_check_args(tmp_path, no_integrity_check=True))
+    exit_code = run_archive(_check_args(tmp_path, no_integrity_check=True))
 
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -379,7 +388,7 @@ def test_archive_check_that_finds_nothing_exits_zero(tmp_path, capsys):
 def test_a_check_that_read_the_contents_says_so_rather_than_just_exiting_zero(tmp_path, capsys):
     _archive_with_a_log(tmp_path)
 
-    exit_code = commands.run_archive(_check_args(tmp_path))
+    exit_code = run_archive(_check_args(tmp_path))
 
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -392,7 +401,7 @@ def test_archive_check_takes_the_directory_you_are_standing_in(tmp_path, monkeyp
     _archive_with_a_log(tmp_path)
     monkeypatch.chdir(tmp_path)
 
-    exit_code = commands.run_archive(_check_args(None))
+    exit_code = run_archive(_check_args(None))
 
     assert exit_code == 0
     assert "1 message stored" in capsys.readouterr().out
@@ -401,7 +410,7 @@ def test_archive_check_takes_the_directory_you_are_standing_in(tmp_path, monkeyp
 def test_archive_check_exits_non_zero_when_the_archive_is_not_what_it_claims(tmp_path, capsys):
     _archive_with_a_log(tmp_path, extra_store_ids=["aa" * 48])
 
-    exit_code = commands.run_archive(_check_args(tmp_path))
+    exit_code = run_archive(_check_args(tmp_path))
 
     out = capsys.readouterr().out
     assert exit_code == 1
@@ -413,7 +422,7 @@ def test_archive_check_quarantine_without_the_integrity_check_is_refused(tmp_pat
     _archive_with_a_log(tmp_path)
 
     with pytest.raises(jobs.JobError, match="cannot be combined with --no-integrity-check"):
-        commands.run_archive(_check_args(tmp_path, quarantine=True, no_integrity_check=True))
+        run_archive(_check_args(tmp_path, quarantine=True, no_integrity_check=True))
 
 
 class TestGet:
@@ -433,14 +442,14 @@ class TestGet:
     def test_a_store_id_goes_to_standard_output(self, tmp_path, capsysbinary):
         store_id, _path = self._archive(tmp_path)
 
-        assert commands.run_get(self._get_args(tmp_path, [store_id])) == 0
+        assert run_get(self._get_args(tmp_path, [store_id])) == 0
 
         assert capsysbinary.readouterr().out == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
 
     def test_the_path_a_report_printed_works_just_as_well(self, tmp_path, capsysbinary):
         _store_id, path = self._archive(tmp_path)
 
-        assert commands.run_get(self._get_args(tmp_path, [str(path)])) == 0
+        assert run_get(self._get_args(tmp_path, [str(path)])) == 0
 
         assert capsysbinary.readouterr().out == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
 
@@ -449,7 +458,7 @@ class TestGet:
         store_id, path = self._archive(tmp_path, compress=True)
         assert path.suffix == ".zst"
 
-        commands.run_get(self._get_args(tmp_path, [store_id]))
+        run_get(self._get_args(tmp_path, [store_id]))
 
         assert capsysbinary.readouterr().out == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
 
@@ -457,7 +466,7 @@ class TestGet:
         store_id, _path = self._archive(tmp_path)
         target = tmp_path / "out.eml"
 
-        commands.run_get(self._get_args(tmp_path, [store_id], output=target))
+        run_get(self._get_args(tmp_path, [store_id], output=target))
 
         assert target.read_bytes() == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
 
@@ -465,25 +474,25 @@ class TestGet:
         store_id, _path = self._archive(tmp_path)
 
         with pytest.raises(jobs.JobError, match="need --output"):
-            commands.run_get(self._get_args(tmp_path, [store_id, store_id]))
+            run_get(self._get_args(tmp_path, [store_id, store_id]))
 
     def test_a_store_id_the_archive_does_not_have(self, tmp_path):
         self._archive(tmp_path)
 
         with pytest.raises(jobs.JobError, match="not in this archive"):
-            commands.run_get(self._get_args(tmp_path, ["ab" * 48]))
+            run_get(self._get_args(tmp_path, ["ab" * 48]))
 
     def test_something_that_is_neither_an_id_nor_a_path(self, tmp_path):
         self._archive(tmp_path)
 
         with pytest.raises(jobs.JobError, match="neither a store id nor the path"):
-            commands.run_get(self._get_args(tmp_path, ["Subject: hello"]))
+            run_get(self._get_args(tmp_path, ["Subject: hello"]))
 
     def test_a_bare_file_name_is_enough(self, tmp_path):
         """What is left after copying a path out of a report and cutting it short."""
         _store_id, path = self._archive(tmp_path)
 
-        commands.run_get(self._get_args(tmp_path, [path.name], output=tmp_path / "o"))
+        run_get(self._get_args(tmp_path, [path.name], output=tmp_path / "o"))
 
         assert (tmp_path / "o").read_bytes() == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
 
@@ -499,7 +508,7 @@ class TestGet:
         """What a search prints is the first twelve characters, and it has to work."""
         store_id, _path = self._archive(tmp_path)
 
-        assert commands.run_get(self._get_args(tmp_path, [store_id[:12]])) == 0
+        assert run_get(self._get_args(tmp_path, [store_id[:12]])) == 0
 
         assert capsysbinary.readouterr().out == b"From: a@b\r\nSubject: hello\r\n\r\nbody"
 
@@ -510,18 +519,18 @@ class TestGet:
         self._entry(tmp_path, "abcdef" + "2" * 90, b"another")
 
         with pytest.raises(jobs.JobError, match="whole id"):
-            commands.run_get(self._get_args(tmp_path, ["abcdef"]))
+            run_get(self._get_args(tmp_path, ["abcdef"]))
 
     def test_too_little_of_an_id_to_look_one_up(self, tmp_path):
         store_id, _path = self._archive(tmp_path)
 
         with pytest.raises(jobs.JobError, match="at least its first 6"):
-            commands.run_get(self._get_args(tmp_path, [store_id[:5]]))
+            run_get(self._get_args(tmp_path, [store_id[:5]]))
 
     def test_path_says_where_the_message_lies_and_writes_nothing(self, tmp_path, capsys):
         store_id, path = self._archive(tmp_path)
 
-        assert commands.run_get(self._get_args(tmp_path, [store_id], path=True)) == 0
+        assert run_get(self._get_args(tmp_path, [store_id], path=True)) == 0
 
         assert capsys.readouterr().out == f"{path}\n"
 
@@ -531,7 +540,7 @@ class TestGet:
         _status, first, first_path = store.add(b"one")
         _status, second, second_path = store.add(b"another")
 
-        commands.run_get(self._get_args(tmp_path, [first, second], path=True))
+        run_get(self._get_args(tmp_path, [first, second], path=True))
 
         assert capsys.readouterr().out.splitlines() == [str(first_path), str(second_path)]
 
@@ -539,7 +548,7 @@ class TestGet:
         """The entry is what lies in the archive, not a message ready to read."""
         store_id, _path = self._archive(tmp_path, compress=True)
 
-        commands.run_get(self._get_args(tmp_path, [store_id], path=True))
+        run_get(self._get_args(tmp_path, [store_id], path=True))
 
         assert capsys.readouterr().out.strip().endswith(".eml.zst")
 
@@ -548,7 +557,7 @@ class TestGet:
         store_id, _path = self._archive(tmp_path)
 
         with pytest.raises(jobs.JobError, match="not in this archive"):
-            commands.run_get(self._get_args(tmp_path, [store_id, "ab" * 48], path=True))
+            run_get(self._get_args(tmp_path, [store_id, "ab" * 48], path=True))
 
         assert capsys.readouterr().out == ""
 
@@ -584,7 +593,7 @@ class TestOutputNobodyIsReading:
             print("a report nobody is reading any more")
             return 0
 
-        monkeypatch.setattr(commands, "run_archive", _report)
+        monkeypatch.setattr(archive, "run", _report)
 
         with _stdout_nobody_reads(monkeypatch), caplog.at_level(logging.DEBUG):
             assert cli.main() == 141
@@ -608,10 +617,10 @@ class TestOutputNobodyIsReading:
             print(f"{job.name}: a report nobody is reading any more")
             sys.stdout.flush()
 
-        monkeypatch.setattr(commands, "_run_job", _run)
+        monkeypatch.setattr(mailbox, "_run_job", _run)
 
         with _stdout_nobody_reads(monkeypatch), pytest.raises(BrokenPipeError):
-            commands.run_mailbox(_args())
+            run_mailbox(_args())
 
         assert seen == ["one"]
 
@@ -700,14 +709,14 @@ class TestImportSource:
         store.add(b"Message-Id: <a@example.com>\r\n\r\nbody\r\n")
 
         with pytest.raises(jobs.JobError, match="this is the archive"):
-            commands.run_archive(self._import_args(tmp_path, tmp_path))
+            run_archive(self._import_args(tmp_path, tmp_path))
 
         assert len(list((tmp_path / "mail").rglob("*.eml"))) == 1
 
     def test_a_directory_inside_the_archive_is_refused(self, tmp_path):
         marker.write(tmp_path)
         with pytest.raises(jobs.JobError, match="this is the archive"):
-            commands.run_archive(self._import_args(tmp_path, tmp_path / "mail"))
+            run_archive(self._import_args(tmp_path, tmp_path / "mail"))
 
     def test_an_archive_below_the_source_is_refused(self, tmp_path):
         """The other way round empties it just as thoroughly."""
@@ -716,13 +725,13 @@ class TestImportSource:
         marker.write(archive)
 
         with pytest.raises(jobs.JobError, match="this is the archive"):
-            commands.run_archive(self._import_args(archive, tmp_path))
+            run_archive(self._import_args(archive, tmp_path))
 
     def test_refused_without_move_as_well(self, tmp_path):
         """One rule beats one that depends on a flag."""
         marker.write(tmp_path)
         with pytest.raises(jobs.JobError, match="this is the archive"):
-            commands.run_archive(self._import_args(tmp_path, tmp_path, move=False))
+            run_archive(self._import_args(tmp_path, tmp_path, move=False))
 
     def test_a_source_elsewhere_is_imported(self, tmp_path):
         source = tmp_path / "elsewhere"
@@ -732,7 +741,7 @@ class TestImportSource:
         archive.mkdir()
         marker.write(archive)
 
-        assert commands.run_archive(self._import_args(archive, source, move=True)) == 0
+        assert run_archive(self._import_args(archive, source, move=True)) == 0
         assert len(list((archive / "mail").rglob("*.eml"))) == 1
         assert not (source / "a.eml").exists()
 
@@ -744,7 +753,7 @@ class TestImportSource:
         archive.mkdir()
         marker.write(archive)
 
-        commands.run_archive(self._import_args(archive, source, move=False))
+        run_archive(self._import_args(archive, source, move=False))
 
         (path,) = metalog.log_files(archive / metalog.DEFAULT_LOG_DIR)
         logfile = metalog.read_log(path)
@@ -761,7 +770,7 @@ class TestImportSource:
         marker.write(archive)
 
         with pytest.raises(jobs.JobError, match="--name"):
-            commands.run_archive(self._import_args(archive, source, name="   "))
+            run_archive(self._import_args(archive, source, name="   "))
 
         assert list((archive / "mail").rglob("*.eml")) == []
 
@@ -773,7 +782,7 @@ class TestImportSource:
         archive.mkdir()
         marker.write(archive)
 
-        commands.run_archive(self._import_args(archive, source, move=False))
+        run_archive(self._import_args(archive, source, move=False))
 
         out = capsys.readouterr().out
         assert "recorded as docuware-2019" in out
@@ -787,10 +796,7 @@ class TestImportSource:
         archive.mkdir()
         marker.write(archive)
 
-        assert (
-            commands.run_archive(self._import_args(archive, source, move=True, dry_run=True))
-            == 0
-        )
+        assert run_archive(self._import_args(archive, source, move=True, dry_run=True)) == 0
 
         assert "would be recorded as docuware-2019" in capsys.readouterr().out
         assert metalog.log_files(archive / metalog.DEFAULT_LOG_DIR) == []
@@ -822,7 +828,7 @@ class TestPlacesReport:
         self._record(tmp_path, "gmail.com", "INBOX", 2)
         self._record(tmp_path, None, "docuware-2019", 3)
 
-        assert commands.report_places(self._summary(tmp_path)) == 0
+        assert report_places(self._summary(tmp_path)) == 0
 
         lines = capsys.readouterr().out.splitlines()
         assert lines[0].split() == ["mailbox", "folder", "messages", "last", "seen"]
@@ -840,7 +846,7 @@ class TestPlacesReport:
         writer.add("gmail.com", ["INBOX", "\\All"], store_id)
         writer.seal(WHEN)
 
-        commands.report_places(self._summary(tmp_path))
+        report_places(self._summary(tmp_path))
 
         out = capsys.readouterr().out
         assert "2 places, 1 message" in out
@@ -849,7 +855,7 @@ class TestPlacesReport:
     def test_an_archive_nobody_has_written_to_says_how_places_come_about(
         self, tmp_path, capsys
     ):
-        assert commands.report_places(self._summary(tmp_path)) == 0
+        assert report_places(self._summary(tmp_path)) == 0
 
         out = capsys.readouterr().out
         assert "no place recorded yet" in out
@@ -881,7 +887,7 @@ class TestAdoptReport:
         """That sentence is worth something only while the run can still be called off."""
         archive = self._archive_with_orphans(tmp_path)
 
-        assert commands.run_archive(self._adopt_args(archive, dry_run=True)) == 0
+        assert run_archive(self._adopt_args(archive, dry_run=True)) == 0
 
         out = capsys.readouterr().out
         assert "3 messages belong to no place and would be recorded as orphaned" in out
@@ -891,7 +897,7 @@ class TestAdoptReport:
     def test_a_real_run_says_where_to_find_them_afterwards(self, tmp_path, capsys):
         archive = self._archive_with_orphans(tmp_path)
 
-        assert commands.run_archive(self._adopt_args(archive)) == 0
+        assert run_archive(self._adopt_args(archive)) == 0
 
         out = capsys.readouterr().out
         assert "3 messages belong to no place, recorded as orphaned" in out
@@ -900,7 +906,7 @@ class TestAdoptReport:
     def test_an_archive_that_is_whole_reads_like_a_good_outcome(self, tmp_path, capsys):
         marker.write(tmp_path)
 
-        assert commands.run_archive(self._adopt_args(tmp_path)) == 0
+        assert run_archive(self._adopt_args(tmp_path)) == 0
 
         assert "every message in the archive has a place" in capsys.readouterr().out
 
@@ -914,19 +920,19 @@ class TestAdoptReport:
 
         monkeypatch.setattr(metalog.LogWriter, "seal", refuse)
 
-        assert commands.run_archive(self._adopt_args(archive)) == 1
+        assert run_archive(self._adopt_args(archive)) == 1
 
         assert "2 of 2 messages stayed unrecorded" in capsys.readouterr().out
 
     def test_a_taken_name_is_a_choice_before_the_run(self, tmp_path, capsys):
         """While it can still be called off, so it names what the other option is."""
         archive = self._archive_with_orphans(tmp_path, count=2)
-        commands.run_archive(self._adopt_args(archive, name="docuware-2019"))
+        run_archive(self._adopt_args(archive, name="docuware-2019"))
         for number in range(3):
             cas.mail_store(archive).add(f"From: b\r\n\r\nlater {number}".encode())
         capsys.readouterr()
 
-        commands.run_archive(self._adopt_args(archive, name="docuware-2019", dry_run=True))
+        run_archive(self._adopt_args(archive, name="docuware-2019", dry_run=True))
 
         out = capsys.readouterr().out
         assert "docuware-2019 is already a place and holds 2 messages" in out
@@ -935,12 +941,12 @@ class TestAdoptReport:
     def test_and_a_fact_after_it(self, tmp_path, capsys):
         """Afterwards there is no move left, so it says what the place holds now."""
         archive = self._archive_with_orphans(tmp_path, count=2)
-        commands.run_archive(self._adopt_args(archive, name="docuware-2019"))
+        run_archive(self._adopt_args(archive, name="docuware-2019"))
         for number in range(3):
             cas.mail_store(archive).add(f"From: b\r\n\r\nlater {number}".encode())
         capsys.readouterr()
 
-        commands.run_archive(self._adopt_args(archive, name="docuware-2019"))
+        run_archive(self._adopt_args(archive, name="docuware-2019"))
 
         assert "recorded as docuware-2019, which now holds 5 messages" in (
             capsys.readouterr().out
@@ -950,7 +956,7 @@ class TestAdoptReport:
         """There is nothing to tell: the place is what this run put in it."""
         archive = self._archive_with_orphans(tmp_path, count=2)
 
-        commands.run_archive(self._adopt_args(archive, name="orphaned"))
+        run_archive(self._adopt_args(archive, name="orphaned"))
 
         out = capsys.readouterr().out
         assert "recorded as orphaned\n" in out
@@ -960,7 +966,7 @@ class TestAdoptReport:
         """A finding that names no move is what this whole line exists against."""
         archive = self._archive_with_orphans(tmp_path)
 
-        commands.report_check(archive, jobs.check(archive, contents=False))
+        report_check(archive, jobs.check(archive, contents=False))
 
         out = capsys.readouterr().out
         assert "belong to no known place" in out
@@ -992,21 +998,21 @@ class TestAnArchiveIsAMarkedDirectory:
         self._old_archive(tmp_path)
 
         with pytest.raises(jobs.JobError, match="archive migrate"):
-            commands.run_archive(_check_args(tmp_path))
+            run_archive(_check_args(tmp_path))
 
     def test_backup_refuses_it_too(self, monkeypatch, tmp_path):
         self._old_archive(tmp_path)
         monkeypatch.setattr(conf, "load", lambda *a, **kw: conf.Config(jobs=[]))
 
         with pytest.raises(jobs.JobError, match="not a mailvault archive"):
-            commands.run_mailbox(_args(archive=tmp_path))
+            run_mailbox(_args(archive=tmp_path))
 
     def test_the_message_names_both_ways_out(self, tmp_path):
         """An older archive is lifted; a wrong directory is left alone."""
         (tmp_path / "not-an-archive.txt").write_text("hello")
 
         with pytest.raises(jobs.JobError) as caught:
-            commands.run_archive(_check_args(tmp_path))
+            run_archive(_check_args(tmp_path))
 
         assert "archive init" in str(caught.value)
         assert "archive migrate" in str(caught.value)
@@ -1014,19 +1020,14 @@ class TestAnArchiveIsAMarkedDirectory:
     def test_migrate_is_the_one_command_that_takes_an_unmarked_directory(self, tmp_path):
         self._old_archive(tmp_path)
 
-        assert (
-            commands.run_archive(
-                argparse.Namespace(archive_command="migrate", archive=tmp_path)
-            )
-            == 0
-        )
+        assert run_archive(argparse.Namespace(archive_command="migrate", archive=tmp_path)) == 0
         assert marker.is_archive(tmp_path)
 
     def test_and_afterwards_check_is_happy(self, tmp_path):
         self._old_archive(tmp_path)
-        commands.run_archive(argparse.Namespace(archive_command="migrate", archive=tmp_path))
+        run_archive(argparse.Namespace(archive_command="migrate", archive=tmp_path))
 
-        assert commands.run_archive(_check_args(tmp_path)) == 0
+        assert run_archive(_check_args(tmp_path)) == 0
 
 
 class TestArchiveInit:
@@ -1037,31 +1038,31 @@ class TestArchiveInit:
         return argparse.Namespace(archive_command="init", archive=archive, directory=directory)
 
     def test_it_makes_the_three_directories_the_mark_and_a_configuration(self, tmp_path):
-        assert commands.run_archive(self._init_args(tmp_path)) == 0
+        assert run_archive(self._init_args(tmp_path)) == 0
 
         assert marker.is_archive(tmp_path)
         for name in (cas.MAIL_DIR, metalog.DEFAULT_LOG_DIR, heads.DEFAULT_HEADS_DIR):
             assert (tmp_path / name).is_dir()
-        assert (tmp_path / commands.DEFAULT_CONFIG_NAME).is_file()
+        assert (tmp_path / DEFAULT_CONFIG_NAME).is_file()
 
     def test_the_archive_works_from_then_on(self, tmp_path):
-        commands.run_archive(self._init_args(tmp_path))
+        run_archive(self._init_args(tmp_path))
 
-        assert commands.run_archive(_check_args(tmp_path)) == 0
+        assert run_archive(_check_args(tmp_path)) == 0
 
     def test_running_it_again_changes_nothing(self, tmp_path):
-        commands.run_archive(self._init_args(tmp_path))
-        (tmp_path / commands.DEFAULT_CONFIG_NAME).write_text("# mine\n")
+        run_archive(self._init_args(tmp_path))
+        (tmp_path / DEFAULT_CONFIG_NAME).write_text("# mine\n")
 
-        assert commands.run_archive(self._init_args(tmp_path)) == 0
-        assert (tmp_path / commands.DEFAULT_CONFIG_NAME).read_text() == "# mine\n"
+        assert run_archive(self._init_args(tmp_path)) == 0
+        assert (tmp_path / DEFAULT_CONFIG_NAME).read_text() == "# mine\n"
 
     def test_a_directory_with_something_in_it_is_refused(self, tmp_path):
         """Marking an unmigrated archive would claim a layout it is not in."""
         (tmp_path / "something").write_text("not mine to overwrite")
 
         with pytest.raises(jobs.JobError, match="archive migrate"):
-            commands.run_archive(self._init_args(tmp_path))
+            run_archive(self._init_args(tmp_path))
 
         assert not marker.is_archive(tmp_path)
 
@@ -1069,12 +1070,12 @@ class TestArchiveInit:
         """`git init some/where` does not ask for the directory to exist first."""
         target = tmp_path / "new" / "archive"
 
-        assert commands.run_archive(self._init_args(tmp_path, directory=target)) == 0
+        assert run_archive(self._init_args(tmp_path, directory=target)) == 0
         assert marker.is_archive(target)
         assert not marker.is_archive(tmp_path), "the argument wins over where you stand"
 
     def test_without_an_argument_it_is_where_you_stand(self, tmp_path):
-        assert commands.run_archive(self._init_args(tmp_path)) == 0
+        assert run_archive(self._init_args(tmp_path)) == 0
         assert marker.is_archive(tmp_path)
 
     def test_a_file_in_the_way_is_reported_as_one(self, tmp_path):
@@ -1082,7 +1083,7 @@ class TestArchiveInit:
         target.write_text("hello")
 
         with pytest.raises(jobs.JobError, match="not a directory"):
-            commands.run_archive(self._init_args(tmp_path, directory=target))
+            run_archive(self._init_args(tmp_path, directory=target))
 
 
 class TestExitCodes:
@@ -1090,7 +1091,7 @@ class TestExitCodes:
 
     def test_a_format_error_is_a_message_and_not_a_traceback(self):
         """Two machines, one shared archive, one still on the old version."""
-        assert isinstance(marker.FormatError("x"), commands.EXPECTED_ERRORS)
+        assert isinstance(marker.FormatError("x"), EXPECTED_ERRORS)
 
     def test_a_migration_that_did_not_finish_exits_non_zero(
         self, tmp_path, monkeypatch, capsys
@@ -1102,20 +1103,13 @@ class TestExitCodes:
             lambda *a, **kw: metalog.CompactResult(files_before=2, verified=False),
         )
 
-        exit_code = commands.run_archive(
-            argparse.Namespace(archive_command="migrate", archive=tmp_path)
-        )
+        exit_code = run_archive(argparse.Namespace(archive_command="migrate", archive=tmp_path))
 
         assert exit_code == 1
         assert "NOT marked" in capsys.readouterr().out
 
     def test_a_finished_migration_exits_zero(self, tmp_path):
-        assert (
-            commands.run_archive(
-                argparse.Namespace(archive_command="migrate", archive=tmp_path)
-            )
-            == 0
-        )
+        assert run_archive(argparse.Namespace(archive_command="migrate", archive=tmp_path)) == 0
 
     def test_a_compaction_that_verified_nothing_exits_non_zero(self, tmp_path, monkeypatch):
         marker.write(tmp_path)
@@ -1125,9 +1119,7 @@ class TestExitCodes:
             lambda *a, **kw: metalog.CompactResult(files_before=2, verified=False),
         )
 
-        exit_code = commands.run_archive(
-            argparse.Namespace(archive_command="compact", archive=tmp_path)
-        )
+        exit_code = run_archive(argparse.Namespace(archive_command="compact", archive=tmp_path))
 
         assert exit_code == 1
 
@@ -1135,12 +1127,7 @@ class TestExitCodes:
         marker.write(tmp_path)
         _archive_with_a_log(tmp_path)
 
-        assert (
-            commands.run_archive(
-                argparse.Namespace(archive_command="compact", archive=tmp_path)
-            )
-            == 0
-        )
+        assert run_archive(argparse.Namespace(archive_command="compact", archive=tmp_path)) == 0
 
     @staticmethod
     def _backup_run(monkeypatch, tmp_path, report: jobs.BackupReport) -> int:
@@ -1150,7 +1137,7 @@ class TestExitCodes:
             conf, "load", lambda *a, **kw: conf.Config(jobs=[conf.JobConfig(name="proton.me")])
         )
         monkeypatch.setattr(jobs, "backup", lambda *a, **kw: report)
-        return commands.run_mailbox(_args(archive=tmp_path, allow_new_mailbox=True))
+        return run_mailbox(_args(archive=tmp_path, allow_new_mailbox=True))
 
     def test_a_backup_that_got_through_everything_exits_zero(self, monkeypatch, tmp_path):
         report = jobs.BackupReport(folders=1, with_mail=1, stored=3)
@@ -1194,58 +1181,50 @@ class TestDbCommands:
 
     def test_create_then_update_then_drop(self, tmp_path, capsys):
         archive = self._archive(tmp_path)
-        db_path = archive / commands.DEFAULT_DB_NAME
+        db_path = archive / DEFAULT_DB_NAME
 
         assert (
-            commands.run_db(
-                self._db_args(archive, db_command="create", mailbox=None, force=False)
-            )
-            == 0
+            run_db(self._db_args(archive, db_command="create", mailbox=None, force=False)) == 0
         )
         assert db_path.exists()
-        assert commands.run_db(self._db_args(archive, db_command="update")) == 0
-        assert commands.run_db(self._db_args(archive, db_command="drop")) == 0
+        assert run_db(self._db_args(archive, db_command="update")) == 0
+        assert run_db(self._db_args(archive, db_command="drop")) == 0
         assert not db_path.exists()
 
     def test_a_second_create_is_refused_and_points_at_update(self, tmp_path):
         """Refused rather than done: building again reads every message."""
         archive = self._archive(tmp_path)
-        commands.run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
+        run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
 
         with pytest.raises(jobs.JobError, match="db update"):
-            commands.run_db(
-                self._db_args(archive, db_command="create", mailbox=None, force=False)
-            )
+            run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
 
     def test_force_builds_it_again(self, tmp_path):
         archive = self._archive(tmp_path)
-        commands.run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
+        run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
 
         assert (
-            commands.run_db(
-                self._db_args(archive, db_command="create", mailbox=None, force=True)
-            )
-            == 0
+            run_db(self._db_args(archive, db_command="create", mailbox=None, force=True)) == 0
         )
 
     def test_dropping_what_is_not_there_is_not_a_failure(self, tmp_path, capsys):
         archive = self._archive(tmp_path)
 
-        assert commands.run_db(self._db_args(archive, db_command="drop")) == 0
+        assert run_db(self._db_args(archive, db_command="drop")) == 0
         assert "nothing to delete" in capsys.readouterr().out
 
     def test_searching_without_a_database_says_how_to_get_one(self, tmp_path):
         archive = self._archive(tmp_path)
 
         with pytest.raises(jobs.JobError, match="db create"):
-            commands.run_db(self._db_args(archive, db_command="search"))
+            run_db(self._db_args(archive, db_command="search"))
 
     def test_ids_alone_are_what_export_takes(self, tmp_path, capsys):
         archive = self._archive(tmp_path)
-        commands.run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
+        run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
         capsys.readouterr()  # what building it said is not what is under test
 
-        commands.run_db(self._db_args(archive, db_command="search", ids=True))
+        run_db(self._db_args(archive, db_command="search", ids=True))
 
         printed = capsys.readouterr().out.split()
         assert printed
@@ -1260,16 +1239,16 @@ class TestDbCommands:
         `get` as an id it could not read.
         """
         archive = self._archive(tmp_path)
-        commands.run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
+        run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
         capsys.readouterr()  # what building it said is not what is under test
 
-        commands.run_db(self._db_args(archive, db_command="search"))
+        run_db(self._db_args(archive, db_command="search"))
         printed = capsys.readouterr().out.splitlines()[0].split()[1]
 
         assert cas.is_hashval(printed), printed
         target = tmp_path / "out.eml"
         assert (
-            commands.run_get(
+            run_get(
                 argparse.Namespace(
                     archive=archive,
                     entry=[printed],
@@ -1284,7 +1263,7 @@ class TestDbCommands:
     def _archive_that_moved_on(self, tmp_path) -> pathlib.Path:
         """An archive whose database was built before the last folder was backed up."""
         archive = self._archive(tmp_path)
-        commands.run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
+        run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
         writer = metalog.LogWriter(
             archive / metalog.DEFAULT_LOG_DIR, archive / heads.DEFAULT_HEADS_DIR
         )
@@ -1301,7 +1280,7 @@ class TestDbCommands:
         archive = self._archive_that_moved_on(tmp_path)
         capsys.readouterr()  # the report `db create` wrote while setting this up
 
-        commands.run_db(self._db_args(archive, db_command="search"))
+        run_db(self._db_args(archive, db_command="search"))
 
         assert "db update" in capsys.readouterr().out
 
@@ -1311,7 +1290,7 @@ class TestDbCommands:
         capsys.readouterr()  # the report `db create` wrote while setting this up
 
         with caplog.at_level(logging.WARNING):
-            commands.run_db(self._db_args(archive, db_command="search", json=True))
+            run_db(self._db_args(archive, db_command="search", json=True))
 
         out = capsys.readouterr().out
         assert "db update" not in out
@@ -1329,21 +1308,19 @@ class TestVerifyReportRepairCounts:
         return [jobs.VerifyResult(**defaults)]
 
     def test_a_folder_with_nothing_to_do_reports_no_repair_counts(self, capsys):
-        commands.report_verify("job", self._results(), repaired=True)
+        report_verify("job", self._results(), repaired=True)
 
         line = capsys.readouterr().out.splitlines()[0]
         assert "restored" not in line, line
 
     def test_a_folder_that_had_gaps_still_reports_them(self, capsys):
-        commands.report_verify(
-            "job", self._results(on_server=3, missing=2, restored=2), repaired=True
-        )
+        report_verify("job", self._results(on_server=3, missing=2, restored=2), repaired=True)
 
         assert "2 restored" in capsys.readouterr().out
 
     def test_further_copies_alone_are_enough_to_report(self, capsys):
         """Nothing was missing, but something *was* fetched -- say what came of it."""
-        commands.report_verify("job", self._results(on_server=3, extra_copies=1), repaired=True)
+        report_verify("job", self._results(on_server=3, extra_copies=1), repaired=True)
 
         assert "0 restored" in capsys.readouterr().out
 
@@ -1358,11 +1335,11 @@ class TestVerifyExitCode:
         return [jobs.VerifyResult(**defaults)]
 
     def test_a_complete_archive_exits_zero(self, capsys):
-        assert commands.report_verify("job", self._results(), repaired=False) == 0
+        assert report_verify("job", self._results(), repaired=False) == 0
 
     def test_a_gap_exits_non_zero_even_without_repair(self, capsys):
         """Finding the thing it exists to find must not look like finding nothing."""
-        code = commands.report_verify("job", self._results(missing=2), repaired=False)
+        code = report_verify("job", self._results(missing=2), repaired=False)
 
         assert code == 1
         assert "run again with --repair" in capsys.readouterr().out
@@ -1370,30 +1347,30 @@ class TestVerifyExitCode:
     def test_a_repair_that_closed_every_gap_exits_zero(self, capsys):
         results = self._results(missing=2, restored=2)
 
-        assert commands.report_verify("job", results, repaired=True) == 0
+        assert report_verify("job", results, repaired=True) == 0
 
     def test_a_repair_that_left_a_gap_open_exits_non_zero(self, capsys):
         results = self._results(missing=2, restored=1, failed=1)
 
-        assert commands.report_verify("job", results, repaired=True) == 1
+        assert report_verify("job", results, repaired=True) == 1
 
     def test_further_copies_are_no_reason_to_fail(self, capsys):
         """Thousands of them are the ordinary state of a folder, every night."""
         results = self._results(extra_copies=1729)
 
-        assert commands.report_verify("job", results, repaired=False) == 0
+        assert report_verify("job", results, repaired=False) == 0
 
     def test_a_failed_copy_download_is_no_reason_either(self, capsys):
         """It is a duplicate of mail already archived; nothing is missing for it."""
         results = self._results(extra_copies=2, failed=2)
 
-        assert commands.report_verify("job", results, repaired=True) == 0
+        assert report_verify("job", results, repaired=True) == 0
 
     def test_mail_that_was_fetched_and_not_recorded_is_said_and_counted(self, capsys):
         """Restored, but nothing says where it belongs -- so the folder is not done."""
         results = self._results(missing=2, restored=2, sealed=False)
 
-        code = commands.report_verify("job", results, repaired=True)
+        code = report_verify("job", results, repaired=True)
 
         out = capsys.readouterr().out
         assert code == 1
@@ -1415,7 +1392,7 @@ class TestBackupVerdict:
         return jobs.BackupReport(**defaults)
 
     def test_it_says_what_was_seen_as_well_as_what_was_taken_in(self, capsys):
-        assert commands.report_backup("proton.me", self._report()) == 0
+        assert report_backup("proton.me", self._report()) == 0
 
         assert (
             capsys.readouterr().out.splitlines()[0]
@@ -1431,7 +1408,7 @@ class TestBackupVerdict:
         """
         report = self._report(folders=2, with_mail=2, seen=6, stored=2, present=4)
 
-        commands.report_backup("proton.me", report)
+        report_backup("proton.me", report)
 
         assert (
             capsys.readouterr().out.splitlines()[0]
@@ -1442,7 +1419,7 @@ class TestBackupVerdict:
         """`--full` re-reads everything; none of it is new and it must not say so."""
         report = self._report(seen=1729, stored=0, present=1729)
 
-        commands.report_backup("proton.me", report)
+        report_backup("proton.me", report)
 
         assert (
             capsys.readouterr().out.splitlines()[0]
@@ -1453,17 +1430,17 @@ class TestBackupVerdict:
         """Silence would be indistinguishable from a run that never got started."""
         quiet = self._report(with_mail=0, seen=0, stored=0)
 
-        assert commands.report_backup("proton.me", quiet) == 0
+        assert report_backup("proton.me", quiet) == 0
 
         assert capsys.readouterr().out == "proton.me: nothing new in 15 folders\n"
 
     def test_what_left_the_server_is_said_out_loud(self, capsys):
-        commands.report_backup("proton.me", self._report(deleted=1729))
+        report_backup("proton.me", self._report(deleted=1729))
 
         assert "1,729 messages removed from the server" in capsys.readouterr().out
 
     def test_a_folder_that_fell_short_is_named_with_what_happens_to_it(self, capsys):
-        code = commands.report_backup("proton.me", self._report(failed=12, retried=["INBOX"]))
+        code = report_backup("proton.me", self._report(failed=12, retried=["INBOX"]))
 
         out = capsys.readouterr().out
         assert "12 messages could not be stored" in out
@@ -1475,13 +1452,13 @@ class TestBackupVerdict:
     def test_a_run_that_stored_nothing_and_failed_at_nothing_is_still_sound(self, capsys):
         sound = self._report(seen=0, stored=0, with_mail=0)
 
-        assert commands.report_backup("proton.me", sound) == 0
+        assert report_backup("proton.me", sound) == 0
 
     def test_a_run_that_fell_over_does_not_report_a_quiet_night(self, capsys):
         """ "nothing new" is a claim about the mailbox, and this run never got to see it."""
         report = self._report(seen=0, stored=0, with_mail=0, retried=["INBOX", "Sent"])
 
-        assert commands.report_backup("proton.me", report) == 1
+        assert report_backup("proton.me", report) == 1
 
         first = capsys.readouterr().out.splitlines()[0]
         assert first == "proton.me: nothing stored in 15 folders"
@@ -1489,14 +1466,14 @@ class TestBackupVerdict:
     def test_a_mailbox_without_folders_does_not_pretend_to_have_read_any(self, capsys):
         empty = self._report(folders=0, seen=0, stored=0)
 
-        assert commands.report_backup("proton.me", empty) == 0
+        assert report_backup("proton.me", empty) == 0
 
         assert capsys.readouterr().out == "proton.me: no folders to read\n"
 
 
 class TestFoldersAnswer:
     def test_every_folder_is_one_line_and_nothing_else_is(self, capsys):
-        commands.report_folders("proton.me", ["INBOX", "Sent"])
+        report_folders("proton.me", ["INBOX", "Sent"])
 
         assert capsys.readouterr().out == "proton.me::INBOX\nproton.me::Sent\n"
 
@@ -1524,10 +1501,10 @@ class TestTheLogIsReadOncePerRun:
             assert places is not None, "the run has to hand one down"
             places.of(job.name, "INBOX")
 
-        monkeypatch.setattr(commands, "_run_job", _ask)
+        monkeypatch.setattr(mailbox, "_run_job", _ask)
 
         with caplog.at_level(logging.INFO):
-            commands.run_mailbox(_args(archive=tmp_path, allow_new_mailbox=True))
+            run_mailbox(_args(archive=tmp_path, allow_new_mailbox=True))
 
         reads = [r for r in caplog.records if "reading the metadata log" in r.getMessage()]
         assert len(reads) == 1, [r.getMessage() for r in caplog.records]
@@ -1537,9 +1514,9 @@ class TestTheLogIsReadOncePerRun:
         marker.write(tmp_path)
         _archive_with_a_log(tmp_path)
         monkeypatch.setattr(conf, "load", lambda *a, **kw: self._config("one"))
-        monkeypatch.setattr(commands, "_run_job", lambda *a, **kw: None)
+        monkeypatch.setattr(mailbox, "_run_job", lambda *a, **kw: None)
 
         with caplog.at_level(logging.INFO):
-            commands.run_mailbox(_args(archive=tmp_path, allow_new_mailbox=True))
+            run_mailbox(_args(archive=tmp_path, allow_new_mailbox=True))
 
         assert not any("reading the metadata log" in r.getMessage() for r in caplog.records)

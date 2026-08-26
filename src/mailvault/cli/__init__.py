@@ -16,7 +16,7 @@ import os
 import pathlib
 import sys
 
-from mailvault.cli import commands
+from mailvault.cli import archive, common, mailbox, message, query
 
 log = logging.getLogger(__name__)
 
@@ -111,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help=(
             "Configuration file (TOML); by default the archive's own"
-            f" {commands.DEFAULT_CONFIG_NAME}"
+            f" {common.DEFAULT_CONFIG_NAME}"
         ),
     )
 
@@ -221,7 +221,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Make a directory into an archive: the three directories it is made"
             " of, the mark that says which layout they are written in, and a"
-            f" {commands.DEFAULT_CONFIG_NAME} to fill in. What `git init` is,"
+            f" {common.DEFAULT_CONFIG_NAME} to fill in. What `git init` is,"
             " down to taking the directory as an argument and making it if it is"
             " not there. Every other command works on an archive and refuses a"
             " directory that is not one. An existing configuration is left alone."
@@ -412,7 +412,7 @@ def build_db_parser(sub: argparse._SubParsersAction) -> None:
             " each message was seen in -- in a form that can be searched. It is"
             " optional and it is a copy, built from the archive and thrown away"
             " without loss; the archive itself never depends on it. It lives in the"
-            f" archive as {commands.DEFAULT_DB_NAME}, and a backup keeps it in step"
+            f" archive as {common.DEFAULT_DB_NAME}, and a backup keeps it in step"
             " when the configuration or --index-db asks for it."
         ),
     )
@@ -539,17 +539,17 @@ def main() -> int:
     # hung on the end of START read as an aside to the word START.
     log.info("START")
     if args.command != "folders":
-        log.info("Archive: %s", commands.archive_path(args))
+        log.info("Archive: %s", common.archive_path(args))
     exit_code = 0
     try:
         if args.command in {"folders", "backup", "verify"}:
-            exit_code = commands.run_mailbox(args)
+            exit_code = mailbox.run(args)
         elif args.command == "get":
-            exit_code = commands.run_get(args)
+            exit_code = message.run(args)
         elif args.command == "archive":
-            exit_code = commands.run_archive(args)
+            exit_code = archive.run(args)
         elif args.command == "db":
-            exit_code = commands.run_db(args)
+            exit_code = query.run(args)
         # A report the size of a screen never leaves the buffer on its own, and a
         # buffer emptied after `main` has returned is emptied where nothing can
         # answer for it. Here it is still this run's business.
@@ -565,7 +565,7 @@ def main() -> int:
         # behind if Python let the signal through.
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         exit_code = 141
-    except commands.EXPECTED_ERRORS as exc:
+    except common.EXPECTED_ERRORS as exc:
         # A broken config or a refused operation is a user error, not a crash:
         # report it as one line instead of a traceback.
         log.error("%s", exc)

@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from mailvault.cli import commands
+from mailvault.cli.archive import report_check
 from mailvault.jobs.check import check, quarantine_entry
 from mailvault.jobs.common import JobError
 from mailvault.store import cas, heads, metalog
@@ -387,7 +387,7 @@ class TestTheLogChain:
         self._place(tmp_path, [ids[1]], folder="Sent")
         first.unlink()
 
-        commands.report_check(tmp_path, check(tmp_path))
+        report_check(tmp_path, check(tmp_path))
 
         out = capsys.readouterr().out
         assert "named by the chain and gone" in out
