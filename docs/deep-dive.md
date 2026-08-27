@@ -396,7 +396,7 @@ stores nothing twice.
 $ mailvault --archive ./backup archive places
 mailbox    folder                   messages  last seen
 gmail.com  INBOX                      12,043  2026-08-12
-gmail.com  [Google Mail]/All Mails     4,001  2026-08-12
+gmail.com  [Google Mail]/All Mail      4,001  2026-08-12
            docuware-2019               5,412  2026-08-02
            orphaned                      110  2026-08-13
 4 places, 17,565 messages
@@ -542,8 +542,8 @@ find one whose bytes have changed under it. It sounds like the expensive half an
 barely is: it reads twenty times the bytes of the walk above it, but a network
 share does not charge for bytes -- the walk pays a round trip per shard directory
 and the read one per message, and at a couple of messages per shard those come
-out level. Measured over SMB on a 131,000-message archive: 16 minutes for the
-walk, 17 for reading every message.
+out level. Measured over SMB on an archive of more than 100,000 messages: 16
+minutes for the walk, 17 for reading every message.
 
 That is why it is on by default. `--no-integrity-check` leaves it out for whoever
 wants the tree checked without the second half of the wait, and such a run says

@@ -140,9 +140,9 @@
 
 - **Opening the query database rebuilt two of its indexes, every single time.** A migration that
   had to drop and recreate the recipient indexes ran on every open, including for a search that
-  only meant to read. On a large archive on an SMB share that was 16.5 s per open, and a search
-  opens the database twice. Opening it now writes nothing at all: what is there is checked, and a
-  file that is not the current shape is named and left alone
+  only meant to read. On an archive of more than 100,000 messages on an SMB share that was 16.5 s
+  per open, and a search opens the database twice. Opening it now writes nothing at all: what is
+  there is checked, and a file that is not the current shape is named and left alone
 
 - **A date filter looked through every message in the archive.** `--since` and `--until` were
   computed for each row, so no index could answer them and every search that named a day read the
@@ -435,9 +435,9 @@
   messages and `archive adopt` takes them in. Anyone whose archive holds mail from an import made
   before `archive import` took a `--name` should run `archive adopt` first, or the database comes
   out smaller than it used to. The first report line says where its number comes from, so the
-  change is visible rather than puzzling. Measured together with the page cache below, on a large
-  archive over SMB: **109 minutes down to 38**, and where the old build got steadily slower the
-  longer it ran, the new one holds its pace
+  change is visible rather than puzzling. Measured together with the page cache below, on an
+  archive of more than 100,000 messages over SMB: **109 minutes down to 38**, and where the old
+  build got steadily slower the longer it ran, the new one holds its pace
 - **`db create --mailbox` is gone.** It filed messages the archive recorded no place for under a
   mailbox name -- a claim that lasted until the next rebuild and lived only in the database. What
   it was for is now `archive adopt --name NAME`, which makes the same statement in the archive
@@ -721,12 +721,12 @@
 - **`archive check` runs the integrity check by default.** `--contents` is gone; the check it
   asked for is what the command does, and **`--no-integrity-check`** leaves it out. It was made
   optional on the assumption that reading every message costs an order of magnitude more than
-  walking the tree, and measurement says otherwise: on a large archive over SMB the walk took 16
-  minutes and reading every message 17. A network share charges for round trips, not for
-  bytes -- the walk pays one per shard directory, the read one per message, and at a couple of
-  messages per shard those come out level. Being able to find a message whose bytes changed under
-  it is worth a factor of two. `--quarantine` no longer needs a companion flag; it refuses to be
-  combined with `--no-integrity-check` instead
+  walking the tree, and measurement says otherwise: on an archive of more than 100,000 messages
+  over SMB the walk took 16 minutes and reading every message 17. A network share charges for
+  round trips, not for bytes -- the walk pays one per shard directory, the read one per message,
+  and at a couple of messages per shard those come out level. Being able to find a message whose
+  bytes changed under it is worth a factor of two. `--quarantine` no longer needs a companion
+  flag; it refuses to be combined with `--no-integrity-check` instead
 
 - **`archive check` says whether the archive is all right**, in words, instead of leaving the
   verdict to an exit code nobody reads unless they went looking for it -- and it says which kind
@@ -928,9 +928,10 @@
 
 - **The backup says why it is reading the whole archive.** With `--index-db` on and no `index.db`
   yet, a backup that had nothing left to fetch went on to read every message there is -- twenty
-  minutes on a large archive, announced by nothing but a number climbing in steps of two thousand.
-  It now says that there is no query database yet and that it is building one from the archive,
-  before it starts, and every line of the count says what it is counting for
+  minutes on an archive of more than 100,000 messages, announced by nothing but a number climbing
+  in steps of two thousand. It now says that there is no query database yet and that it is
+  building one from the archive, before it starts, and every line of the count says what it is
+  counting for
 
 - **What the commands say about themselves is about the mail, not about the machinery.** `backup`
   offered to "back up mails to the local content-addressed archive", which names an
