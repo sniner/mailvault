@@ -16,6 +16,7 @@ import pathlib
 import pytest
 
 from mailvault import jobs
+from mailvault.backend import imap
 from mailvault.store import cas, heads, marker, metalog
 from tests.integration import corpus
 
@@ -302,6 +303,113 @@ class TestPuttingBackWhatWasLost:
         assert results[0].restored == 1
         assert jobs.check(archive).entries == len(corpus.PLAIN) + 1
         assert jobs.check(archive).sound
+
+
+class TestTakingMailOffTheServer:
+    """The paths that delete, run against something that can actually lose mail.
+
+    Everything else here can be got wrong and cost a re-fetch. These cannot: a
+    message removed from a server is gone, and the archive is the only copy left.
+    Until now the only thing they had ever been run against was a MagicMock,
+    which deletes nothing and agrees with everything.
+    """
+
+    def test_a_purge_removes_what_it_was_given_and_leaves_the_rest(self, dovecot, tmp_path):
+        user = "purge"
+        _fill(dovecot, user, "INBOX", corpus.PLAIN)
+        client = imap.ImapClient.connect(dovecot.job(user, ["INBOX"]))
+        try:
+            refs = list(client.message_index("INBOX"))
+            assert len(refs) == len(corpus.PLAIN)
+            client.purge("INBOX", [refs[0].msg_id])
+            left = [ref.msg_id for ref in client.message_index("INBOX")]
+        finally:
+            client.close()
+
+        assert left == [refs[1].msg_id, refs[2].msg_id]
+
+    def test_a_purge_names_messages_and_not_positions(self, dovecot, tmp_path):
+        """The ids a run collected are used after it has finished walking.
+
+        Between the two, a mail client of the owner's can expunge something --
+        and then every position in the folder has moved while no UID has. A purge
+        that spoke positions would delete a message that was never archived,
+        which is the one mistake this project cannot take back.
+
+        Measured with the connection put into sequence-number mode: the two
+        messages that go are the two *after* the ones asked for.
+        """
+        user = "purgeshift"
+        _fill(dovecot, user, "INBOX", corpus.everything())
+        client = imap.ImapClient.connect(dovecot.job(user, ["INBOX"]))
+        try:
+            uids = [ref.msg_id for ref in client.message_index("INBOX")]
+            assert len(uids) >= 5, "enough of them for a shift to be visible"
+
+            # Somebody else deletes the first message while the run is between
+            # walking the folder and purging it.
+            other = dovecot.client(user)
+            try:
+                other.select_folder("INBOX")
+                other.delete_messages([uids[0]])
+                other.expunge()
+            finally:
+                other.logout()
+
+            client.purge("INBOX", [uids[1], uids[2]])
+            left = [ref.msg_id for ref in client.message_index("INBOX")]
+        finally:
+            client.close()
+
+        assert left == uids[3:], "the two named, and only those two"
+
+    def test_clearing_a_folder_empties_that_one_and_no_other(self, dovecot, tmp_path):
+        """What `empty_trash` does once a Gmail job has finished purging.
+
+        The Gmail half of it -- that it runs at all -- cannot be reached here,
+        because Dovecot does not advertise the extension that sets `self.gmail`.
+        What can be reached is the part that deletes, and that is the half worth
+        running against a server: `_clear_folder` takes a folder name and empties
+        whatever is in it.
+        """
+        user = "clear"
+        _fill(dovecot, user, "Trash", corpus.PLAIN)
+        _fill(dovecot, user, "INBOX", corpus.AWKWARD)
+        client = imap.ImapClient.connect(dovecot.job(user, []))
+        try:
+            client._clear_folder("Trash")
+            emptied = list(client.message_index("Trash"))
+            untouched = list(client.message_index("INBOX"))
+        finally:
+            client.close()
+
+        assert emptied == []
+        assert len(untouched) == len(corpus.AWKWARD), "the other folder is not its business"
+
+    def test_a_backup_that_deletes_archives_first(self, dovecot, tmp_path):
+        """`delete_after_export`, end to end, which is the riskiest thing it does.
+
+        The order is the whole point: the messages must be in the archive and
+        named by a sealed log before any of them leaves the server.
+        """
+        user = "deleting"
+        _fill(dovecot, user, "INBOX", corpus.PLAIN)
+        archive = _archive(tmp_path)
+        job = dovecot.job(user, ["INBOX"], delete_after_export=True)
+
+        report = jobs.backup(job, archive, incremental=False)
+
+        assert report.stored == len(corpus.PLAIN)
+        result = jobs.check(archive)
+        assert result.sound
+        assert result.entries == len(corpus.PLAIN)
+
+        client = dovecot.client(user)
+        try:
+            client.select_folder("INBOX", readonly=True)
+            assert client.search(["NOT", "DELETED"]) == [], "gone from the server"
+        finally:
+            client.logout()
 
 
 class TestWhatTheArchiveMadeOfIt:

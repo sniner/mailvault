@@ -12,10 +12,12 @@ from unittest.mock import MagicMock, call, patch
 
 import imapclient
 import pytest
+from imapclient.response_parser import parse_fetch_response
 
 from mailvault import conf
 from mailvault.backend import base, imap
 from mailvault.store import cas, metalog
+from tests import gmail_wire
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -413,6 +415,36 @@ class TestPlacesComeWithTheMessage:
 
         assert fetched.places == [*library, "INBOX"]
         assert fetched.places[0] == "Persönlich", "decoded, not the wire form"
+
+    def test_it_reads_what_gmail_really_sends(self):
+        """Against the bytes the server sent, not against a dict written here.
+
+        Everything else about the Gmail path is checked against a response this
+        repository made up, and the shape of a made-up one is worth what its
+        author knew. Two things below would not have been guessed: the label
+        arrives as an IMAP-quoted string, and a message with no other place
+        answers with an empty list rather than with the key missing.
+
+        Recorded read-only on 2026-08-27; see `tests/gmail_wire.py` for what was
+        kept and what was substituted.
+        """
+        parsed = parse_fetch_response(gmail_wire.WITH_A_LABEL, False, True)
+        (msg_id,) = parsed
+        client = _make_client(conn=_make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"]))
+
+        places = client._places_from(parsed[msg_id], "[Google Mail]/Alle Nachrichten")
+
+        assert places == ["\\Inbox", "[Google Mail]/Alle Nachrichten"]
+        assert parsed[msg_id][b"BODY[]"] == gmail_wire.BODY, "both items, one response"
+
+    def test_a_message_gmail_reports_no_label_for_is_in_the_folder_it_came_from(self):
+        """The empty case, also recorded: `X-GM-LABELS ()`, not a missing key."""
+        parsed = parse_fetch_response(gmail_wire.WITH_NO_LABEL, False, True)
+        (msg_id,) = parsed
+        client = _make_client(conn=_make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"]))
+
+        assert parsed[msg_id][b"X-GM-LABELS"] == (), "the key is there and empty"
+        assert client._places_from(parsed[msg_id], "Newsletters") == ["Newsletters"]
 
     def test_the_repair_gets_body_and_places_out_of_one_fetch(self):
         """One message at a time, and still one round trip: the repair used to
