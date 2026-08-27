@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.2 (2026-08-27)
 
 ### Fixed
 
@@ -46,7 +46,7 @@
 
 - **A Gmail backup no longer pays a round trip per message for its labels.** The labels come back
   in the same FETCH as the message body, where they used to be a call of their own for every
-  single message. Measured against the live account: backing up a folder of five messages cost
+  single message. Measured against a live Gmail account: backing up a folder of five messages cost
   six FETCH commands and now costs one, and a run over the 131,504-message archive saves one
   round trip per message. A repair pays one selection and one FETCH per message instead of two
   of each
