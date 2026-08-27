@@ -6,7 +6,7 @@ import imaplib
 import logging
 import pathlib
 import typing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import MagicMock, call, patch
 
@@ -103,6 +103,20 @@ class TestConnect:
         imap.ImapClient.connect(_make_job())
 
         assert mock_imap_cls.call_args.kwargs["use_uid"] is True
+
+    @patch("mailvault.backend.imap.imapclient.IMAPClient")
+    def test_the_connection_keeps_the_zone_the_wire_carried(self, mock_imap_cls):
+        """imapclient normalises by default: every timestamp it parses is converted
+        to the local time of the machine reading the mailbox and its zone dropped.
+        The same message would then answer differently backed up from here and
+        from the NAS, and what comes out cannot be subtracted from an aware
+        `now()` at all."""
+        mock_conn = _make_mock_conn()
+        mock_imap_cls.return_value = mock_conn
+
+        imap.ImapClient.connect(_make_job())
+
+        assert mock_conn.normalise_times is False
 
     @patch("mailvault.backend.imap.imapclient.IMAPClient")
     def test_close_calls_logout(self, mock_imap_cls):
@@ -1235,6 +1249,33 @@ class TestMessageIndex:
         assert refs[0].date == msg_date
         # Only envelopes are requested, never RFC822.
         assert conn.fetch.call_args[0][1] == ["ENVELOPE"]
+
+    def test_a_date_keeps_the_offset_it_was_sent_with(self):
+        conn = _make_mock_conn()
+        conn.search.return_value = [1]
+        sent = datetime(2026, 2, 20, 12, 0, tzinfo=timezone(timedelta(hours=9)))
+        conn.fetch.return_value = {1: {b"ENVELOPE": _Envelope(b"<a@example.com>", sent)}}
+        client = _make_client(conn=conn)
+
+        (ref,) = client.message_index("INBOX")
+
+        assert ref.date == sent
+        assert ref.date is not None and ref.date.utcoffset() == timedelta(hours=9)
+
+    def test_a_date_without_a_zone_is_unknown_not_a_naive_one(self):
+        """Old mail is full of them, and a naive datetime cannot say what time it
+        is. None means unknown, which is true; the Graph backend refuses such a
+        value for the same reason."""
+        conn = _make_mock_conn()
+        conn.search.return_value = [1]
+        conn.fetch.return_value = {
+            1: {b"ENVELOPE": _Envelope(b"<a@example.com>", datetime(1997, 12, 18, 22, 3))}
+        }
+        client = _make_client(conn=conn)
+
+        (ref,) = client.message_index("INBOX")
+
+        assert ref.date is None
 
     def test_missing_message_id_yields_empty_string(self):
         conn = _make_mock_conn()

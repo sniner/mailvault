@@ -16,6 +16,7 @@ import re
 import ssl
 import sys
 import typing
+from datetime import datetime
 from typing import Any
 
 import imapclient
@@ -80,6 +81,21 @@ GMAIL_LABELS_KEY = b"X-GM-LABELS"
 def _as_int(value: object) -> int | None:
     """An int, or None -- and a bool is not an int here, whatever Python says."""
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _dated(value: object) -> datetime | None:
+    """A timestamp with a zone, or None for anything that is not one.
+
+    The connection is told not to normalise, so a date the wire spelled with an
+    offset arrives with it. One spelled without an offset arrives naive all the
+    same -- old mail is full of those, and `mailutils.dates` is a whole module
+    about how creatively -- and a naive datetime cannot say what time it is.
+    Unknown is the truthful answer and the one `base.MessageRef.date` promises;
+    the Graph backend refuses such a value for the same reason.
+    """
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo is not None else None
 
 
 class _UidResume:
@@ -250,6 +266,14 @@ class ImapClient:
                 # to inherit quietly.
                 use_uid=True,
             )
+            # Off, and imapclient's default is on. On, it converts every
+            # timestamp it parses to the local time of whatever machine is
+            # running the backup and then drops the zone -- so the same message
+            # answers differently read from a laptop and from the NAS, and what
+            # comes out cannot be subtracted from an aware `now()` at all. Off,
+            # the datetime carries the offset the wire carried. See
+            # `base.MessageRef.date` for what the archive is owed.
+            conn.normalise_times = False
         except (OSError, imaplib.IMAP4.error) as exc:
             # OSError covers the lot below the protocol: DNS, refused
             # connections, timeouts, and ssl.SSLError for a certificate the
@@ -689,7 +713,7 @@ class ImapClient:
                     yield MessageRef(
                         msg_id=msg_id,
                         message_id=raw_id.decode("ascii", "replace") if raw_id else "",
-                        date=getattr(envelope, "date", None),
+                        date=_dated(getattr(envelope, "date", None)),
                     )
         finally:
             self.conn.unselect_folder()

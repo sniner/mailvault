@@ -93,6 +93,14 @@ class MessageRef:
 
     `msg_id` is backend-specific (IMAP UID, Graph message id) and only valid
     together with the folder it was listed from.
+
+    `date` is timezone-aware or None, from every backend. A naive one cannot be
+    subtracted from an aware `now()` without raising, and it does not say what
+    time it is: read off the wire it carries the sender's offset, and converted
+    to the reading machine's local time it makes the same message answer
+    differently depending on which machine ran the backup. A timestamp whose zone
+    is unknown is therefore None -- unknown, which is true -- and never a naive
+    datetime standing in for one.
     """
 
     msg_id: Any
