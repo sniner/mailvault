@@ -76,3 +76,12 @@ mailvault = "mailvault.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The integration tests need a Docker daemon and a container start, which is
+# seconds rather than milliseconds -- too slow for the loop that runs on every
+# edit, and the only thing that covers the protocol itself. So they are named
+# and left out by default: `pytest -m integration` runs them, CI runs them on
+# every push, and `pytest` stays the fast one.
+markers = [
+    "integration: runs against a real IMAP server in Docker",
+]
+addopts = "-m 'not integration'"
