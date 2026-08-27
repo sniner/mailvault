@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import pathlib
 import time
@@ -333,23 +334,40 @@ class TestTheLogChain:
         The chain stops all the same -- the link to the file before it is inside
         the file -- but nothing is missing, so the run must not answer `NOT
         sound` and exit 1 over a file that is present and intact.
+
+        Intact is the whole of the point, so the file is rewritten the way a
+        newer mailvault would really have written it: new content, named after
+        the hash of that content, and the head of the place pointing at the new
+        name. Rewriting the version in place leaves a file whose name no longer
+        matches its bytes -- damaged as well as unreadable -- and then the run
+        answers `NOT sound` for the other half, which is not what this is about.
         """
         store, ids = _archive(tmp_path)
-        (first,) = self._place(tmp_path, [ids[0]], folder="Sent")
-        self._place(tmp_path, [ids[1]], folder="Sent")
-        # Written by a version this one does not know. The file keeps its name,
-        # which is the hash of the content it had -- so it is unreadable *and*
-        # damaged, and only the first of those is the point here.
-        header = first.read_text(encoding="utf-8")
+        self._place(tmp_path, [ids[0]], folder="Sent")
+        (second,) = self._place(tmp_path, [ids[1]], folder="Sent")
+
         written = f'"version": {metalog.LOG_VERSION}'
-        assert written in header, "the field this test rewrites"
-        tamper(first, header.replace(written, '"version": 99', 1))
+        body = second.read_text(encoding="utf-8")
+        assert written in body, "the field this test rewrites"
+        ahead = body.replace(written, '"version": 99', 1).encode("utf-8")
+
+        heads_root = tmp_path / heads.DEFAULT_HEADS_DIR
+        hashval = cas.DEFAULT_HASH(ahead).hexdigest()
+        renamed = second.with_name(f"{hashval}.jsonl")
+        tamper(second, ahead)
+        second.rename(renamed)
+        head = heads.read(heads_root, "job", "Sent")
+        assert head is not None
+        heads.write(heads_root, dataclasses.replace(head, log=hashval))
 
         result = check(tmp_path)
 
         assert result.broken_chains == [], "it is there; 'gone' is the wrong word"
-        assert len(result.unreadable_chains) == 1
-        assert "job::Sent" in result.unreadable_chains[0]
+        assert result.unreadable_chains == [], "it is not damaged, only unknown"
+        assert len(result.newer_chains) == 1
+        assert "job::Sent" in result.newer_chains[0]
+        assert result.damaged_logs == [], "its name is the hash of what it holds"
+        assert result.sound, "an archive ahead of the reader is not a broken archive"
 
     def test_a_file_no_chain_reaches_is_reported_but_not_a_fault(self, tmp_path):
         """Left behind when a head could not be updated after the file landed.
@@ -380,6 +398,33 @@ class TestTheLogChain:
         assert result.unchained == []
         assert result.broken_chains == []
         assert result.sound
+
+    def test_a_damaged_file_is_not_reported_as_one_from_the_future(self, tmp_path, capsys):
+        """The report used to answer every unreadable log file the same way.
+
+        `read_log` gives up for five different reasons -- the file cannot be
+        opened, it is not UTF-8, it is empty, its header will not parse, its
+        version is unknown -- and only the last of those means a newer mailvault
+        wrote it. All five were reported as one, so somebody holding a damaged
+        file was told to upgrade the program, which is the one move that cannot
+        help. Restoring the file is what does.
+        """
+        store, ids = _archive(tmp_path)
+        (first,) = self._place(tmp_path, [ids[0]], folder="Sent")
+        self._place(tmp_path, [ids[1]], folder="Sent")
+        tamper(first, b"\xff\xfe this is not utf-8")
+
+        result = check(tmp_path)
+        report_check(tmp_path, result)
+        out = capsys.readouterr().out
+
+        assert "newer mailvault" not in out, "nothing here says the archive is ahead"
+        assert "not readable here -- restore it" in out
+        assert result.newer_chains == []
+        assert len(result.unreadable_chains) == 1
+        assert "job::Sent" in result.unreadable_chains[0]
+        assert len(result.damaged_logs) == 1, "counted once, as the damaged file it is"
+        assert not result.sound
 
     def test_the_report_names_both_kinds(self, tmp_path, capsys):
         store, ids = _archive(tmp_path)

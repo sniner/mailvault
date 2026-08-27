@@ -12,6 +12,14 @@
   now comes back with the message itself, so once the archive has been written to there is
   nothing left to ask
 
+- **`archive check` no longer tells a reader to upgrade over a damaged log file.** A log file the
+  chain names and this version cannot read was reported as "written by a newer mailvault --
+  upgrade to read it, the archive is not missing anything", whatever the reason. There are five
+  reasons and only one of them is a version: the file may equally be unopenable, not UTF-8,
+  empty, or carry a header that will not parse. Those are now reported for what they are, with
+  restoring the file as the move -- and a damaged file was already counted among the findings, so
+  the count does not change
+
 ### Changed
 
 - **A Gmail backup no longer pays a round trip per message for its labels.** The labels come back

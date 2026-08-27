@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import collections.abc
 import dataclasses
+import enum
 import json
 import logging
 import pathlib
@@ -87,6 +88,7 @@ log = logging.getLogger(__name__)
 # Default directory of the metadata log inside a store directory.
 DEFAULT_LOG_DIR = "meta"
 
+
 # Payload format version. Readers reject what they do not know rather than
 # misread it; a file with an unknown version is skipped with a warning.
 #
@@ -96,6 +98,24 @@ DEFAULT_LOG_DIR = "meta"
 # written over years, and refusing the older ones would make most of a long-lived
 # log unreadable for the sake of a field. What a version 1 file means is simply
 # "carries no chain information".
+class Unreadable(enum.Enum):
+    """Why a log file could not be used -- the one distinction a report must make.
+
+    A file written by a *newer* mailvault means the archive is ahead of the
+    program looking at it: nothing is missing and the move is to upgrade. Every
+    other reason means the file itself is in trouble and the move is to restore
+    it from a backup. Telling a reader to upgrade over a damaged file sends them
+    away from the only thing that would help, and `read_log` returns nothing for
+    five different reasons of which exactly one is a version.
+
+    Which of the five it was is in the warning `read_log` writes on its way out.
+    What a report has to decide is only which of the two moves to name.
+    """
+
+    NEWER = "written by a newer mailvault"
+    DAMAGED = "cannot be read here"
+
+
 LOG_VERSION = 2
 LEGACY_LOG_VERSION = 1
 SUPPORTED_LOG_VERSIONS = (LEGACY_LOG_VERSION, LOG_VERSION)
@@ -381,20 +401,23 @@ def _parse_store_id(path: pathlib.Path, number: int, line: str) -> str | None:
     return store_id
 
 
-def _parse_header(path: pathlib.Path, line: str) -> dict[str, Any] | None:
-    """Decode a log file's first line, or None when it cannot be used.
+def _parse_header(
+    path: pathlib.Path, line: str
+) -> tuple[dict[str, Any] | None, Unreadable | None]:
+    """Decode a log file's first line, and say why when it cannot be used.
 
     Without a usable header the lines below it have no place to belong to, so
-    every caller here treats None as "skip this file".
+    every caller here treats a None header as "skip this file". The reason comes
+    with it because only one of these is a version -- see `Unreadable`.
     """
     try:
         header = json.loads(line)
     except json.JSONDecodeError as exc:
         log.warning("%s: unreadable header, skipped: %s", where(path), exc)
-        return None
+        return None, Unreadable.DAMAGED
     if not isinstance(header, dict):
         log.warning("%s: header is not an object, skipped", where(path))
-        return None
+        return None, Unreadable.DAMAGED
     if header.get("version") not in SUPPORTED_LOG_VERSIONS:
         log.warning(
             "%s: log version %r is not one of %s, skipped -- it was written by a"
@@ -403,8 +426,8 @@ def _parse_header(path: pathlib.Path, line: str) -> dict[str, Any] | None:
             header.get("version"),
             ", ".join(str(v) for v in SUPPORTED_LOG_VERSIONS),
         )
-        return None
-    return header
+        return None, Unreadable.NEWER
+    return header, None
 
 
 def read_header(path: pathlib.Path) -> dict[str, Any] | None:
@@ -429,7 +452,8 @@ def read_header(path: pathlib.Path) -> dict[str, Any] | None:
     except UnicodeDecodeError as exc:
         log.warning("%s: not valid UTF-8, skipped: %s", where(path), exc)
         return None
-    return _parse_header(path, line)
+    header, _why = _parse_header(path, line)
+    return header
 
 
 def mailboxes(root: pathlib.Path) -> set[str]:
@@ -454,12 +478,27 @@ def read_log(path: pathlib.Path) -> LogFile | None:
 
     Individual damaged lines are skipped; only an unreadable header discards the
     whole file, because without it the lines have no place to belong to.
+
+    For a caller that has to act on *why* it could not be used -- and there is
+    one, `archive check`, whose report names a different move for each -- see
+    `examine_log`.
+    """
+    logfile, _why = examine_log(path)
+    return logfile
+
+
+def examine_log(path: pathlib.Path) -> tuple[LogFile | None, Unreadable | None]:
+    """Read one log file, and say why when it cannot be used.
+
+    The same read as `read_log`, which is a wrapper over this one. Anything that
+    merely wants the content has no use for the reason; a report that has to tell
+    a reader what to do about the file cannot do without it -- see `Unreadable`.
     """
     try:
         raw = path.read_bytes()
     except OSError as exc:
         log.warning("%s: unreadable, skipped: %s", where(path), exc)
-        return None
+        return None, Unreadable.DAMAGED
 
     # The name is the hash of the content, so the file carries its own integrity
     # check -- the same guarantee the mail store gives, and it catches what syntax
@@ -480,13 +519,13 @@ def read_log(path: pathlib.Path) -> LogFile | None:
         lines = raw.decode("utf-8").splitlines()
     except UnicodeDecodeError as exc:
         log.warning("%s: not valid UTF-8, skipped: %s", where(path), exc)
-        return None
+        return None, Unreadable.DAMAGED
     if not lines:
         log.warning("%s: empty, skipped", where(path))
-        return None
-    header = _parse_header(path, lines[0])
+        return None, Unreadable.DAMAGED
+    header, why = _parse_header(path, lines[0])
     if header is None:
-        return None
+        return None, why
 
     mailbox = header.get("mailbox")
     folder = header.get("folder")
@@ -505,7 +544,7 @@ def read_log(path: pathlib.Path) -> LogFile | None:
         date=date if isinstance(date, str) else None,
         store_ids=store_ids,
         prev=prev if isinstance(prev, str) and cas.is_hashval(prev) else None,
-    )
+    ), None
 
 
 def read_all(root: pathlib.Path) -> collections.abc.Iterator[LogFile]:

@@ -419,10 +419,16 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
         "named by the chain and gone -- nothing records what was written there",
     )
     report_items(
-        result.unreadable_chains,
+        result.newer_chains,
         "log file",
         "named by the chain and written by a newer mailvault -- upgrade to read it,"
         " the archive is not missing anything",
+    )
+    report_items(
+        result.unreadable_chains,
+        "log file",
+        "named by the chain and not readable here -- restore it from a backup;"
+        " what it recorded cannot be read out of the archive",
     )
     report_items(
         [utils.under(source, path) for path in result.unchained],
