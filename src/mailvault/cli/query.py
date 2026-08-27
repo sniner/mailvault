@@ -134,11 +134,21 @@ def report_search(hits: list[jobs.SearchHit], query: jobs.SearchQuery) -> int:
         print("no message matches" if not query.is_empty() else "the database is empty")
         return 0
     print(utils.counted(len(hits), "message"))
-    if query.limit is not None and len(hits) == query.limit:
-        # Said out loud, because a limit that happens to be reached looks exactly
-        # like a search that found that many.
-        print(f"stopped at --limit {query.limit:,}; there may be more")
+    note = _stopped_short(hits, query)
+    if note:
+        print(note)
     return 0
+
+
+def _stopped_short(hits: list[jobs.SearchHit], query: jobs.SearchQuery) -> str | None:
+    """The line a result owes its reader when `--limit` may have cut it short.
+
+    A limit that happens to be reached looks exactly like a search that found
+    that many, and nothing in the answer says which of the two it was.
+    """
+    if query.limit is None or len(hits) != query.limit:
+        return None
+    return f"stopped at --limit {query.limit:,}; there may be more"
 
 
 def report_search_csv(hits: list[jobs.SearchHit]) -> int:
@@ -238,6 +248,14 @@ def run(args: argparse.Namespace) -> int:
                 print(complaint)
         query = _search_query(args)
         hits = jobs.search(db_path, query)
+        machine_readable = args.ids or args.csv or args.json
+        note = _stopped_short(hits, query)
+        if note and machine_readable:
+            # The same rule as the complaint above, and for the same reason: the
+            # formats below carry rows and nothing around them, so a sentence
+            # about the rows has nowhere to go but the log. `report_search` says
+            # it in the table's own words for a reader who is watching.
+            log.warning("%s", note)
         if args.ids:
             for hit in hits:
                 print(hit.store_id)

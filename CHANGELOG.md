@@ -20,6 +20,12 @@
   restoring the file as the move -- and a damaged file was already counted among the findings, so
   the count does not change
 
+- **`db search --ids`, `--csv` and `--json` say when `--limit` cut the answer short.** The table
+  has said so all along; the machine-readable formats handed over exactly N rows with nothing
+  anywhere to say more had matched, so `db search --limit 100 --ids | xargs …` looked like a
+  complete answer. They carry rows and nothing around them, so the note goes to the log -- the
+  same place the complaint about a database that has fallen behind already goes
+
 ### Changed
 
 - **A Gmail backup no longer pays a round trip per message for its labels.** The labels come back

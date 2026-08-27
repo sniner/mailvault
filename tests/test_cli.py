@@ -1245,6 +1245,31 @@ class TestDbCommands:
         for store_id in printed:
             assert cas.is_hashval(store_id), store_id
 
+    def test_a_capped_machine_result_says_so_in_the_log(self, tmp_path, capsys, caplog):
+        """`db search --limit 100 --ids | xargs …` used to hand over exactly 100
+        ids with nothing anywhere saying more had matched. The table says it; the
+        formats that carry rows and nothing around them have only the log."""
+        archive = self._archive(tmp_path)
+        run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
+        capsys.readouterr()
+
+        with caplog.at_level(logging.WARNING):
+            run_db(self._db_args(archive, db_command="search", ids=True, limit=1))
+
+        assert len(capsys.readouterr().out.split()) == 1, "the cap is what this is about"
+        assert "stopped at --limit 1; there may be more" in caplog.text
+
+    def test_an_uncapped_result_says_nothing_about_a_limit(self, tmp_path, capsys, caplog):
+        """The note is owed only when the limit was actually reached."""
+        archive = self._archive(tmp_path)
+        run_db(self._db_args(archive, db_command="create", mailbox=None, force=False))
+        capsys.readouterr()
+
+        with caplog.at_level(logging.WARNING):
+            run_db(self._db_args(archive, db_command="search", ids=True, limit=999))
+
+        assert "--limit" not in caplog.text
+
     def test_the_id_a_table_prints_is_one_get_takes(self, tmp_path, capsys):
         """The column is a handle, so nothing may cling to it that has to be cut off.
 
