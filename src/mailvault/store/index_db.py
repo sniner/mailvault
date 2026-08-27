@@ -111,6 +111,19 @@ def _view(name: str, select: str) -> SchemaObject:
 # Every object a current projection holds, in the order they are made. Nothing
 # here is conditional: these statements run against a file that has nothing in
 # it, and a file that holds something is asked what it holds instead.
+#
+# What is *not* here is an index that repeats one SQLite makes for itself. A
+# UNIQUE column gets `sqlite_autoindex_<table>_<n>`, and a second index over the
+# same column is another B-tree to maintain on every insert that no query ever
+# reads: measured against a projection of 4,000 messages, six such indexes cost
+# 23% of the file (3,670,016 bytes against 2,818,048) and not one query plan
+# differs without them -- the planner was taking the autoindex either way, as
+# `EXPLAIN QUERY PLAN` says in as many words: `SEARCH s USING COVERING INDEX
+# sqlite_autoindex_message_sender_1`. That is paid on the write path over the
+# network share this shape exists to make cheaper.
+#
+# It applies to a leading column too: `message_sender(message_id)` is covered by
+# `sqlite_autoindex_message_sender_1(message_id, address_id)`.
 SCHEMA: tuple[SchemaObject, ...] = (
     _table(
         "mailbox",
@@ -128,7 +141,6 @@ SCHEMA: tuple[SchemaObject, ...] = (
         UNIQUE(address) ON CONFLICT IGNORE
         """,
     ),
-    _index("idx_address_1", "address(address)", unique=True),
     # Not "label". Gmail has labels where IMAP has folders, and the difference is
     # how many of them a message may carry, not what they are -- so one word
     # covers both, and it is the one everybody uses.
@@ -140,7 +152,6 @@ SCHEMA: tuple[SchemaObject, ...] = (
         UNIQUE(name) ON CONFLICT IGNORE
         """,
     ),
-    _index("idx_folder_1", "folder(name)", unique=True),
     _table(
         "subject",
         """
@@ -149,7 +160,6 @@ SCHEMA: tuple[SchemaObject, ...] = (
         UNIQUE(text) ON CONFLICT IGNORE
         """,
     ),
-    _index("idx_subject_1", "subject(text)", unique=True),
     _table(
         "message",
         """
@@ -162,7 +172,6 @@ SCHEMA: tuple[SchemaObject, ...] = (
         UNIQUE(store_id) ON CONFLICT IGNORE
         """,
     ),
-    _index("idx_message_1", "message(store_id)"),
     # A date filter is a range over this index, so `--since` reads the days it
     # names instead of the whole table. It only works while the filter compares
     # the column itself: `substr(date, 1, 10) >= ?` cannot use it and scans.
@@ -208,7 +217,6 @@ SCHEMA: tuple[SchemaObject, ...] = (
         UNIQUE(message_id, address_id) ON CONFLICT IGNORE
         """,
     ),
-    _index("idx_message_sender_1", "message_sender(message_id)"),
     _index("idx_message_sender_2", "message_sender(address_id)"),
     _table(
         "message_recipient",
@@ -220,7 +228,6 @@ SCHEMA: tuple[SchemaObject, ...] = (
         UNIQUE(message_id, address_id) ON CONFLICT IGNORE
         """,
     ),
-    _index("idx_message_recipient_1", "message_recipient(message_id)"),
     _index("idx_message_recipient_2", "message_recipient(address_id)"),
     # Which log files have already been folded in, by content hash (their name),
     # and which chain head of each place that added up to. No query reads either,
@@ -443,9 +450,25 @@ class IndexDatabaseConnection(DatabaseConnection):
         opens anyway. Objects beyond these are not looked at: SQLite makes its own
         indexes for a UNIQUE column, and what matters is that everything a query
         needs is there.
+
+        An object whose name is taken by something *else* counts as missing, and
+        that is the point of holding the statement against `sqlite_master.sql` and
+        not only the name. `SchemaObject` keeps the statement so this list can be
+        read twice -- "a check driven by a second list would go on passing a file
+        that is missing whatever the list forgot" -- and comparing names alone
+        threw the other half away: a `v_messages` built with the old INNER JOINs,
+        or an `idx_message_location_1` without the `IFNULL` spelling, both of
+        which earlier releases really did write, answered every query wrongly and
+        passed as complete. SQLite stores the text as it was given, so the
+        comparison is exact for anything this version wrote.
+
+        A difference means what absence means: build it again.
         """
-        present = {row[0] for row in self.execute("SELECT name FROM sqlite_master")}
-        return [obj for obj in SCHEMA if obj.name not in present]
+        present = {
+            row[0]: (row[1], row[2])
+            for row in self.execute("SELECT name, type, sql FROM sqlite_master")
+        }
+        return [obj for obj in SCHEMA if present.get(obj.name) != (obj.kind, obj.sql)]
 
     @property
     def usable(self) -> bool:

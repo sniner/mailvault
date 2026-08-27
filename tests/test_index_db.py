@@ -359,11 +359,66 @@ def test_a_projection_that_lost_an_object_is_recognised(tmp_path):
         assert db.missing() == []
 
     with index_db.IndexDatabase(db_path) as db:
-        db.execute("DROP INDEX idx_message_recipient_1")
+        db.execute("DROP INDEX idx_message_2")
 
     with index_db.IndexDatabase(db_path) as db:
-        assert [str(obj) for obj in db.missing()] == ["index idx_message_recipient_1"]
+        assert [str(obj) for obj in db.missing()] == ["index idx_message_2"]
         assert not db.usable
+
+
+def test_an_object_of_the_right_name_and_the_wrong_shape_is_missing(tmp_path):
+    """The name says an object is there; only the statement says it is the one.
+
+    Earlier releases really did write a `v_messages` with INNER JOINs and an
+    `idx_message_location_1` without the `IFNULL` spelling. Either answers a query
+    differently while satisfying a check that compares names, so the file passes
+    as complete and lies to whoever reads it.
+    """
+    db_path = tmp_path / "test.db"
+    with index_db.IndexDatabase(db_path, create=True) as db:
+        assert db.missing() == []
+
+    with index_db.IndexDatabase(db_path) as db:
+        db.execute("DROP INDEX idx_message_2")
+        db.execute("CREATE INDEX idx_message_2 ON message(store_id)")
+
+    with index_db.IndexDatabase(db_path) as db:
+        assert [str(obj) for obj in db.missing()] == ["index idx_message_2"]
+        assert not db.usable, "the name is taken, the object is not the one"
+
+
+def test_the_indexes_sqlite_makes_for_itself_are_not_declared_again(tmp_path):
+    """A UNIQUE column already has a B-tree; a second one over the same columns is
+    maintained on every insert and read by nobody -- the planner takes the
+    autoindex. Measured on a projection of 4,000 messages, six such indexes cost
+    23% of the file (3,670,016 bytes against 2,818,048) and changed no query plan.
+
+    Asked of SQLite rather than of the statements, because what covers what is its
+    answer to give: a declared index is redundant when its columns are the leading
+    columns of an autoindex on the same table.
+    """
+    db_path = tmp_path / "test.db"
+    with index_db.IndexDatabase(db_path, create=True) as db:
+
+        def columns(index: str) -> list[str | None]:
+            return [row[2] for row in db.execute(f"PRAGMA index_info({index})")]
+
+        tables = [
+            row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        ]
+        for table in tables:
+            listed = [row[1] for row in db.execute(f"PRAGMA index_list({table})")]
+            auto = [columns(name) for name in listed if name.startswith("sqlite_autoindex_")]
+            for name in listed:
+                if name.startswith("sqlite_autoindex_"):
+                    continue
+                mine = columns(name)
+                if None in mine:  # an index over expressions covers nothing else
+                    continue
+                for theirs in auto:
+                    assert mine != theirs[: len(mine)], (
+                        f"{name} on {table} repeats what SQLite already indexes"
+                    )
 
 
 def test_an_object_that_is_missing_is_not_made_on_the_way_past(tmp_path):
