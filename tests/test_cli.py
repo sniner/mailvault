@@ -29,6 +29,7 @@ from mailvault.cli.common import (
 )
 from mailvault.cli.mailbox import report_backup, report_folders, report_verify
 from mailvault.cli.mailbox import run as run_mailbox
+from mailvault.cli.message import _entry_path
 from mailvault.cli.message import run as run_get
 from mailvault.cli.query import run as run_db
 from mailvault.store import cas, heads, marker, metalog
@@ -526,6 +527,25 @@ class TestGet:
 
         with pytest.raises(jobs.JobError, match="at least its first 6"):
             run_get(self._get_args(tmp_path, [store_id[:5]]))
+
+    def test_how_much_of_an_id_is_asked_for_follows_the_store(self, tmp_path):
+        """Six is what a store sharded two levels deep needs, not a number of its own.
+
+        The shard directory is the shortest prefix the store can look anything up
+        by, and `matching` raises a bare ValueError below it. A minimum written
+        down here would have to be kept above that by hand: at a depth of four it
+        would have let six characters through, and `mailvault get abcdef` would
+        have ended in a traceback rather than in the sentence meant for it.
+        """
+        deep = cas.ContentAddressedStorage(tmp_path / "mail", suffix=".eml", depth=4)
+
+        with pytest.raises(jobs.JobError, match="at least its first 10"):
+            _entry_path(deep, "a" * 6)
+
+        shallow = cas.mail_store(tmp_path)
+        assert shallow.depth == 2, "the store every command actually opens"
+        with pytest.raises(jobs.JobError, match="at least its first 6"):
+            _entry_path(shallow, "a" * 5)
 
     def test_path_says_where_the_message_lies_and_writes_nothing(self, tmp_path, capsys):
         store_id, path = self._archive(tmp_path)

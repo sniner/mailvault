@@ -22,15 +22,6 @@ from mailvault.store import cas
 log = logging.getLogger(__name__)
 
 
-# How much of an id `get` asks for when it was given too little. The
-# store can look up four characters -- that is the shard directory -- but four
-# names the whole shard, which in an archive of any size is several messages, so
-# asking for four sends the reader back for more. Six is where a prefix starts
-# naming one message: 16^6 is 16.7 million, and 131,000 messages meet one of them
-# less than once in a hundred.
-MIN_ID_PREFIX = 6
-
-
 def _entry_path(store: cas.ContentAddressedStorage, wanted: str) -> pathlib.Path:
     """Find the entry a message id names, given whole or only begun.
 
@@ -51,10 +42,25 @@ def _entry_path(store: cas.ContentAddressedStorage, wanted: str) -> pathlib.Path
         if not cas.is_hashval(wanted):
             raise jobs.JobError(f"{wanted}: neither a store id nor the path of an entry")
         hashval = cas.normalize_hashval(wanted)
-    if len(hashval) < MIN_ID_PREFIX:
+    # How much of an id to ask for when too little was given, derived from the
+    # store rather than fixed: the shard directory is `depth * 2` characters and
+    # is the shortest prefix the store can look anything up by, but it names the
+    # whole shard, which in an archive of any size is several messages -- asking
+    # for exactly that sends the reader straight back for more. One byte beyond
+    # it is where a prefix starts naming one message: at the store's depth of two
+    # that is six characters, and 16^6 is 16.7 million, which 131,000 messages
+    # meet less than once in a hundred.
+    #
+    # Derived, because both lookups below cut the shard directory out of the
+    # prefix -- `_subdirs` raises a bare ValueError under `depth * 2`, and
+    # `locate` reaches it first -- and a number written down here would have to be
+    # kept above that by hand. At two more than they need, that cannot happen
+    # whatever the store is sharded into.
+    minimum = store.depth * 2 + 2
+    if len(hashval) < minimum:
         raise jobs.JobError(
             f"{wanted}: too little of an id to look one up -- give at least its"
-            f" first {MIN_ID_PREFIX} characters"
+            f" first {minimum} characters"
         )
     found = store.locate(hashval, exists=True)
     if found is not None:
