@@ -818,6 +818,26 @@ LEFT JOIN subject subj USING (subject_id)
 """
 
 
+def search_sql(query: SearchQuery) -> tuple[str, list[str]]:
+    """The statement `search` runs, and the values that go with it.
+
+    Its own function so that anything asking what a search costs -- a test
+    holding the plan against an index, above all -- asks about the statement that
+    is actually sent. Built here and appended to there, the two drifted apart the
+    moment the `ORDER BY` was added: that is the clause which can push SQLite off
+    a range index onto a full scan with a temporary B-tree, so a plan measured
+    without it is a plan of a query nobody runs.
+    """
+    where, values = _conditions(query)
+    sql = _SEARCH_SQL
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY m.date IS NULL, m.date, m.store_id"
+    if query.limit is not None:
+        sql += f" LIMIT {int(query.limit):d}"
+    return sql, values
+
+
 def search(db_path: pathlib.Path, query: SearchQuery) -> list[SearchHit]:
     """Find the messages the projection records matching every filter given.
 
@@ -834,14 +854,7 @@ def search(db_path: pathlib.Path, query: SearchQuery) -> list[SearchHit]:
         # made that impossible without --force.
         raise JobError(Freshness(absent=True).complaint(db_path.name) or "")
 
-    where, values = _conditions(query)
-    sql = _SEARCH_SQL
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY m.date IS NULL, m.date, m.store_id"
-    if query.limit is not None:
-        sql += f" LIMIT {int(query.limit):d}"
-
+    sql, values = search_sql(query)
     with index_db.IndexDatabase(path=db_path) as db:
         if not db.usable:
             raise JobError(_unreadable(db_path.name, db.outdated))

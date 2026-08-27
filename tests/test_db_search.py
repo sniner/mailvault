@@ -155,8 +155,11 @@ class TestDateFilters:
         """A filter that has to be computed per row reads the whole archive to
         answer, which over a network share is a minute rather than a second."""
         query = SearchQuery(since="2025-01-01", until="2025-12-31")
-        where, values = db_module._conditions(query)
-        sql = f"{db_module._SEARCH_SQL} WHERE {' AND '.join(where)}"
+        # The statement `search` sends, not one assembled here to look like it.
+        # The `ORDER BY` it appends is exactly the clause that can push SQLite off
+        # this index onto a scan with a temporary B-tree, so a plan measured
+        # without it guards a query nobody runs.
+        sql, values = db_module.search_sql(query)
 
         with index_db.IndexDatabase(db_path) as db:
             plan = " ".join(
