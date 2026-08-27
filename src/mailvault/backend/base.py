@@ -100,6 +100,52 @@ class MessageRef:
     date: datetime | None = None
 
 
+@dataclasses.dataclass(frozen=True)
+class Fetched:
+    """One message as the source handed it over, and where the source says it is.
+
+    The two arrive together because they come out of the same read. Where a
+    message was seen is the one fact the archive cannot work out again from what
+    it holds, so it must not depend on a second call that can fail on its own --
+    least of all on one made *after* the message has been written: a failure
+    there leaves bytes in the store that nothing in the log names.
+    """
+
+    body: bytes
+    places: list[str | bytes]
+
+
+def places_read_from(
+    labels: collections.abc.Sequence[str | bytes],
+    folder_name: str,
+) -> list[str | bytes]:
+    r"""Every place a message is in, given what the source said about it.
+
+    Gmail's X-GM-LABELS reports the *other* places a message is in and leaves out
+    the one belonging to the folder currently selected -- measured against a live
+    account: every message in INBOX reports no label at all, while the same
+    messages fetched from All Mail report `\Inbox`. So the folder being read has
+    to be added back, or a backup of one Gmail folder would record every message
+    as being somewhere else, or nowhere.
+
+    Added rather than substituted, and unconditionally: if Gmail ever starts
+    reporting it, the union simply already contains it.
+
+    What it is added *as* is the folder's own name, which is what the backend was
+    asked to read. Deriving Gmail's label for it would mean keeping a table of
+    the places where Gmail's two vocabularies disagree -- LIST calls the starred
+    folder `\Flagged`, the label is `\Starred` -- and that table would need
+    feeding every time Gmail changes something. The cost of not having it: a
+    place seen from two directions is recorded under two names, each of them the
+    name the server gave in that context.
+
+    A source with one place per message passes no labels and gets the folder,
+    which is why this needs no branch for it: the union of nothing and the folder
+    is the folder.
+    """
+    return [*labels, folder_name]
+
+
 class MailboxClient(Protocol):
     """Protocol defining the interface for mailbox backends.
 
@@ -173,21 +219,12 @@ class MailboxClient(Protocol):
         """
         ...
 
-    def fetch_message(self, msg_id: Any, folder_name: str) -> bytes: ...
+    def fetch_message(self, msg_id: Any, folder_name: str) -> Fetched:
+        """One message and its places, out of a single read.
 
-    def places_of(self, msg_id: Any, folder_name: str) -> list[str | bytes]:
-        """Every place the source says this message is in, the folder included.
-
-        A backup gets these along the way, out of the same read that fetched
-        the message: `mailutils.metadata` takes them and the log writes them.
-        A repair fetches one message at a time and has to ask, and it must --
-        Gmail reports a message under every label it carries, and a repair that
-        recorded only the folder it was walking would put back a message whose
-        other places had been silently dropped. Where a message was seen is the
-        one thing the archive cannot work out again from what it holds.
-
-        A source with one place per message answers with the folder and asks
-        nothing of the network; only Gmail pays for this.
+        The repair path's way in: it works a message at a time, where the backup
+        walks a folder in chunks. Both come back with `Fetched`, and neither has
+        to ask a second time where the message belongs.
         """
         ...
 
@@ -223,14 +260,20 @@ def store_message(
         try:
             metadata = metadata_fn(store_id)
         except Exception as exc:
-            # Building the location can fail on its own -- for Gmail it fetches
-            # the message's labels over the network. The message is stored, but
-            # its location is not, so it must not be treated as archived: a
-            # non-None return here would let the caller delete it from the server
-            # with no record of where it was seen -- the one fact the archive
-            # cannot reconstruct. Fail closed: count it failed so the snapshot
-            # holds, and let the next run re-fetch (the storage deduplicates the
-            # message) and record the location then.
+            # Kept although no backend can reach it any more. It used to be
+            # reachable, and by the worst route there is: building the location
+            # went to the network for Gmail's labels, *after* the message had
+            # been stored. The places now come out of the same read as the body,
+            # so what is left here cannot fail -- but a backend that starts
+            # asking again would arrive here rather than at a message in the
+            # store that nothing names.
+            #
+            # If it ever does fire: the message is stored and its location is
+            # not, so it must not be treated as archived -- a non-None return
+            # would let the caller delete it from the server with no record of
+            # where it was seen, the one fact the archive cannot reconstruct.
+            # Fail closed, and let the next run re-fetch (the storage
+            # deduplicates the message) and record the location then.
             log.warning("%s: metadata could not be extracted: %s", log_ctx, exc)
             result.failed += 1
             return None

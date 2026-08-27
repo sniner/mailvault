@@ -473,18 +473,15 @@ class MSGraphClient:
         resp.raise_for_status()
         return resp.content
 
-    def fetch_message(self, msg_id: str, folder_name: str = "") -> bytes:
-        """Fetch a single message by its Graph id (folder is irrelevant here)."""
-        return self._download_mime(msg_id)
+    def fetch_message(self, msg_id: str, folder_name: str = "") -> base.Fetched:
+        """Fetch a single message by its Graph id, with the one place it is in.
 
-    def places_of(self, msg_id: str, folder_name: str) -> list[str | bytes]:
-        """The folder, and nothing else: a Graph message is in one mail folder.
-
-        Spelled out rather than inherited, so that a later `folders=` in this
-        backend's own `metadata_fn` cannot drift away from what a repair
-        records without somebody having to change this line too.
+        A Graph message is in one mail folder, so it passes no labels and
+        `places_read_from` answers with the folder. The backup path arrives at
+        the same list through the same function -- which is what the two used to
+        have to be kept in step by hand.
         """
-        return [folder_name]
+        return base.Fetched(self._download_mime(msg_id), base.places_read_from([], folder_name))
 
     def _graph_delete(self, msg_id: str) -> None:
         """Delete one message, softly or for good depending on the job.
@@ -691,6 +688,7 @@ class MSGraphClient:
                     mailbox=self.job_name,
                     folder=folder_name,
                     store_id=sid,
+                    folders=base.places_read_from([], folder_name),
                 ),
             )
             if store_id is None:

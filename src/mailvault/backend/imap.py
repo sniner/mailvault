@@ -19,6 +19,7 @@ import typing
 from typing import Any
 
 import imapclient
+import imapclient.imap_utf7
 
 if sys.version_info >= (3, 14):
     # Monkeypatch for imapclient 3.1.0 on Python 3.14:
@@ -63,6 +64,17 @@ UID_RESUME_KIND = "imap-uid"
 # marking as read every message it passes over.
 WHOLE_MESSAGE_ITEM = "BODY.PEEK[]"
 WHOLE_MESSAGE_KEY = b"BODY[]"
+
+# Where a Gmail message is, asked for in the same FETCH as its body. It used to
+# be a call of its own per message -- `get_gmail_labels`, which is this item and
+# nothing else -- so a folder cost one round trip per chunk for the bodies plus
+# one per message for the labels.
+#
+# Only asked for where the server advertises the extension: a server that does
+# not know the item answers the whole FETCH with an error, and the body would go
+# down with the item nobody needed.
+GMAIL_LABELS_ITEM = "X-GM-LABELS"
+GMAIL_LABELS_KEY = b"X-GM-LABELS"
 
 
 def _as_int(value: object) -> int | None:
@@ -284,19 +296,40 @@ class ImapClient:
             _flags, _delimiter, name = folder
             yield name
 
+    @property
+    def _fetch_items(self) -> list[str]:
+        """What one read of a message has to ask for, this source being what it is."""
+        if self.gmail:
+            return [WHOLE_MESSAGE_ITEM, GMAIL_LABELS_ITEM]
+        return [WHOLE_MESSAGE_ITEM]
+
+    def _places_from(self, msg_data: dict[bytes, Any], folder_name: str) -> list[str | bytes]:
+        """Read the places out of one message's FETCH answer.
+
+        The labels arrive in IMAP modified UTF-7 -- `Pers&APY-nlich` for a label
+        called `Persönlich`. `get_gmail_labels`, which this replaces, decoded them
+        on the way out and that is what every log written so far holds, so the
+        same decoding happens here: verified against the live account, this
+        answers identically to `get_gmail_labels` on the same UIDs.
+        """
+        labels = msg_data.get(GMAIL_LABELS_KEY) or ()
+        return base.places_read_from(
+            [imapclient.imap_utf7.decode(label) for label in labels], folder_name
+        )
+
     def _walk_folder(
         self,
         folder_name: str,
         message_ids: list[int],
         chunk_size: int = 10,
         result: BackupResult | None = None,
-    ) -> collections.abc.Generator[tuple[int, bytes], None, None]:
+    ) -> collections.abc.Generator[tuple[int, base.Fetched], None, None]:
         for msg_ids in utils.batched(message_ids, chunk_size):
             msg_ids_str = ", ".join([str(i) for i in msg_ids])
             log.debug("%s::%s: fetching %s", self.job_name, folder_name, msg_ids_str)
             msg_id = None
             try:
-                for msg_id, msg_data in self.conn.fetch(msg_ids, [WHOLE_MESSAGE_ITEM]).items():
+                for msg_id, msg_data in self.conn.fetch(msg_ids, self._fetch_items).items():
                     body = msg_data.get(WHOLE_MESSAGE_KEY)
                     if not isinstance(body, bytes):
                         # A FETCH the server answered without the message in it.
@@ -312,7 +345,7 @@ class ImapClient:
                         if result is not None:
                             result.failed += 1
                         continue
-                    yield msg_id, body
+                    yield msg_id, base.Fetched(body, self._places_from(msg_data, folder_name))
             except (OSError, imaplib.IMAP4.error) as exc:
                 log.exception(
                     "%s::%s[%s]: fetch failed: %s",
@@ -329,64 +362,21 @@ class ImapClient:
     def _collect_metadata(
         self,
         folder_name: str,
-        msg_id: Any,
+        places: list[str | bytes],
         store_id: str,
     ) -> mailutils.MessageMetadata:
-        if self.gmail:
-            # X-GM-LABELS reports the other places the message is in, and leaves
-            # out the one belonging to the folder currently selected -- measured
-            # against a live account: every message in INBOX reports no label at
-            # all, while the same messages fetched from All Mail report
-            # `\Inbox`. So the folder being read has to be added back, or a
-            # backup of one Gmail folder would record every message as being
-            # somewhere else, or nowhere.
-            #
-            # Added rather than substituted, and unconditionally: if Gmail ever
-            # starts reporting it, the union simply already contains it.
-            #
-            # What it is added *as* is the folder's own name, which is what this
-            # backend was asked to read. Deriving Gmail's label for it would mean
-            # keeping a table of the places where Gmail's two vocabularies
-            # disagree -- LIST calls the starred folder `\Flagged`, the label is
-            # `\Starred` -- and that table would need feeding every time Gmail
-            # changes something. The cost of not having it: a place seen from two
-            # directions is recorded under two names, each of them the name the
-            # server gave in that context.
-            labels = self.conn.get_gmail_labels(msg_id).get(msg_id, [])
-            folders = [*labels, folder_name]
-        else:
-            folders = [folder_name]
+        """The location record, out of what the read already brought back.
+
+        Nothing is asked of the server here. The places came with the message
+        (`_places_from`), so this cannot fail and cannot be slow -- which is what
+        lets the backup record a location it has already paid for.
+        """
         return mailutils.metadata(
             mailbox=self.job_name,
             folder=folder_name,
             store_id=store_id,
-            folders=folders,
+            folders=places,
         )
-
-    def places_of(self, msg_id: int, folder_name: str) -> list[str | bytes]:
-        """Every place this message is in -- for Gmail its labels, else the folder.
-
-        The same answer `_collect_metadata` builds for the backup path, asked
-        one message at a time because that is how a repair works. A folder has
-        to be selected for `X-GM-LABELS`, and `fetch_message` gives its
-        selection back when it is done, so this makes its own.
-        """
-        if not self.gmail:
-            return [folder_name]
-        self.conn.select_folder(folder_name, readonly=True)
-        try:
-            labels = self.conn.get_gmail_labels(msg_id).get(msg_id, [])
-        except Exception as exc:
-            # The message is fetched and about to be stored; what is at stake
-            # here is only how completely its place is written down. Falling
-            # back to the folder is what the caller would have recorded anyway.
-            log.warning(
-                "%s::%s[%s]: labels not read: %s", self.job_name, folder_name, msg_id, exc
-            )
-            return [folder_name]
-        finally:
-            self.conn.unselect_folder()
-        return [*labels, folder_name]
 
     def _clear_folder(self, folder_name: str) -> None:
         """Delete everything in a folder and expunge it, whatever goes wrong.
@@ -444,7 +434,7 @@ class ImapClient:
         folder_name: str,
         resume: _UidResume | None = None,
         result: BackupResult | None = None,
-    ) -> collections.abc.Generator[tuple[int, bytes], None, None]:
+    ) -> collections.abc.Generator[tuple[int, base.Fetched], None, None]:
         """Select the folder read-only, search and yield its messages.
 
         A read-only pass: nothing is deleted here. Messages are removed from the
@@ -478,10 +468,10 @@ class ImapClient:
                 folder_name,
                 utils.counted(items_found, "message"),
             )
-            for processed, (msg_id, msg) in enumerate(
+            for processed, (msg_id, fetched) in enumerate(
                 self._walk_folder(folder_name, message_ids, result=result), 1
             ):
-                yield msg_id, msg
+                yield msg_id, fetched
                 if processed % 100 == 0:
                     log.info(
                         "%s::%s: %s/%s messages processed",
@@ -564,7 +554,8 @@ class ImapClient:
         # Collected during the read-only pass and relocated once it is over --
         # a skip is not a failure, so the resume point may still advance either way.
         non_journal: list[int] = []
-        for msg_id, msg in self._iter_folder(folder_name, watermark, result=result):
+        for msg_id, fetched in self._iter_folder(folder_name, watermark, result=result):
+            msg = fetched.body
             if self.exchange_journal:
                 msg = mailutils.unwrap_exchange_journal_item(msg)
                 if msg is None:
@@ -583,9 +574,9 @@ class ImapClient:
                 result=result,
                 log_ctx=f"{self.job_name}::{folder_name}[{msg_id}]",
                 callback=callback,
-                metadata_fn=lambda sid, mid=msg_id: self._collect_metadata(
+                metadata_fn=lambda sid, places=fetched.places: self._collect_metadata(
                     folder_name=folder_name,
-                    msg_id=mid,
+                    places=places,
                     store_id=sid,
                 ),
             )
@@ -692,14 +683,20 @@ class ImapClient:
         finally:
             self.conn.unselect_folder()
 
-    def fetch_message(self, msg_id: int, folder_name: str) -> bytes:
-        """Fetch a single message by UID from the given folder."""
+    def fetch_message(self, msg_id: int, folder_name: str) -> base.Fetched:
+        """Fetch a single message by UID from the given folder, places included.
+
+        The repair path's read. It asks for exactly what `_walk_folder` asks for,
+        in one FETCH inside one selection -- where it used to fetch the body,
+        give the folder back, and select the same folder again to ask where the
+        message was.
+        """
         self.conn.select_folder(folder_name, readonly=True)
         try:
-            msg_data = self.conn.fetch([msg_id], [WHOLE_MESSAGE_ITEM]).get(msg_id)
+            msg_data = self.conn.fetch([msg_id], self._fetch_items).get(msg_id)
             body = msg_data.get(WHOLE_MESSAGE_KEY) if msg_data else None
-            if not isinstance(body, bytes):
+            if msg_data is None or not isinstance(body, bytes):
                 raise MailboxError(f"{folder_name}[{msg_id}]: message not found")
-            return body
+            return base.Fetched(body, self._places_from(msg_data, folder_name))
         finally:
             self.conn.unselect_folder()

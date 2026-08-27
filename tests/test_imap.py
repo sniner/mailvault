@@ -5,10 +5,12 @@ from __future__ import annotations
 import imaplib
 import logging
 import pathlib
+import typing
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, call, patch
 
+import imapclient
 import pytest
 
 from mailvault import conf
@@ -242,7 +244,7 @@ class TestWalkFolder:
 
         results = list(client._walk_folder("INBOX", [1, 2], chunk_size=10))
         assert len(results) == 2
-        assert results[0] == (1, DUMMY_EML)
+        assert results[0] == (1, base.Fetched(DUMMY_EML, ["INBOX"]))
 
     def test_chunked_fetching(self):
         conn = _make_mock_conn()
@@ -286,9 +288,120 @@ class TestWalkFolder:
         with caplog.at_level(logging.ERROR):
             results = list(client._walk_folder("INBOX", [1, 2], result=result))
 
-        assert results == [(2, DUMMY_EML)]
+        assert results == [(2, base.Fetched(DUMMY_EML, ["INBOX"]))]
         assert result.failed == 1
         assert "INBOX[1]: the server sent no message body" in caplog.text
+
+
+class TestPlacesComeWithTheMessage:
+    """Where a message is, out of the same read that fetched it.
+
+    It used to be a call of its own, once per message: one FETCH for the body and
+    a second one for the labels. The body's FETCH can carry them, so it does.
+    """
+
+    def test_a_gmail_source_reads_the_labels_in_the_same_fetch(self):
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
+        conn.fetch.return_value = {
+            1: {b"BODY[]": DUMMY_EML, b"X-GM-LABELS": (b"\\Important", b"Work")}
+        }
+        client = _make_client(conn=conn)
+
+        results = list(client._walk_folder("INBOX", [1]))
+
+        assert conn.fetch.call_args[0][1] == ["BODY.PEEK[]", "X-GM-LABELS"]
+        conn.get_gmail_labels.assert_not_called()
+        assert results[0][1].places == ["\\Important", "Work", "INBOX"]
+
+    def test_a_label_is_decoded_the_way_the_library_did_it(self):
+        """Labels come in IMAP modified UTF-7. `get_gmail_labels` decoded them on
+        the way out -- reading X-GM-LABELS directly has to do the same, or the log
+        records `Pers&APY-nlich` from now on for every label with an umlaut in it.
+        """
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
+        conn.fetch.return_value = {
+            1: {b"BODY[]": DUMMY_EML, b"X-GM-LABELS": (b"Pers&APY-nlich",)}
+        }
+        client = _make_client(conn=conn)
+
+        results = list(client._walk_folder("INBOX", [1]))
+
+        assert results[0][1].places == ["Persönlich", "INBOX"]
+
+    def test_a_source_without_the_extension_is_not_asked_for_labels(self):
+        """A server that does not know X-GM-LABELS fails the whole FETCH over it,
+        and the message body would go down with the item it never asked for."""
+        conn = _make_mock_conn()
+        conn.fetch.return_value = {1: {b"BODY[]": DUMMY_EML}}
+        client = _make_client(conn=conn)
+
+        results = list(client._walk_folder("INBOX", [1]))
+
+        assert conn.fetch.call_args[0][1] == ["BODY.PEEK[]"]
+        assert results[0][1].places == ["INBOX"]
+
+    def test_a_message_with_no_other_label_is_in_the_folder_it_came_from(self):
+        """Measured against the live account: X-GM-LABELS leaves out the label of
+        the folder one is standing in, so a message with no second label answers
+        with an empty tuple -- and the folder is the whole of its location."""
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
+        conn.fetch.return_value = {1: {b"BODY[]": DUMMY_EML, b"X-GM-LABELS": ()}}
+        client = _make_client(conn=conn)
+
+        results = list(client._walk_folder("INBOX", [1]))
+
+        assert results[0][1].places == ["INBOX"]
+
+    def test_it_says_what_the_library_call_it_replaced_said(self):
+        """The one piece of knowledge here that never lived in this repository.
+
+        Reading X-GM-LABELS out of the FETCH replaced `get_gmail_labels`, and
+        that call did more than pick the key out: it ran the labels through
+        imapclient's modified-UTF-7 decoder. Nothing in this code said so -- it
+        was in the library -- so dropping the call would silently have changed
+        what the log records, from `Persönlich` to `Pers&APY-nlich`, and the
+        archive would have carried the same label under two names.
+
+        Held against the library's own implementation rather than against a value
+        written down here, so that a change to *its* decoding is what fails.
+        """
+        raw = (b"Pers&APY-nlich", b"\\Important", b"Mailinglisten/Freifunk")
+
+        class _AsTheLibraryWouldHave:
+            _filter_fetch_dict = imapclient.IMAPClient._filter_fetch_dict
+
+            def fetch(self, messages, items):
+                assert items == [b"X-GM-LABELS"], "the item the library asks for"
+                return {1: {b"X-GM-LABELS": raw}}
+
+        as_library = typing.cast(imapclient.IMAPClient, _AsTheLibraryWouldHave())
+        library = imapclient.IMAPClient.get_gmail_labels(as_library, [1])[1]
+
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
+        conn.fetch.return_value = {1: {b"BODY[]": DUMMY_EML, b"X-GM-LABELS": raw}}
+        client = _make_client(conn=conn)
+
+        ((_msg_id, fetched),) = client._walk_folder("INBOX", [1])
+
+        assert fetched.places == [*library, "INBOX"]
+        assert fetched.places[0] == "Persönlich", "decoded, not the wire form"
+
+    def test_the_repair_gets_body_and_places_out_of_one_fetch(self):
+        """One message at a time, and still one round trip: the repair used to
+        select the folder, fetch the body, release it, and then select the same
+        folder again to ask where the message was."""
+        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
+        conn.fetch.return_value = {7: {b"BODY[]": DUMMY_EML, b"X-GM-LABELS": (b"Work",)}}
+        client = _make_client(conn=conn)
+
+        fetched = client.fetch_message(7, "INBOX")
+
+        assert fetched.body == DUMMY_EML
+        assert fetched.places == ["Work", "INBOX"]
+        assert conn.fetch.call_count == 1
+        conn.select_folder.assert_called_once_with("INBOX", readonly=True)
+        conn.unselect_folder.assert_called_once()
+        conn.get_gmail_labels.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -940,87 +1053,48 @@ class TestRelocate:
 
 
 class TestCollectMetadata:
-    def test_standard_metadata(self):
-        conn = _make_mock_conn()
-        client = _make_client(conn=conn)
+    """Building the location record, out of what the read already brought back.
 
-        md = client._collect_metadata("INBOX", 1, "hash123")
+    The places themselves are decided in `base.places_read_from` and tested where
+    they are read off the wire, in `TestPlacesComeWithTheMessage`. What is left
+    here is the record around them.
+    """
+
+    def test_standard_metadata(self):
+        client = _make_client(conn=_make_mock_conn())
+
+        md = client._collect_metadata("INBOX", ["INBOX"], "hash123")
+
         assert md.mailbox == "test-mailbox"
         assert md.store_id == "hash123"
         assert md.folders == ["INBOX"]
 
-    def test_gmail_labels_and_the_folder_being_read(self):
-        """Both, because X-GM-LABELS answers with everything *except* the folder
-        one is standing in -- so the labels alone are never the whole location."""
+    def test_it_asks_the_server_nothing(self):
+        """The whole point of the places arriving with the message: by the time
+        this runs, the message is being written and there is nothing left to ask.
+        A call from here used to be able to fail *after* `store.add`."""
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
-        conn.get_gmail_labels.return_value = {1: [b"\\Important", b"Work"]}
         client = _make_client(conn=conn)
 
-        md = client._collect_metadata("INBOX", 1, "hash123")
+        client._collect_metadata("INBOX", ["Work", "INBOX"], "hash123")
 
-        assert md.folders == [b"\\Important", b"Work", "INBOX"]
-
-    def test_places_of_answers_what_the_backup_path_records(self):
-        """The repair path asks this; it has to say the same as `_collect_metadata`.
-
-        Two ways of arriving at the same fact, and a message restored by
-        `verify --repair` used to get the poorer one -- the folder alone, with
-        its labels dropped.
-        """
-        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
-        conn.get_gmail_labels.return_value = {1: [b"\\Important", b"Work"]}
-        client = _make_client(conn=conn)
-
-        assert client.places_of(1, "INBOX") == client._collect_metadata("INBOX", 1, "x").folders
-
-    def test_places_of_costs_a_source_without_labels_no_round_trip(self):
-        conn = _make_mock_conn()
-        client = _make_client(conn=conn)
-
-        assert client.places_of(1, "INBOX") == ["INBOX"]
-        conn.select_folder.assert_not_called()
+        conn.fetch.assert_not_called()
         conn.get_gmail_labels.assert_not_called()
+        conn.select_folder.assert_not_called()
 
-    def test_labels_that_cannot_be_read_leave_the_folder_standing(self):
-        """The message is fetched and about to be stored; only its place is at stake."""
-        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
-        conn.get_gmail_labels.side_effect = OSError("connection reset")
-        client = _make_client(conn=conn)
+    def test_the_places_are_passed_through_as_they_were_read(self):
+        client = _make_client(conn=_make_mock_conn())
 
-        assert client.places_of(1, "INBOX") == ["INBOX"]
-        conn.unselect_folder.assert_called_once()
+        md = client._collect_metadata("INBOX", ["\\Important", "Work", "INBOX"], "hash123")
 
-    def test_gmail_localised_pseudo_folder_is_not_recorded(self):
-        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
-        conn.get_gmail_labels.return_value = {1: [b"\\Sent"]}
-        client = _make_client(conn=conn)
-
-        md = client._collect_metadata("[Google Mail]/Sent", 1, "hash123")
-
-        assert md.folders == [b"\\Sent", "[Google Mail]/Sent"]
-
-    def test_the_folder_being_read_is_always_among_the_places(self):
-        """Gmail leaves out the label of the folder one is standing in.
-
-        Measured against a live account: every message in INBOX reports no label
-        at all, while the same messages fetched from All Mail report `\\Inbox`.
-        Without adding it back, backing up one Gmail folder would record every
-        message as being somewhere else -- or, with no labels at all, nowhere.
-        """
-        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
-        conn.get_gmail_labels.return_value = {}
-        client = _make_client(conn=conn)
-
-        md = client._collect_metadata("[Google Mail]/Alle Nachrichten", 1, "hash123")
-
-        assert md.folders == ["[Google Mail]/Alle Nachrichten"]
+        assert md.folders == ["\\Important", "Work", "INBOX"]
 
     def test_a_label_reported_twice_is_one_place(self):
         """Should Gmail ever report the folder's own label, the union holds."""
-        conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
-        conn.get_gmail_labels.return_value = {1: [b"Sales"]}
-        client = _make_client(conn=conn)
-        md = client._collect_metadata("Sales", 1, "hash123")
+        client = _make_client(conn=_make_mock_conn())
+        md = client._collect_metadata(
+            "Sales", base.places_read_from(["Sales"], "Sales"), "hash123"
+        )
 
         writer = metalog.LogWriter(pathlib.Path("/nonexistent"), pathlib.Path("/nonexistent"))
         writer.add("job", md.folders, "hash123")
@@ -1194,7 +1268,7 @@ class TestFetchMessage:
         conn.fetch.return_value = {7: {b"BODY[]": DUMMY_EML}}
         client = _make_client(conn=conn)
 
-        assert client.fetch_message(7, "INBOX") == DUMMY_EML
+        assert client.fetch_message(7, "INBOX") == base.Fetched(DUMMY_EML, ["INBOX"])
         conn.select_folder.assert_called_with("INBOX", readonly=True)
         conn.unselect_folder.assert_called_once()
 

@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A repair could leave a message in the archive that nothing in it names.** `verify --repair`
+  stored the message and then went to the network a second time to ask where it belonged. A
+  connection that broke in between was reported as "storing failed" while the bytes stayed --
+  exactly the message `archive check` afterwards reports as belonging to no known place, and
+  there is no later run that takes it in, because the store already has it. Where a message is
+  now comes back with the message itself, so once the archive has been written to there is
+  nothing left to ask
+
+### Changed
+
+- **A Gmail backup no longer pays a round trip per message for its labels.** The labels come back
+  in the same FETCH as the message body, where they used to be a call of their own for every
+  single message. Measured against the live account: backing up a folder of five messages cost
+  six FETCH commands and now costs one, and a run over the 131,504-message archive saves one
+  round trip per message. A repair pays one selection and one FETCH per message instead of two
+  of each
+
+- **A repair that cannot read a Gmail message's labels no longer stores it with them missing.**
+  It used to fetch the body, store it, and then ask the server separately where the message
+  belonged; a failure of that second call was caught and the message was recorded under the
+  folder being walked alone, with its other labels dropped -- silently, and for good, because no
+  later run revisits a message the archive already holds. Body and labels now arrive together, so
+  a failure happens before anything is stored: the message is counted as failed, reported, and
+  fetched again by the next run
+
 ## 0.15.1 (2026-08-26)
 
 ### Fixed

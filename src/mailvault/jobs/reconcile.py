@@ -289,18 +289,22 @@ def reconcile_folder(
             log.info("%s: %s of %s fetched", ctx, f"{fetched:,}", f"{len(wanted):,}")
         label = ref.message_id or ref.msg_id
         try:
-            msg = mb.fetch_message(ref.msg_id, folder)
+            fetched = mb.fetch_message(ref.msg_id, folder)
         except Exception as exc:
             log.error("%s: download failed for %s: %s", ctx, label, exc)
             result.failed += 1
             continue
         try:
-            status, store_id, _path = store.add(msg)
+            status, store_id, _path = store.add(fetched.body)
             if store_id not in recorded:
                 # The source's places, not the folder this pass happens to be
                 # walking. A Gmail message carries labels, and a repair that
                 # wrote `[folder]` put it back with the others stripped off.
-                log_writer.add(job_name, mb.places_of(ref.msg_id, folder), store_id)
+                #
+                # They came with the message, out of the same read: nothing here
+                # goes to the network, so nothing after `store.add` can fail and
+                # leave the bytes in the store with no log entry naming them.
+                log_writer.add(job_name, fetched.places, store_id)
                 recorded.add(store_id)
         except Exception as exc:
             log.exception("%s: storing %s failed: %s", ctx, label, exc)

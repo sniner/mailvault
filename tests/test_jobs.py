@@ -430,7 +430,9 @@ class TestCatchUp:
         client.message_index.return_value = iter(
             [base.MessageRef(msg_id=i, message_id=f"<{m}@x>") for i, m in enumerate(on_server)]
         )
-        client.fetch_message.return_value = DUMMY_EML
+        client.fetch_message.return_value = base.Fetched(
+            DUMMY_EML, base.places_read_from([], "INBOX")
+        )
         return client
 
     @staticmethod
@@ -1733,11 +1735,13 @@ def _archive_message(store_path, job_name: str, folder: str, msg: bytes) -> None
 def _verify_client(index: list[base.MessageRef], bodies: dict[str, bytes]):
     client = _make_mock_client()
     client.message_index.return_value = iter(index)
-    client.fetch_message.side_effect = lambda msg_id, folder: bodies[msg_id]
-    # What a source with one place per message answers. Left to the MagicMock it
-    # would answer with a Mock, and the repair would write that into the log as
-    # the place -- which is a thing to find out here rather than on an archive.
-    client.places_of.side_effect = lambda msg_id, folder: [folder]
+    # The places come back with the message, which is what a source with one
+    # place per message answers. Left to the MagicMock the whole `Fetched` would
+    # be a Mock, and the repair would write that into the log as the place --
+    # which is a thing to find out here rather than on an archive.
+    client.fetch_message.side_effect = lambda msg_id, folder: base.Fetched(
+        bodies[msg_id], base.places_read_from([], folder)
+    )
     return client
 
 
@@ -1819,7 +1823,9 @@ class TestVerify:
             ],
             {"id-b": lost},
         )
-        client.places_of.side_effect = lambda msg_id, folder: ["INBOX", "Wichtig"]
+        client.fetch_message.side_effect = lambda msg_id, folder: base.Fetched(
+            lost, base.places_read_from(["Wichtig"], folder)
+        )
 
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
@@ -1833,6 +1839,51 @@ class TestVerify:
         assert archived_message_counts(store, places[("test-job", "Wichtig")]) == {
             "b@example.com": 1
         }
+
+    def test_nothing_is_asked_of_the_source_after_a_message_is_written(self, tmp_path):
+        """A message in `mail/` that nothing in `meta/` names is the one thing a
+        repair must not leave behind, and this is how it happened: the place was
+        fetched over the network *after* `store.add`, inside the same `try`. A
+        reset connection there was logged as "storing failed" while the bytes
+        stayed -- exactly the orphan `archive check` reports afterwards.
+
+        Pinned as the rule rather than as the one call that broke it: once the
+        archive has been written to, there is nothing left to ask.
+        """
+        job = _make_job(folders=["INBOX"])
+        lost = _eml("<b@example.com>", "Lost")
+        _archive_message(tmp_path, "test-job", "INBOX", _eml("<a@example.com>", "Archived"))
+
+        client = _verify_client(
+            [
+                base.MessageRef(msg_id="id-a", message_id="<a@example.com>"),
+                base.MessageRef(msg_id="id-b", message_id="<b@example.com>"),
+            ],
+            {"id-b": lost},
+        )
+        asked_when_written: list[int] = []
+        real_add = cas.ContentAddressedStorage.add
+
+        def spy_add(store_self, msg):
+            # Only the message. `metalog` seals its log files into a store of the
+            # same kind, and that add comes after everything by design.
+            if msg == lost:
+                asked_when_written.append(len(client.mock_calls))
+            return real_add(store_self, msg)
+
+        with (
+            patch("mailvault.backend.session.open_mailbox") as mock_mb_cls,
+            patch.object(cas.ContentAddressedStorage, "add", spy_add),
+        ):
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            jobs.verify(job, tmp_path, repair=True)
+
+        assert asked_when_written, "nothing was stored, so the rule was never put to the test"
+        assert len(client.mock_calls) == asked_when_written[-1], (
+            "the source was called again after the last message had been written"
+        )
 
     def test_counting_the_archive_opens_each_entry_once(self, tmp_path):
         """The longest silence in the operation, and it runs over the share.
