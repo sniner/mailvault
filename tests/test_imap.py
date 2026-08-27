@@ -91,6 +91,20 @@ class TestConnect:
         mock_conn.login.assert_called_once_with("user", "pass")
 
     @patch("mailvault.backend.imap.imapclient.IMAPClient")
+    def test_the_connection_speaks_uids_and_says_so(self, mock_imap_cls):
+        """Not left to the library's default, because everything remembered
+        between runs rests on it: without UID mode, SEARCH and FETCH answer with
+        positions in the folder, which shift as soon as a message is deleted. A
+        resume point written from one would name a different message next time
+        and the mail it skipped would stay below it, with UIDVALIDITY matching
+        happily throughout."""
+        mock_imap_cls.return_value = _make_mock_conn()
+
+        imap.ImapClient.connect(_make_job())
+
+        assert mock_imap_cls.call_args.kwargs["use_uid"] is True
+
+    @patch("mailvault.backend.imap.imapclient.IMAPClient")
     def test_close_calls_logout(self, mock_imap_cls):
         mock_conn = _make_mock_conn()
         mock_imap_cls.return_value = mock_conn

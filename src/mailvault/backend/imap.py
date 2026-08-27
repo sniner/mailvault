@@ -238,6 +238,17 @@ class ImapClient:
                 port=job.port,
                 ssl=job.tls,
                 ssl_context=tls_context,
+                # Said out loud although it is imapclient's default, because
+                # everything this backend remembers between runs rests on it.
+                # Without it SEARCH and FETCH speak sequence numbers, which are
+                # positions in the folder and shift as soon as a message is
+                # deleted -- so a resume point written as a UID would name a
+                # different message on the next run, and the messages it skipped
+                # would sit below it for good. UIDVALIDITY would go on matching
+                # and say nothing was wrong. The one guard against silently
+                # skipped mail is that these ids are UIDs; that is not a default
+                # to inherit quietly.
+                use_uid=True,
             )
         except (OSError, imaplib.IMAP4.error) as exc:
             # OSError covers the lot below the protocol: DNS, refused
