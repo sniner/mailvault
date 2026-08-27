@@ -47,9 +47,8 @@
 - **A Gmail backup no longer pays a round trip per message for its labels.** The labels come back
   in the same FETCH as the message body, where they used to be a call of their own for every
   single message. Measured against a live Gmail account: backing up a folder of five messages cost
-  six FETCH commands and now costs one, and a run over the 131,504-message archive saves one
-  round trip per message. A repair pays one selection and one FETCH per message instead of two
-  of each
+  six FETCH commands and now costs one, and a run over an archive saves one round trip per message.
+  A repair pays one selection and one FETCH per message instead of two of each
 
 - **A repair that cannot read a Gmail message's labels no longer stores it with them missing.**
   It used to fetch the body, store it, and then ask the server separately where the message
@@ -141,9 +140,9 @@
 
 - **Opening the query database rebuilt two of its indexes, every single time.** A migration that
   had to drop and recreate the recipient indexes ran on every open, including for a search that
-  only meant to read. On an archive of 131,504 messages on an SMB share that was 16.5 s per open,
-  and a search opens the database twice. Opening it now writes nothing at all: what is there is
-  checked, and a file that is not the current shape is named and left alone
+  only meant to read. On a large archive on an SMB share that was 16.5 s per open, and a search
+  opens the database twice. Opening it now writes nothing at all: what is there is checked, and a
+  file that is not the current shape is named and left alone
 
 - **A date filter looked through every message in the archive.** `--since` and `--until` were
   computed for each row, so no index could answer them and every search that named a day read the
@@ -161,8 +160,8 @@
   above, the database is written in larger pages and read with a page cache to match -- over a
   share, a page is a round trip, and the default two megabytes of cache held thirty-two of them.
   Measured on the same archive: `db search --since` went from 60 s to 0.4 s, `--from` (a substring
-  match, so it has to look at every message) from 30 s to 3.6 s, and reading out all 131,504
-  messages takes 4.7 s
+  match, so it has to look at every message) from 30 s to 3.6 s, and reading out every message in
+  it takes 4.7 s
 
 ## 0.14.1 (2026-08-22)
 
@@ -256,9 +255,9 @@
   through the middle of the progress output. It now says it at the end, and asks the finished
   database rather than counting its own complaints -- "110 messages carry no date that could be
   read", with what that costs: `db search --since/--until` will not find them. Those are not the
-  same number -- against a 130,997-message archive the parser complained 16 times about 110
-  messages that came out with no date, a message with no `Date` header at all never drawing a
-  complaint to count. The individual headers are still reported, at debug level
+  same number -- on a large archive the parser complained 16 times about 110 messages that came
+  out with no date, a message with no `Date` header at all never drawing a complaint to count. The
+  individual headers are still reported, at debug level
 
 - **`found 0 of 1 message` said one had got away.** Over IMAP a folder reported what this pass
   had to fetch against how many messages the folder holds -- two answers to two different
@@ -436,8 +435,8 @@
   messages and `archive adopt` takes them in. Anyone whose archive holds mail from an import made
   before `archive import` took a `--name` should run `archive adopt` first, or the database comes
   out smaller than it used to. The first report line says where its number comes from, so the
-  change is visible rather than puzzling. Measured together with the page cache below, on 131,333
-  messages over SMB: **109 minutes down to 38**, and where the old build got steadily slower the
+  change is visible rather than puzzling. Measured together with the page cache below, on a large
+  archive over SMB: **109 minutes down to 38**, and where the old build got steadily slower the
   longer it ran, the new one holds its pace
 - **`db create --mailbox` is gone.** It filed messages the archive recorded no place for under a
   mailbox name -- a claim that lasted until the next rebuild and lived only in the database. What
@@ -556,7 +555,7 @@
 - **`index.db` records a place as one fact.** Which folder of which mailbox a message was seen in
   used to be split across two independent tables, one naming the mailboxes and one the folders --
   so a message in two mailboxes came out as two mailboxes and two folders, from which no query can
-  say which folder belonged to which. On the reference archive that is 61.6 % of 130,887 messages.
+  say which folder belonged to which. On a large archive that is the majority of its messages.
   There is now one `message_location` row per place, fed straight from the log, which has held the
   pairing since 0.9.0. Either half may be missing and neither is ever guessed: a mailbox with no
   folder is an archive whose history never recorded one, and a folder with no mailbox is a place
@@ -647,15 +646,15 @@
 - **A `verify --repair` that recovers nothing no longer changes the archive.** Every message it
   fetched had its place written to the metadata log, including the copies that turned out to be
   duplicates of something already recorded there -- an observation the log already held, which the
-  next `compact` would take straight back out. On the reference archive that was 1,729 needless
-  entries, a new log file and a new link in the chain, on every run. A location is now written only
-  where it is not recorded yet; the case that matters is untouched, because a message archived
-  under *another* folder is not recorded under this one and still gets its entry
+  next `compact` would take straight back out. Over a folder holding duplicates that is one
+  needless entry per copy, a new log file and a new link in the chain, on every run. A location is
+  now written only where it is not recorded yet; the case that matters is untouched, because a
+  message archived under *another* folder is not recorded under this one and still gets its entry
 
 - **The repair no longer says "restored" about messages it did not restore.** A copy the archive
-  already held was reported as restored, once per message -- 1,729 lines claiming the opposite of
-  what happened. Now only what changed the archive is named, the download says how far it has got
-  every 250 messages, and a folder with nothing to fetch stops reporting "0 restored"
+  already held was reported as restored, once per message -- a line per copy claiming the opposite
+  of what happened. Now only what changed the archive is named, the download says how far it has
+  got every 250 messages, and a folder with nothing to fetch stops reporting "0 restored"
 
 - **A backup only refreshes `index.db` when the job wrote something.** It ran once per job
   regardless, and a job with no new mail has nothing to add -- but finding that out means listing
@@ -668,12 +667,12 @@
 
 - **`verify` no longer reports byte-identical duplicates as missing mail.** A server folder can hold
   the same message twice, byte for byte; an archive that deduplicates holds it once, which is
-  what it is for. Counting copies made every copy after the first a missing message -- on a
-  reference archive that was 1,729 of them, in a folder that was not missing a single message, and
-  the same 1,729 after every run for good. `--repair` fetched all of them, stored none, and the
-  next run said the same thing again. The two are now separate: `0 not archived, 1,729 further
-  copies of archived message(s)`, and a run that finds no gaps says the archive is complete no
-  matter how many further copies it saw. They are still fetched by `--repair`, because a second
+  what it is for. Counting copies made every copy after the first a missing message -- a folder
+  that was not missing a single message could report hundreds of them, and the same number after
+  every run for good. `--repair` fetched all of them, stored none, and the next run said the same
+  thing again. The two are now separate: `0 not archived, 12 further copies of archived
+  message(s)`, and a run that finds no gaps says the archive is complete no matter how many
+  further copies it saw. They are still fetched by `--repair`, because a second
   copy is occasionally the byte-different version that really is absent and only its bytes can say
   so -- but they are reported as what they turn out to be, and the ones that differed are counted
   separately from the gaps that were closed
@@ -722,8 +721,8 @@
 - **`archive check` runs the integrity check by default.** `--contents` is gone; the check it
   asked for is what the command does, and **`--no-integrity-check`** leaves it out. It was made
   optional on the assumption that reading every message costs an order of magnitude more than
-  walking the tree, and measurement says otherwise: on a 131,000-message archive over SMB the walk
-  took 16 minutes and reading every message 17. A network share charges for round trips, not for
+  walking the tree, and measurement says otherwise: on a large archive over SMB the walk took 16
+  minutes and reading every message 17. A network share charges for round trips, not for
   bytes -- the walk pays one per shard directory, the read one per message, and at a couple of
   messages per shard those come out level. Being able to find a message whose bytes changed under
   it is worth a factor of two. `--quarantine` no longer needs a companion flag; it refuses to be
@@ -818,9 +817,8 @@
   refuses a directory that is not an archive, naming both ways on: `init` for a new one,
   `archive migrate` for one from before 0.10. Only those two accept an unmarked directory.
   Before this, each command simply opened `<directory>/mail` and worked on what it found there,
-  which on an unmigrated archive is nothing at all -- `archive check` reported a healthy
-  131,000-message archive as a total loss, and `verify --repair` set about downloading the
-  mailbox a second time
+  which on an unmigrated archive is nothing at all -- `archive check` reported a healthy archive
+  as a total loss, and `verify --repair` set about downloading the mailbox a second time
 
 - **No command takes an archive as a positional argument any more.** The archive is the directory
   you are standing in, or `--archive DIR`. `mailvault backup ./backup` becomes
@@ -918,8 +916,8 @@
 
 - **Ten more kinds of broken `Date` header are read** -- a weekday no parser knows (`Thur`), a
   month named in German (`Sa, 14 Dez 2002`), the all-numeric `27.11.2002`, and a date that
-  carries no time at all (`Mon, 11 Mar 2002 PST`). On the reference archive that is 13 of the
-  remaining warnings down to 3. These readings are tried only after every plainer one has failed,
+  carries no time at all (`Mon, 11 Mar 2002 PST`). On a large archive that is 13 of the remaining
+  warnings down to 3. These readings are tried only after every plainer one has failed,
   and each is still chosen so that it cannot turn one date into a different one: the weekday is
   optional in RFC 5322 and simply dropped, which handles every language at once; `05.03.2002`
   stays unread, because it is March to half the world and May to the other half; and **no reading
@@ -930,9 +928,9 @@
 
 - **The backup says why it is reading the whole archive.** With `--index-db` on and no `index.db`
   yet, a backup that had nothing left to fetch went on to read every message there is -- twenty
-  minutes on a 131,000-message archive, announced by nothing but a number climbing in steps of
-  two thousand. It now says that there is no query database yet and that it is building one from
-  the archive, before it starts, and every line of the count says what it is counting for
+  minutes on a large archive, announced by nothing but a number climbing in steps of two thousand.
+  It now says that there is no query database yet and that it is building one from the archive,
+  before it starts, and every line of the count says what it is counting for
 
 - **What the commands say about themselves is about the mail, not about the machinery.** `backup`
   offered to "back up mails to the local content-addressed archive", which names an
@@ -1256,11 +1254,11 @@
   interrupted run leaves the previous one intact.
 
 - **The job option `with_db` is gone.** It existed because of the SQLite database:
-  106 MB rewritten in place on every run was worth switching off. What remains in
-  its place is a few kilobytes of immutable files, while turning it off would
-  disable incremental backups and `verify` -- which is not what anyone wants from
-  an option about metadata. A configuration that still sets it says so on load,
-  rather than having the field quietly dropped as if it were a typo
+  a hundred megabytes rewritten in place on every run was worth switching off.
+  What remains in its place is a few kilobytes of immutable files, while turning
+  it off would disable incremental backups and `verify` -- which is not what
+  anyone wants from an option about metadata. A configuration that still sets it
+  says so on load, rather than having the field quietly dropped as if it were a typo
 
 ### Added
 
