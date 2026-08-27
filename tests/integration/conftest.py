@@ -12,7 +12,6 @@ parsing, naming and UID assignment, which is the half a mock cannot have.
 from __future__ import annotations
 
 import shutil
-import socket
 import ssl
 import subprocess
 import time
@@ -114,14 +113,26 @@ def _published_port(container: str, inside: int) -> int:
     return int(out.splitlines()[0].rsplit(":", 1)[1])
 
 
-def _wait_for(host: str, port: int, deadline: float) -> None:
+def _wait_until_serving(server: Dovecot, deadline: float) -> None:
+    """Wait until both ports answer a login, not merely a connection.
+
+    Accepting a TCP connection is not the same as being ready: Dovecot binds its
+    listeners before it can serve IMAP on them, and a connection made in that
+    window is closed without a greeting -- `socket error: EOF`, which is how this
+    first failed on a CI runner while passing every time on a warm laptop. The
+    only readiness a test can trust is the thing the test then does.
+    """
+    last: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            with socket.create_connection((host, port), timeout=1):
-                return
-        except OSError:
-            time.sleep(0.2)
-    raise RuntimeError(f"{host}:{port} did not come up in time")
+            for tls in (False, True):
+                client = server.client("readiness", tls=tls)
+                client.logout()
+            return
+        except Exception as exc:  # noqa: BLE001 - anything here means "not yet"
+            last = exc
+            time.sleep(0.3)
+    raise RuntimeError(f"dovecot did not start serving in time: {last}")
 
 
 @pytest.fixture(scope="session")
@@ -158,11 +169,10 @@ def dovecot(tmp_path_factory) -> Any:
     name = container.stdout.strip()
 
     try:
-        plain = _published_port(name, PLAIN_PORT)
-        tls = _published_port(name, TLS_PORT)
-        deadline = time.monotonic() + STARTUP_TIMEOUT
-        _wait_for("127.0.0.1", plain, deadline)
-        _wait_for("127.0.0.1", tls, deadline)
-        yield Dovecot("127.0.0.1", plain, tls)
+        server = Dovecot(
+            "127.0.0.1", _published_port(name, PLAIN_PORT), _published_port(name, TLS_PORT)
+        )
+        _wait_until_serving(server, time.monotonic() + STARTUP_TIMEOUT)
+        yield server
     finally:
         subprocess.run(["docker", "rm", "--force", name], capture_output=True)
