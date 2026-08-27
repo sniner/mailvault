@@ -26,7 +26,23 @@
   complete answer. They carry rows and nothing around them, so the note goes to the log -- the
   same place the complaint about a database that has fallen behind already goes
 
+- **A search against an archive with no query database left an empty file behind.** `db search`
+  refused with "build it again", and `db create` then declined because something was already
+  there -- the advice the error had just given could not be followed without `--force`. The file
+  is no longer created by asking, and `freshness` answers that a database which is not there
+  cannot be read, instead of leaving that question to each caller
+
 ### Changed
+
+- **A new query database is smaller and cheaper to write.** Six of its fourteen indexes repeated
+  ones SQLite makes for itself on a UNIQUE column, so every message inserted maintained six extra
+  B-trees that no query ever read. Measured on a projection of 4,000 messages: 23% off the file
+  (3,670,016 bytes against 2,818,048) and not one query plan different. Existing databases keep
+  working and are unaffected until the next `db create --force`
+
+- **A query database is checked against the statements that built it, not only against the names
+  of its objects.** A view or index carrying a known name in an older shape -- both of which
+  earlier releases really did write -- answered queries differently and passed as complete
 
 - **A Gmail backup no longer pays a round trip per message for its labels.** The labels come back
   in the same FETCH as the message body, where they used to be a call of their own for every

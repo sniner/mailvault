@@ -53,6 +53,7 @@ DEFAULT_QUERY_DB_NAME = "index.db"
 # to. Named here because command lines move -- these were `archive create-db`
 # until the projection got its own namespace.
 REBUILD_COMMAND = "mailvault db create --force"
+CREATE_COMMAND = "mailvault db create"
 UPDATE_COMMAND = "mailvault db update"
 MIGRATE_COMMAND = "mailvault archive migrate"
 
@@ -87,7 +88,14 @@ def _unreadable(db_name: str, outdated_shape: bool, note: str = "") -> str:
 class Freshness:
     """What is wrong with the projection somebody is about to read, if anything.
 
-    Three complaints, and they differ in what can be done about them.
+    Four complaints, and they differ in what can be done about them.
+
+    `absent` says there is no file at all. It is here rather than at each call
+    site because "may this be read" is the question this answers, and a file that
+    is not there is the plainest reason it may not: a reader who asks `is_usable`
+    before opening it -- the obvious reading of "whether a query may be run
+    against it and its answer believed" -- used to be told yes about a path that
+    throws the moment it is opened.
 
     `outdated_shape` and `incomplete` both mean the file is not a projection this
     version can query -- one was written by another version, the other has lost
@@ -102,6 +110,7 @@ class Freshness:
     last brought up to date, so what it holds is true and incomplete.
     """
 
+    absent: bool = False
     outdated_shape: bool = False
     incomplete: bool = False
     unmigrated_archive: bool = False
@@ -110,13 +119,20 @@ class Freshness:
     @property
     def is_usable(self) -> bool:
         """Whether a query may be run against it and its answer believed."""
-        return not (self.outdated_shape or self.incomplete or self.unmigrated_archive)
+        return not (
+            self.absent or self.outdated_shape or self.incomplete or self.unmigrated_archive
+        )
 
     def is_current(self) -> bool:
         return self.is_usable and not self.behind
 
     def complaint(self, db_name: str) -> str | None:
         """One line naming the state and the move, or None when there is none."""
+        if self.absent:
+            return (
+                f"{db_name}: no query database in this archive -- build one with"
+                f" `{CREATE_COMMAND}`"
+            )
         if self.unmigrated_archive:
             return (
                 f"{db_name}: does not fit this archive, and the archive is an older"
@@ -252,6 +268,7 @@ def freshness(store_path: pathlib.Path, db_path: pathlib.Path) -> Freshness:
     """
     result = Freshness()
     if not db_path.exists():
+        result.absent = True
         return result
     heads_root = store_path / heads.DEFAULT_HEADS_DIR
     try:
@@ -500,6 +517,15 @@ def create_db(
     """
     if db_path.exists() and not force:
         raise JobError(f"{db_path}: already exists, use --force to replace it")
+    # Doubled on purpose, and it looks like dead code from the CLI: every `db`
+    # subcommand goes through `cli.common.require_archive` first, which refuses
+    # an unmarked directory before this is reached, so this line is not what a
+    # user sees. It is what a caller of `mailvault.jobs` sees -- and what stands
+    # between "there is no log here" and a rebuild that would throw away the only
+    # record an archive from before 0.10 has of where its mail came from. The
+    # same holds for `Freshness.unmigrated_archive` and `_unfit`.
+    #
+    # Reachability is not the test for a guard whose absence loses mail.
     if not marker.is_archive(store_path):
         raise JobError(
             f"{store_path}: an older archive that still keeps its own record of the"
@@ -799,6 +825,15 @@ def search(db_path: pathlib.Path, query: SearchQuery) -> list[SearchHit]:
     one message. Ordered by date, oldest first, with the messages whose date
     could not be read at the end -- they are unknown, not old.
     """
+    if not db_path.exists():
+        # The guard belongs with the question, not with each caller who asks it.
+        # Without it `IndexDatabase` created the file: `connect()` makes one, the
+        # schema is not written on open any more, and what was left behind was an
+        # empty file that `db create` then refused as "already here" -- the error
+        # this very call raises tells the reader to build one, and the stray file
+        # made that impossible without --force.
+        raise JobError(Freshness(absent=True).complaint(db_path.name) or "")
+
     where, values = _conditions(query)
     sql = _SEARCH_SQL
     if where:

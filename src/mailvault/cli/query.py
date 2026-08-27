@@ -223,11 +223,6 @@ def run(args: argparse.Namespace) -> int:
             print(f"{db_path.name}: not here, nothing to delete")
         return 0
     elif cmd == "search":
-        if not db_path.exists():
-            raise jobs.JobError(
-                f"{db_path.name}: no query database in this archive -- build one"
-                f" with `mailvault db create`"
-            )
         # Asked before the results are printed, so it is not scrolled away by
         # them: what follows is true and may be incomplete.
         #

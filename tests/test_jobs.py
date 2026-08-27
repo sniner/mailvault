@@ -2455,11 +2455,32 @@ class TestRefreshDb:
 
         assert freshness(tmp_path, db_path).behind == ["job::Sent"]
 
-    def test_a_projection_that_is_not_there_is_not_complained_about(self, tmp_path):
-        """Nothing to be behind with, and `refresh_db` builds one anyway."""
-        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+    def test_a_projection_that_is_not_there_may_not_be_read(self, tmp_path):
+        """The plainest reason a file cannot be queried, and it used to answer yes.
 
-        assert freshness(tmp_path, tmp_path / DEFAULT_QUERY_DB_NAME).is_current()
+        `is_usable` says "whether a query may be run against it and its answer
+        believed", and for a path with no file at all it said yes -- a caller who
+        asked before opening it got a promise about a file that throws the moment
+        it is opened. Nothing was hurt by it only because `db search` asked
+        `exists()` itself, fifteen lines above the call.
+
+        Nothing to be behind with, all the same, and `refresh_db` builds one.
+        """
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+
+        state = freshness(tmp_path, db_path)
+
+        assert state.absent
+        assert not state.is_usable
+        assert not state.is_current()
+        assert state.behind == [], "there is nothing to have fallen behind"
+        complaint = state.complaint(db_path.name)
+        assert complaint is not None and "db create" in complaint
+
+        refresh_db(tmp_path, db_path)
+
+        assert freshness(tmp_path, db_path).is_current(), "and building one is the answer"
 
     def test_only_new_logs_are_applied_on_a_refresh(self, tmp_path):
         _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))

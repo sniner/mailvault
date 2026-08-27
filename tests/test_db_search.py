@@ -170,6 +170,21 @@ class TestDateFilters:
 class TestAProjectionThatCannotBeQueried:
     """Refused, and told what to do about it -- never quietly patched into shape."""
 
+    def test_one_that_is_not_there_is_not_created_by_asking(self, db_path):
+        """Opening a database makes the file; only building it makes a database.
+
+        A search against a path with nothing at it used to leave an empty file
+        there and refuse with "build it again" -- and `db create` then declined,
+        because something was already there. The advice the error gave could not
+        be followed without --force.
+        """
+        missing = db_path.parent / "not-here.db"
+
+        with pytest.raises(JobError, match="build one"):
+            search(missing, SearchQuery())
+
+        assert not missing.exists(), "asking must not leave a file behind"
+
     def test_one_that_lost_an_index_is_not_queried(self, db_path):
         with index_db.IndexDatabase(db_path) as db:
             db.execute("DROP INDEX idx_message_2")
