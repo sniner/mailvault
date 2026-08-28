@@ -52,7 +52,19 @@ def archive_path(args: argparse.Namespace) -> pathlib.Path:
     """
     if args.archive is not None:
         return args.archive
-    return pathlib.Path.cwd()
+    try:
+        return pathlib.Path.cwd()
+    except OSError as exc:
+        # Asking where one is standing is the first thing every command does,
+        # and on a share that went away it is also the first thing that fails.
+        # The interpreter answers that with `FileNotFoundError: [Errno 2] No
+        # such file or directory` and no path, which names neither the state nor
+        # anything to do about it.
+        raise jobs.JobError(
+            "the current directory is gone -- a network share that is no longer"
+            " mounted looks exactly like this. Mount it and `cd` back into it, or"
+            " name the archive with --archive"
+        ) from exc
 
 
 def config_file(args: argparse.Namespace, archive: pathlib.Path) -> pathlib.Path:
@@ -72,11 +84,23 @@ def require_archive(archive: pathlib.Path) -> None:
     archive as a total loss, and `verify --repair` set about downloading the
     mailbox a second time.
 
-    Both cases the mark cannot tell apart get named, because the answer differs:
-    an older archive is lifted, a wrong directory is left alone.
+    The cases the mark cannot tell apart get named, because the answer differs
+    in each: an older archive is lifted, a wrong directory is left alone, and a
+    path that leads nowhere at all is a share to mount rather than anything to
+    put right here.
     """
     if marker.is_archive(archive):
         return
+    # What is not there is not an archive either, but "make one here with
+    # `archive init`" is a move that leads nowhere when the directory the path
+    # names cannot be reached at all.
+    if not archive.exists():
+        raise jobs.JobError(
+            f"{archive}: no such directory -- a network share that is not mounted"
+            f" looks exactly like this. Mount it, or name an archive that is there"
+        )
+    if not archive.is_dir():
+        raise jobs.JobError(f"{archive}: not a directory -- an archive is one")
     raise jobs.JobError(
         f"{archive}: not a mailvault archive. Make one here with"
         f" `mailvault archive init`. If it is an old mailvault archive,"

@@ -17,9 +17,8 @@ from __future__ import annotations
 import logging
 import pathlib
 
-from mailvault import conf
+from mailvault import conf, utils
 from mailvault.backend import session
-from mailvault.backend.base import MailboxError
 from mailvault.jobs.common import JobError
 from mailvault.jobs.reconcile import ArchivedPlaces, ReconcileResult, reconcile_folder
 from mailvault.store import cas, heads, metalog
@@ -82,14 +81,8 @@ def verify(
                     )
                 )
             except Exception as exc:
-                # Same rule as the backup pass: a failure the server diagnosed
-                # is one line, and one nobody expected comes with the stack that
-                # is the only thing pointing at where it happened.
-                log.error(
-                    "%s::%s: verify failed: %s",
-                    job.name,
-                    folder,
-                    exc,
-                    exc_info=not isinstance(exc, MailboxError),
-                )
+                # Same rule as the backup pass: one line, whether the server
+                # diagnosed the failure or nobody expected it, and the stack
+                # that tells those two apart waits for `-v`.
+                utils.log_failure(log, exc, "%s::%s: verify failed", job.name, folder)
     return results

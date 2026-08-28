@@ -303,7 +303,10 @@ def run(args: argparse.Namespace) -> int:
             # what to make of it.
             raise
         except Exception as exc:
-            log.exception("Job '%s' failed: %s", job.name, exc)
+            # Not a job that went wrong but a bug in this program, and the two
+            # read alike here -- what tells them apart is the traceback, which
+            # `-v` still has.
+            utils.log_failure(log, exc, "Job '%s' failed", job.name)
             exit_code = 1
     return exit_code
 

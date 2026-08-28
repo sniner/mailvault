@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A run started in a directory that is no longer there says what happened.** Asking where one is
+  standing is the first thing every command does, and on a network share that has been unmounted it
+  is also the first thing that fails -- with a Python traceback ending in `FileNotFoundError:
+  [Errno 2] No such file or directory`, which names neither the directory nor the share. It now
+  reads "the current directory is gone -- a network share that is no longer mounted looks exactly
+  like this" and names the way back
+
+- **A path that leads nowhere is no longer reported as a directory waiting to become an archive.**
+  An `--archive` pointing into a share that is not mounted was answered with "not a mailvault
+  archive. Make one here with `mailvault archive init`" -- advice that cannot be followed while the
+  share is missing, and that would write an archive onto the mount point if it could be. A directory
+  that is not there is now reported as not being there, and a file named where a directory belongs
+  says that instead
+
+- **A `--log-file` that cannot be opened is refused in words, before the run starts.** The place
+  the run would report to is the one place a complaint about it cannot go, and a log file on a
+  share that is not mounted ended the run in a traceback out of the logging module. It now says
+  which file and why, on the terminal, and nothing has been done yet when it does
+
+### Changed
+
+- **A failure is one line, whatever caused it, and its traceback waits for `--verbose`.** A stack
+  trace is written for whoever wrote the program and read by whoever is backing up their mail:
+  forty lines of interpreter frames in which the one sentence saying what went wrong is the last,
+  and none of them names anything to do about it. Every failure now reads the same way -- what was
+  being done, and what happened -- and nothing is lost, because `-v` still brings the frames back.
+  A crash names `--verbose` itself, so nobody has to know that it is there
+
 ## 0.15.2 (2026-08-27)
 
 ### Fixed

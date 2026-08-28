@@ -256,15 +256,19 @@ def test_a_rollback_takes_the_interned_ids_with_it(tmp_path):
         assert row is not None and row[0] == again
 
 
-def test_a_real_failure_is_reported_once_and_with_its_stack(tmp_path, caplog):
+def test_a_real_failure_is_reported_once_and_the_stack_waits_for_verbose(tmp_path, caplog):
     db_path = tmp_path / "test.db"
-    with index_db.IndexDatabase(db_path, create=True) as db, caplog.at_level(logging.ERROR):
+    with index_db.IndexDatabase(db_path, create=True) as db, caplog.at_level(logging.DEBUG):
         with pytest.raises(ValueError):
             with db.transaction(), db.transaction():
                 raise ValueError("something nobody diagnosed")
 
-    assert caplog.text.count("Transaction failed") == 1
-    assert "ValueError: something nobody diagnosed" in caplog.text, "the stack came with it"
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "something nobody diagnosed" in errors[0].getMessage()
+    assert errors[0].exc_info is None
+    debug = [r for r in caplog.records if r.levelno == logging.DEBUG]
+    assert any(r.exc_info for r in debug), "the stack is there for -v"
 
 
 def test_index_db_v_messages_view(tmp_path):

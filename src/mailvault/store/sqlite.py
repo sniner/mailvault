@@ -17,6 +17,8 @@ import threading
 from contextlib import contextmanager
 from typing import Any
 
+from mailvault import utils
+
 log = logging.getLogger(__name__)
 
 
@@ -63,13 +65,13 @@ class DatabaseConnection:
                     self.dbconn.rollback()
                     self._rolled_back()
                 raise
-            except Exception:
-                # Once, from the outermost block, and with the stack: an inner
-                # block that re-raises would otherwise report the same failure
-                # again at every level on the way out, and for an exception
-                # nobody has diagnosed the traceback is the only clue there is.
+            except Exception as exc:
+                # Once, from the outermost block: an inner block that re-raises
+                # would otherwise report the same failure again at every level
+                # on the way out. For an exception nobody has diagnosed the
+                # traceback is the only clue there is, and `-v` keeps it.
                 if outer:
-                    log.exception("Transaction failed")
+                    utils.log_failure(log, exc, "Transaction failed")
                     self.dbconn.rollback()
                     self._rolled_back()
                 raise

@@ -26,6 +26,7 @@ from mailvault.cli.common import (
     EXPECTED_ERRORS,
     archive_path,
     config_file,
+    require_archive,
 )
 from mailvault.cli.mailbox import report_backup, report_folders, report_verify
 from mailvault.cli.mailbox import run as run_mailbox
@@ -104,7 +105,7 @@ class TestFullFlag:
 
 
 class TestJobFailureReporting:
-    """A diagnosed failure is one line; only a surprise is worth a traceback."""
+    """Every failure is one line, diagnosed or not; the traceback waits for -v."""
 
     def test_a_refused_login_is_reported_without_a_traceback(self, monkeypatch, caplog):
         _one_job(monkeypatch, base.MailboxError("login refused for 'user': no such user"))
@@ -137,14 +138,39 @@ class TestJobFailureReporting:
         debug = [r for r in caplog.records if r.levelno == logging.DEBUG]
         assert any(r.exc_info for r in debug)
 
-    def test_an_unexpected_error_keeps_its_traceback(self, monkeypatch, caplog):
+    def test_an_unexpected_error_reads_the_same_and_hides_its_traceback_too(
+        self, monkeypatch, caplog
+    ):
+        """A bug in this program is a line as well; -v is what tells it apart."""
         _one_job(monkeypatch, ValueError("something nobody thought of"))
 
-        assert run_mailbox(_args()) == 1
+        with caplog.at_level(logging.DEBUG):
+            assert run_mailbox(_args()) == 1
 
         errors = [r for r in caplog.records if r.levelno == logging.ERROR]
         assert len(errors) == 1
-        assert errors[0].exc_info is not None
+        assert "something nobody thought of" in errors[0].getMessage()
+        assert errors[0].exc_info is None
+        debug = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any(r.exc_info for r in debug)
+
+    def test_a_crash_says_where_its_traceback_went(self, monkeypatch, caplog):
+        """Nothing above caught this one, and it still reads like the others."""
+        monkeypatch.setattr(sys, "argv", ["mailvault", "archive", "check"])
+
+        def _boom(_args: argparse.Namespace) -> int:
+            raise ValueError("something nobody thought of")
+
+        monkeypatch.setattr(archive, "run", _boom)
+
+        with caplog.at_level(logging.DEBUG):
+            assert cli.main() == 1
+
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert [r.exc_info for r in errors] == [None, None]
+        assert "something nobody thought of" in errors[0].getMessage()
+        assert "--verbose" in errors[1].getMessage()
+        assert any(r.exc_info for r in caplog.records if r.levelno == logging.DEBUG)
 
     def test_the_remaining_jobs_still_run(self, monkeypatch, caplog):
         config = conf.Config(jobs=[conf.JobConfig(name="broken"), conf.JobConfig(name="fine")])
@@ -213,6 +239,60 @@ class TestArchiveAndConfig:
         args = _args(command="folders", archive=None, config=pathlib.Path("/home/jd/p.toml"))
 
         assert run_mailbox(args) == 0
+
+
+class TestAPathThatLeadsNowhere:
+    """The share is not mounted -- the commonest way for any of this to fail.
+
+    A directory that is simply not there reads as a broken program to everybody
+    who has not just this moment remembered the mount, so every message here
+    names it.
+    """
+
+    def test_a_run_from_a_directory_that_is_gone_says_so(self, tmp_path, monkeypatch, caplog):
+        """Asking where one is standing fails before a command has done anything."""
+        workdir = tmp_path / "archive-on-the-nas"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+        workdir.rmdir()
+        monkeypatch.setattr(sys, "argv", ["mailvault", "backup"])
+
+        with caplog.at_level(logging.DEBUG):
+            assert cli.main() == 1
+
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(errors) == 1
+        assert "current directory is gone" in errors[0].getMessage()
+        assert "--archive" in errors[0].getMessage()
+        assert errors[0].exc_info is None
+
+    def test_a_log_file_that_cannot_be_opened_is_reported_without_one(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The report about the log file is the one that cannot go into it."""
+        logfile = tmp_path / "nas" / "mailvault.log"
+        monkeypatch.setattr(sys, "argv", ["mailvault", "--log-file", str(logfile), "backup"])
+
+        assert cli.main() == 1
+
+        said = capsys.readouterr().err
+        assert str(logfile) in said
+        assert "--log-file" in said
+        assert "Traceback" not in said
+
+    def test_an_archive_that_is_not_there_is_not_one_to_make_here(self, tmp_path):
+        """`archive init` leads nowhere when the path itself cannot be reached."""
+        gone = tmp_path / "nas" / "mail-archive"
+
+        with pytest.raises(jobs.JobError, match="no such directory"):
+            require_archive(gone)
+
+    def test_a_file_is_not_an_archive_either(self, tmp_path):
+        named = tmp_path / "mailvault.toml"
+        named.touch()
+
+        with pytest.raises(jobs.JobError, match="not a directory"):
+            require_archive(named)
 
 
 class TestMailboxGuard:

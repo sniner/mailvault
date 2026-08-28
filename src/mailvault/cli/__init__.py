@@ -16,6 +16,7 @@ import os
 import pathlib
 import sys
 
+from mailvault import utils
 from mailvault.cli import archive, common, mailbox, message, query
 
 log = logging.getLogger(__name__)
@@ -31,10 +32,16 @@ def get_version() -> str:
 
 def setup_logger(loglevel: int = logging.INFO, logfile: pathlib.Path | None = None) -> None:
     logger_format = "%(asctime)s %(levelname)s -- %(message)s"
+    # The file is opened here rather than left to `basicConfig`, which opens it
+    # too but only when nothing else has configured logging yet. Whoever asked
+    # for a log file finds out that it cannot be written before the run starts,
+    # not once there is something to write.
+    handler: logging.Handler
     if logfile:
-        logging.basicConfig(filename=logfile, level=loglevel, format=logger_format)
+        handler = logging.FileHandler(logfile)
     else:
-        logging.basicConfig(stream=sys.stderr, level=loglevel, format=logger_format)
+        handler = logging.StreamHandler(sys.stderr)
+    logging.basicConfig(level=loglevel, format=logger_format, handlers=[handler])
 
     # Third-party libraries that are excessively verbose at INFO/DEBUG level.
     # Only suppress when not explicitly asked for verbose output.
@@ -527,21 +534,36 @@ def main() -> int:
         loglevel = logging.WARNING
     else:
         loglevel = logging.INFO
-    setup_logger(loglevel=loglevel, logfile=args.log_file)
+    try:
+        setup_logger(loglevel=loglevel, logfile=args.log_file)
+    except OSError as exc:
+        # The one failure with nowhere to be reported: the place a report would
+        # go is what is refusing. It goes to stderr the way every other line of
+        # the run does, and the run does not start.
+        print(
+            f"{args.log_file}: cannot be written to -- {exc.strerror or exc}. Name a log"
+            f" file that can be, or leave --log-file off and read the run on the terminal",
+            file=sys.stderr,
+        )
+        return 1
 
-    # The archive is named once, here, and nowhere else. Every line after this
-    # is about it, and repeating the path on each of them buries the statement
-    # behind it -- over a network share the prefix is routinely longer than what
-    # it prefixes. `folders` is the one command that works on no archive at all.
-    #
-    # On a line of its own, and labelled the way the run labels its other
-    # subject: `Archive:` reads beside `Job:` a moment later, where an appendix
-    # hung on the end of START read as an aside to the word START.
     log.info("START")
-    if args.command != "folders":
-        log.info("Archive: %s", common.archive_path(args))
     exit_code = 0
     try:
+        # The archive is named once, here, and nowhere else. Every line after
+        # this is about it, and repeating the path on each of them buries the
+        # statement behind it -- over a network share the prefix is routinely
+        # longer than what it prefixes. `folders` is the one command that works
+        # on no archive at all.
+        #
+        # On a line of its own, and labelled the way the run labels its other
+        # subject: `Archive:` reads beside `Job:` a moment later, where an
+        # appendix hung on the end of START read as an aside to the word START.
+        #
+        # Inside the block, because naming the archive is already work that can
+        # fail: there may be no directory left to ask about.
+        if args.command != "folders":
+            log.info("Archive: %s", common.archive_path(args))
         if args.command in {"folders", "backup", "verify"}:
             exit_code = mailbox.run(args)
         elif args.command == "get":
@@ -572,7 +594,14 @@ def main() -> int:
         log.debug("failed", exc_info=exc)
         exit_code = 1
     except Exception as exc:
-        log.exception("Fatal error: %s", exc)
+        # Everything that was thought of is caught above, so this is a bug in
+        # this program -- and the interpreter's forty frames say nothing to the
+        # person who typed the command that the last line of them does not. They
+        # are the only thing that points at where it happened, though, so the
+        # message says where they went.
+        utils.log_failure(log, exc, "Fatal error")
+        if not args.verbose:
+            log.error("Run it again with --verbose to get the traceback behind this")
         exit_code = 1
     finally:
         log.info("FINISHED")

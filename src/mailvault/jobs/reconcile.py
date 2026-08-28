@@ -307,7 +307,7 @@ def reconcile_folder(
                 log_writer.add(job_name, fetched.places, store_id)
                 recorded.add(store_id)
         except Exception as exc:
-            log.exception("%s: storing %s failed: %s", ctx, label, exc)
+            utils.log_failure(log, exc, "%s: storing %s failed", ctx, label)
             result.failed += 1
             continue
         if claim is Claim.ABSENT:

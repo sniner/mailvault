@@ -382,12 +382,13 @@ class ImapClient:
                         continue
                     yield msg_id, base.Fetched(body, self._places_from(msg_data, folder_name))
             except (OSError, imaplib.IMAP4.error) as exc:
-                log.exception(
-                    "%s::%s[%s]: fetch failed: %s",
+                utils.log_failure(
+                    log,
+                    exc,
+                    "%s::%s[%s]: fetch failed",
                     self.job_name,
                     folder_name,
                     msg_id,
-                    exc,
                 )
                 if result is not None:
                     # fetch() returns the whole chunk at once, so nothing of it

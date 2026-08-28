@@ -13,7 +13,7 @@ import logging
 from datetime import datetime
 from typing import Any, Protocol
 
-from mailvault import mailutils
+from mailvault import mailutils, utils
 from mailvault.store import cas
 
 log = logging.getLogger(__name__)
@@ -290,7 +290,7 @@ def store_message(
         except Exception as exc:
             # Same reasoning: the message is archived but its location was not
             # written down, so a rerun -- never a deletion -- is what fixes it.
-            log.exception("%s: recording the metadata failed: %s", log_ctx, exc)
+            utils.log_failure(log, exc, "%s: recording the metadata failed", log_ctx)
             result.failed += 1
             return None
     result.stored += 1
