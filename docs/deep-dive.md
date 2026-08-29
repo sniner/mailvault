@@ -649,7 +649,15 @@ knows and the program does not -- and `TMPDIR` is memory on some systems, which
 is not a place to put a database nobody asked to put there. On a local archive
 the detour buys nothing and costs a copy, so without the option the database is
 built beside its target as before. Either way the last step is the same atomic
-rename, and an existing database survives every failure before it.
+rename.
+
+What differs is the database being replaced. Built beside its target it goes
+before the build starts, so an interrupted `--force` leaves no query database at
+all rather than yesterday's file under today's name -- keeping it until the end
+would mean removing it at the end, and the failure that matters here, a share
+that goes away mid-build, is the one that never reaches the end. Built under
+`--temp-dir` it is kept, because nothing touches the archive until there is a
+finished database to copy in.
 
 **A message with an unreadable Date header matches neither `--since` nor
 `--until`.** Its date is unknown, not old.

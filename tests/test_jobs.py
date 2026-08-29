@@ -1496,7 +1496,15 @@ class TestWhereTheDatabaseIsBuilt:
         assert list(elsewhere.iterdir()) == [], "the workspace is removed"
         assert not (archive / "index.db._tmp_").exists()
 
-    def test_a_failed_build_leaves_the_previous_database_alone(self, tmp_path, monkeypatch):
+    def test_a_failed_build_elsewhere_leaves_the_previous_database_alone(
+        self, tmp_path, monkeypatch
+    ):
+        """The exception to `--force` taking the old database out first.
+
+        A build under `--temp-dir` does not touch the archive until it has a
+        finished database to copy in, so a failure never gets that far and there
+        is no window in which the old file could be mistaken for the new one.
+        """
         archive = self._archive(tmp_path)
         elsewhere = tmp_path / "fast"
         elsewhere.mkdir()
@@ -1637,18 +1645,44 @@ class TestRebuildWithLog:
         with index_db.IndexDatabase(target) as db:
             assert "stale" not in db.store_id_map()
 
-    def test_an_interrupted_build_leaves_the_previous_database_alone(self, tmp_path):
+    def test_an_interrupted_build_leaves_no_database_at_all(self, tmp_path):
+        """What a stopped rebuild leaves is nothing, and nothing is readable as such.
+
+        Anything else leaves the database that was being replaced standing under
+        the name of the one that was being made, where it is indistinguishable
+        from a build that finished and is read as current by everything after.
+        """
         _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
         target = tmp_path / "out.db"
         jobs.create_db(tmp_path, target)
-        before = target.read_bytes()
 
         with patch("mailvault.jobs.db._record_heads", side_effect=KeyboardInterrupt):
             with pytest.raises(KeyboardInterrupt):
                 jobs.create_db(tmp_path, target, force=True)
 
-        assert target.read_bytes() == before
+        assert not target.exists()
         assert not (tmp_path / "out.db._tmp_").exists()
+
+    def test_the_replaced_database_goes_before_the_build_starts(self, tmp_path, monkeypatch):
+        """Before, not after: a build over a share may never reach its own end.
+
+        The one failure this matters for is the one that stops the run partway,
+        so a database taken out at the end is taken out exactly when the run does
+        not get there.
+        """
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+        target = tmp_path / "out.db"
+        jobs.create_db(tmp_path, target)
+        during: list[bool] = []
+
+        def build(_store, _store_path, path, _result):
+            during.append(target.exists())
+            path.touch()
+
+        monkeypatch.setattr(db_module, "_build_db", build)
+        jobs.create_db(tmp_path, target, force=True)
+
+        assert during == [False], "gone while the new one is built"
 
     def test_a_message_no_log_names_is_not_in_the_projection(self, tmp_path):
         """The archive is the mail and the log together, and this is only the mail.

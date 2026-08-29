@@ -446,12 +446,28 @@ def _building(
     program does not spring.
 
     The copy lands beside the target under the transient name and is renamed from
-    there, so the last step is the same atomic rename either way and an existing
-    database survives every failure before it.
+    there, so the last step is the same atomic rename either way.
+
+    What differs is the database already there. Built beside it, it is deleted
+    before the build starts and the archive is without one until the new file is
+    renamed in -- because keeping it until the end means deleting it at the end,
+    and the failure this whole discipline exists for, a share that goes away
+    mid-build, never reaches the end. What such a run leaves behind is the old
+    database under the name of the new one, with nothing about it saying so.
+
+    Under `temp_dir` it is kept, because nothing here touches the archive until
+    the finished database is copied in: a build that fails never reaches it, and
+    a caller who named another place to build in chose that.
     """
     if temp_dir is None:
         tmp_path = db_path.with_name(db_path.name + "._tmp_")
         tmp_path.unlink(missing_ok=True)
+        if db_path.exists():
+            # Said, because it is the one thing this does to the archive before
+            # the long part starts, and a run that does not survive the long part
+            # is read afterwards for what it left behind.
+            log.info("%s: taken out, there is none until this build finishes", db_path.name)
+        db_path.unlink(missing_ok=True)
         try:
             yield tmp_path
         except BaseException:
@@ -511,9 +527,11 @@ def create_db(
     a header is read would never reach them.
 
     Built through a temporary file and renamed into place at the end, the same
-    discipline the archive uses. An interrupted run leaves no half-built database
-    where a whole one is expected, and the previous one survives it. `temp_dir`
-    says where to build it; see `_building` for the one case that is worth it.
+    discipline the archive uses, so an interrupted run leaves no half-built
+    database where a whole one is expected. What it leaves instead is nothing:
+    the database being replaced goes before the build starts, so a run that
+    fails cannot leave yesterday's file standing under today's name. `temp_dir`
+    builds elsewhere and is the exception -- see `_building` for both.
     """
     if db_path.exists() and not force:
         raise JobError(f"{db_path}: already exists, use --force to replace it")
@@ -637,7 +655,6 @@ def refresh_db(store_path: pathlib.Path, db_path: pathlib.Path) -> RefreshResult
             utils.under(store_path, db_path),
             exc,
         )
-        db_path.unlink(missing_ok=True)
         result.rebuilt = True
         result.messages = create_db(store_path, db_path, force=True).messages
     return result

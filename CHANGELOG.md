@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **An interrupted `db create --force` no longer leaves the old database standing under the new
+  one's name.** The database being replaced was kept until the new one was finished and swapped in
+  -- so a build that never finishes never swaps, and what stays behind is yesterday's file under
+  today's name, indistinguishable from a build that worked. Nothing afterwards said otherwise:
+  `db update` read it, found it complete and current, and answered "already up to date". The one
+  failure this matters for is the one that stops the run partway -- an archive on a share that goes
+  away mid-build -- and that is exactly the run that never reaches the step where the old file
+  would have gone. It is now taken out before the build starts, so an interrupted `--force` leaves
+  no query database at all, which is a state every command reports for what it is. `--temp-dir` is
+  the exception and keeps it, because a build somewhere else does not touch the archive until it
+  has a finished database to copy in
+
 ## 0.15.3 (2026-08-28)
 
 ### Fixed

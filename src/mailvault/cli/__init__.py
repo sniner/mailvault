@@ -441,7 +441,13 @@ def build_db_parser(sub: argparse._SubParsersAction) -> None:
     d_create.add_argument(
         "--force",
         action="store_true",
-        help="Build it again from scratch even if there is one, replacing it",
+        help=(
+            "Build it again from scratch even if there is one. The one being"
+            " replaced goes first, so the archive has no query database until the"
+            " new one is finished, and a build that is interrupted leaves none"
+            " rather than the old one under the new one's name. With --temp-dir"
+            " it is kept until the finished database is copied in"
+        ),
     )
     d_create.add_argument(
         "--temp-dir",
