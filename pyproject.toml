@@ -67,6 +67,11 @@ per-file-ignores = { "__init__.py" = ["F401"] }
 [project.scripts]
 mailvault = "mailvault.cli:main"
 
+[project.optional-dependencies]
+mcp = [
+    "mcp>=2.0.0,<3",
+]
+
 #[[tool.uv.index]]
 #name = "pypi"
 #url = "https://pypi.org/simple"

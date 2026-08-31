@@ -65,9 +65,11 @@ jobs:
         uses: astral-sh/setup-uv@v9.0.0
 
       - name: Create virtual environment and install dependencies
+        # The exe carries the optional MCP server: its users cannot install an
+        # extra after the fact, so the choice is made here.
         run: |
           uv venv
-          uv pip install . pyinstaller
+          uv pip install ".[mcp]" pyinstaller
 
       - name: Build EXE with PyInstaller
         run: |

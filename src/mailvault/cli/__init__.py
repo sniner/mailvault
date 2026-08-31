@@ -17,7 +17,7 @@ import pathlib
 import sys
 
 from mailvault import utils
-from mailvault.cli import archive, common, mailbox, message, query
+from mailvault.cli import archive, common, mailbox, mcp, message, query
 
 log = logging.getLogger(__name__)
 
@@ -398,7 +398,49 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     build_db_parser(sub)
+    build_mcp_parser(sub)
     return parser
+
+
+def build_mcp_parser(sub: argparse._SubParsersAction) -> None:
+    """The `mcp` command: the query layer, served to an AI client.
+
+    Top-level like `db`, whose database it answers from: serving the archive is
+    using it, not maintaining it. The two options live here and not on
+    `mailvault` itself because both are statements about this one command --
+    nothing else listens anywhere.
+    """
+    p_mcp = sub.add_parser(
+        "mcp",
+        help="Serve the archive to an AI client (Model Context Protocol)",
+        description=(
+            "Serve the archive to an AI client over the Model Context Protocol:"
+            " search the mail, read a message as text, fetch an attachment, list"
+            " the places to search in. Read-only -- nothing a client can say here"
+            " changes the archive or reaches a mailbox. Searches are answered"
+            f" from {common.DEFAULT_DB_NAME}, so the server refuses to start"
+            " without one; `mailvault db create` builds it. Without --listen the"
+            " server speaks over stdin/stdout, which is how a desktop AI client"
+            " starts it; --listen serves HTTP on the named address instead."
+        ),
+    )
+    p_mcp.add_argument(
+        "--listen",
+        metavar="HOST:PORT",
+        help=(
+            "Serve HTTP on this address instead of speaking over stdin/stdout,"
+            " e.g. 127.0.0.1:56789"
+        ),
+    )
+    p_mcp.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help=(
+            "Let --listen name an address other machines can reach; without this"
+            " that is refused, because the server itself asks for no"
+            " authentication"
+        ),
+    )
 
 
 def build_db_parser(sub: argparse._SubParsersAction) -> None:
@@ -578,6 +620,8 @@ def main() -> int:
             exit_code = archive.run(args)
         elif args.command == "db":
             exit_code = query.run(args)
+        elif args.command == "mcp":
+            exit_code = mcp.run(args)
         # A report the size of a screen never leaves the buffer on its own, and a
         # buffer emptied after `main` has returned is emptied where nothing can
         # answer for it. Here it is still this run's business.

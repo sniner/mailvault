@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`mailvault mcp` serves the archive to an AI client over the Model Context Protocol.** Four
+  tools, all read-only: `search` with the filters `db search` takes, `get_message` for one message
+  as text -- headers, body, attachments listed with index, name, type and size, never inlined --
+  `get_attachment` for one of those attachments as the binary it is, and `places` for the names
+  the search filters match against. A search says in its result when the query database is behind
+  the archive, so mail archived since cannot go missing quietly. Nothing a client can say changes
+  the archive or reaches a mailbox. The server answers searches from `index.db` and refuses to
+  start without one, naming `db create` as the move. By default it speaks over stdin/stdout, which
+  is how a desktop AI client starts it; `--listen HOST:PORT` serves streamable HTTP instead. The
+  server asks for no authentication, so a non-loopback address is refused unless `--allow-remote`
+  says something in front of it guards it. It lives behind the extra `mailvault[mcp]`, because it
+  carries a protocol stack most installations never start; the Windows `mailvault.exe` has it
+  built in
+
 ## 0.15.4 (2026-08-29)
 
 ### Fixed

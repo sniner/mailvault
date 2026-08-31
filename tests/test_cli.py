@@ -30,9 +30,9 @@ from mailvault.cli.common import (
 )
 from mailvault.cli.mailbox import report_backup, report_folders, report_verify
 from mailvault.cli.mailbox import run as run_mailbox
-from mailvault.cli.message import _entry_path
 from mailvault.cli.message import run as run_get
 from mailvault.cli.query import run as run_db
+from mailvault.jobs.retrieval import entry_path
 from mailvault.store import cas, heads, marker, metalog
 from tests.tamper import tamper
 
@@ -620,12 +620,12 @@ class TestGet:
         deep = cas.ContentAddressedStorage(tmp_path / "mail", suffix=".eml", depth=4)
 
         with pytest.raises(jobs.JobError, match="at least its first 10"):
-            _entry_path(deep, "a" * 6)
+            entry_path(deep, "a" * 6)
 
         shallow = cas.mail_store(tmp_path)
         assert shallow.depth == 2, "the store every command actually opens"
         with pytest.raises(jobs.JobError, match="at least its first 6"):
-            _entry_path(shallow, "a" * 5)
+            entry_path(shallow, "a" * 5)
 
     def test_path_says_where_the_message_lies_and_writes_nothing(self, tmp_path, capsys):
         store_id, path = self._archive(tmp_path)

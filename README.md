@@ -333,6 +333,28 @@ That file belongs to the archive: it is write-protected, and compressed where th
 archive is. So `--path` says where a message is; handing one over ready to read
 is what `get` does without it.
 
+## Serving the archive to an AI client
+
+`mailvault mcp` serves the archive to an AI client over the Model Context
+Protocol: search the mail, read a message as text, fetch an attachment, list
+the places to search in. Read-only -- nothing a client can say changes the
+archive or reaches a mailbox -- and answered from [the query
+database](#the-optional-query-database), so the server refuses to start until
+`db create` has built one. It sits behind an extra, because it carries a
+protocol stack most installations never start:
+
+```console
+$ uv tool install 'mailvault[mcp]'
+$ mailvault --archive /srv/archive/private mcp
+```
+
+That second line is what goes into the AI client's configuration: without
+options the server speaks over stdin/stdout, which is how a desktop client
+starts it. What to put into which client, `--listen` for serving HTTP instead,
+and what the tools answer is one page of its own: [The MCP
+server](https://github.com/sniner/mailvault/blob/main/docs/mcp.md).
+
+
 ## Working on the archive
 
 `mailvault archive` is the group of commands that work on the archive itself,
@@ -418,6 +440,11 @@ each want in `mailvault.toml`, and what each of them does that the others do not
 [Use cases](https://github.com/sniner/mailvault/blob/main/docs/usecases.md) is
 the other practical one: whole recipes for situations that take more than one
 option -- rolling old mail off a mailbox that is filling up, to begin with.
+
+[The MCP server](https://github.com/sniner/mailvault/blob/main/docs/mcp.md) is
+the page for connecting an AI client: which line goes into which client's
+configuration, serving HTTP and what `--allow-remote` is for, and what the
+four tools answer.
 
 The [deep dive](https://github.com/sniner/mailvault/blob/main/docs/deep-dive.md)
 has what is deliberately left out above:

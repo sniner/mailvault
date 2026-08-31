@@ -20,7 +20,7 @@ jobs:
           enable-cache: true
 
       - name: Sync dependencies
-        run: uv sync
+        run: uv sync --all-extras
 
       - name: Ruff lint
         run: uv run ruff check .
@@ -41,7 +41,7 @@ jobs:
           enable-cache: true
 
       - name: Sync dependencies
-        run: uv sync
+        run: uv sync --all-extras
 
       - name: Type check (basedpyright)
         run: uv run basedpyright
@@ -63,7 +63,7 @@ jobs:
           enable-cache: true
 
       - name: Sync dependencies
-        run: uv sync
+        run: uv sync --all-extras
 
       - name: Run tests
         run: uv run pytest
@@ -85,7 +85,7 @@ jobs:
           enable-cache: true
 
       - name: Sync dependencies
-        run: uv sync
+        run: uv sync --all-extras
 
       - name: Run integration tests
         run: uv run pytest -m integration
