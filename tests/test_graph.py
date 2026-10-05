@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from mailvault.backend import base, graph
+from mailvault.store import cas
 
 # Every URL these tests hand to the client has to be one it may carry the
 # access token to -- the client refuses anything else, and so does Graph.
@@ -150,8 +151,20 @@ class TestRequestRetry:
         assert h.request.call_count == 2
 
     def test_transport_error_propagates_after_last_attempt(self, monkeypatch):
-        h = _make_client(monkeypatch, [httpx.ConnectTimeout("timed out")] * 4, max_retries=2)
-        with pytest.raises(httpx.ConnectTimeout):
+        # A read that broke off can be down to the one message, so it is not
+        # taken for the network.
+        h = _make_client(monkeypatch, [httpx.ReadTimeout("timed out")] * 4, max_retries=2)
+        with pytest.raises(httpx.ReadTimeout):
+            h.client._request("GET", f"{GRAPH}/msg")
+        assert h.request.call_count == 3
+
+    @pytest.mark.parametrize(
+        "failure",
+        [httpx.ConnectError("no route to host"), httpx.ConnectTimeout("timed out")],
+    )
+    def test_an_unreachable_server_is_a_lost_connection(self, monkeypatch, failure):
+        h = _make_client(monkeypatch, [failure] * 4, max_retries=2)
+        with pytest.raises(base.ConnectionLost):
             h.client._request("GET", f"{GRAPH}/msg")
         assert h.request.call_count == 3
 
@@ -650,3 +663,61 @@ class TestPurge:
         harness.client.purge("INBOX", ["m1", "m2"])  # must not raise
 
         assert harness.request.call_count == 2
+
+    def test_a_lost_connection_ends_the_purge(self, monkeypatch):
+        # Each further delete would wait out the retries before it failed too.
+        harness = self._client(
+            monkeypatch,
+            [httpx.ConnectError("no route to host")] * 3,
+            permanent=True,
+        )
+        harness.client.max_retries = 0
+
+        with pytest.raises(base.ConnectionLost):
+            harness.client.purge("INBOX", ["m1", "m2", "m3"])
+
+        assert harness.request.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# A lost connection during a pass
+# ---------------------------------------------------------------------------
+
+
+class TestALostConnection:
+    """Graph out of reach ends the folder, where each message used to fail in turn.
+
+    Every request waits out its retries before it gives up, at least a minute.
+    Failing message by message, a folder with thousands still to fetch ran for
+    days with the network gone.
+    """
+
+    def test_the_folder_stops_at_the_first_message(self, monkeypatch, tmp_path, caplog):
+        harness = _make_client(monkeypatch, [])
+        client = harness.client
+        client._user = "user@example.org"
+        client.job_name = "m365"
+        client._folder_map = {"INBOX": "folder-id"}
+        client.exchange_journal = False
+        client.delete_after_export = False
+        client.error_folder = None
+        messages = [{"id": f"m{i}"} for i in range(1, 6)]
+        monkeypatch.setattr(client, "_delta_round", lambda *_args: (messages, None))
+        download = MagicMock(
+            side_effect=[
+                b"Subject: one\r\n\r\nbody\r\n",
+                base.ConnectionLost("connection to the server lost"),
+            ]
+        )
+        monkeypatch.setattr(client, "_download_mime", download)
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+
+        with caplog.at_level(logging.ERROR):
+            result = client.folder_backup("INBOX", store)
+
+        assert download.call_count == 2
+        assert result.stored == 1
+        assert result.failed == 4
+        assert not result.complete
+        assert "4 messages not fetched" in caplog.text
+        assert "download failed" not in caplog.text

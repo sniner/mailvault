@@ -22,6 +22,10 @@
   reported every remaining batch of ten as failed, each with an error line of its own, and a
   catch-up every remaining message. It now stops the folder at the first failure and says how many
   messages were not fetched; the next run fetches them
+- **A Microsoft 365 backup that loses the network stops instead of running on for days.** Each
+  remaining message was retried with growing pauses before it counted as failed, at least a minute
+  per message. When Microsoft 365 cannot be reached at all, the folder now stops at the first such
+  message and says how many were not fetched; the next run fetches them
 
 ## 0.16.0 (2026-08-31)
 

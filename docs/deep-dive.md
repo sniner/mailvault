@@ -189,7 +189,10 @@ over several this way, each continuing from what the previous one stored.
 Two kinds of job cannot be compared by listing: `delete_after_export` and
 `exchange_journal`. An interrupted pass over one of them is read in full again
 on the next run; the messages already in the archive are recognised and not
-stored twice.
+stored twice. Every run starts again at the beginning of the folder, so the
+first backup of such a job completes only if one run gets through the whole
+folder. A folder too large for one run, because of a provider's daily download
+limit or a connection that does not last, never completes.
 
 ### Deleting from the server after export
 

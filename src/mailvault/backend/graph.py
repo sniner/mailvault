@@ -32,6 +32,11 @@ GRAPH_HOST = urllib.parse.urlsplit(GRAPH_BASE_URL).hostname or ""
 RETRY_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 RETRY_BASE_DELAY = 2.0
 RETRY_MAX_DELAY = 60.0
+# The retries ending on one of these mean Graph cannot be reached at all, and the
+# next request fails the same way after the same wait. A read that broke off is
+# not in here: it can be down to one message, and taking it for the network would
+# stop every run at that message.
+_UNREACHABLE = (httpx.ConnectError, httpx.ConnectTimeout)
 
 # Page size for the lightweight message index (no message bodies involved).
 INDEX_PAGE_SIZE = 500
@@ -318,6 +323,10 @@ class MSGraphClient:
                         utils.counted(attempt + 1, "attempt"),
                         exc,
                     )
+                    if isinstance(exc, _UNREACHABLE):
+                        raise base.ConnectionLost(
+                            f"connection to the server lost: {exc}"
+                        ) from exc
                     raise
                 delay = _backoff_delay(attempt)
                 attempt += 1
@@ -659,6 +668,20 @@ class MSGraphClient:
             log_ctx = f"{self.job_name}::{folder_name}[{idx}]"
             try:
                 msg = self._download_mime(msg_id)
+            except base.ConnectionLost as exc:
+                not_fetched = len(messages) - idx + 1
+                utils.log_failure(
+                    log,
+                    exc,
+                    "%s::%s: %s not fetched",
+                    self.job_name,
+                    folder_name,
+                    utils.counted(not_fetched, "message"),
+                )
+                result.failed += not_fetched
+                # No move to the error folder either: it would wait out the
+                # same retries and fail.
+                return result
             except Exception as exc:
                 log.error("%s: download failed: %s", log_ctx, exc)
                 result.failed += 1
@@ -778,6 +801,10 @@ class MSGraphClient:
         for msg_id in msg_ids:
             try:
                 self._graph_delete(msg_id)
+            except base.ConnectionLost:
+                # Every further delete would wait out the retries and fail too,
+                # each with an error line of its own. The caller reports it once.
+                raise
             except Exception as exc:
                 log.error(
                     "%s::%s[%s]: delete failed: %s",
