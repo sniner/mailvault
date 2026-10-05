@@ -334,10 +334,21 @@ def _backup_folder(
             folder,
         )
         report.retried.append(folder)
+    # Purged before the point is written. The next run asks only for what lies
+    # past it, so a point moved past messages that could not be deleted would
+    # leave them on the server for good.
+    purged = _purge_after_seal(mb, job, folder, result, sealed, report)
+    if not purged and resume is not None:
+        log.warning(
+            "%s::%s: not all deleted, resume point not advanced",
+            job.name,
+            folder,
+        )
+        report.retried.append(folder)
+        resume = None
     # Written whatever the outcome: the folder *was* read, and that is all
     # `last_run` claims. Only `resume` is held back when the pass fell short.
     _record_pass(heads_root, job.name, folder, observed_at, resume, void_previous=void)
-    _purge_after_seal(mb, job, folder, result, sealed, report)
     return recorded
 
 
@@ -500,8 +511,11 @@ def _purge_after_seal(
     result: base.BackupResult,
     sealed: bool,
     report: BackupReport,
-) -> None:
+) -> bool:
     """Delete the archived messages from the server, but only once the log is on disk.
+
+    Returns whether nothing is left to delete. False holds the resume point back,
+    so that the next run reads the messages again and deletes them then.
 
     This is the ordering the archive depends on when it deletes after export: a
     message's location reaches the log and is fsync'd *before* the message is
@@ -518,7 +532,7 @@ def _purge_after_seal(
     holds.
     """
     if not job.delete_after_export or not result.deletable:
-        return
+        return True
     if not sealed:
         log.error(
             "%s::%s: metadata log not sealed, %s left on the server",
@@ -526,15 +540,16 @@ def _purge_after_seal(
             folder,
             utils.counted(len(result.deletable), "message"),
         )
-        return
+        return False
     try:
         mb.purge(folder, result.deletable)
     except Exception as exc:
-        # The log is already durable, so a failed purge costs nothing but server
-        # space: the messages stay and are deleted on the next clean run.
+        # The log is already durable, so a failed purge costs a download: the
+        # messages stay, the next run fetches them again and deletes them.
         log.error("%s::%s: purge failed: %s", job.name, folder, exc)
-        return
+        return False
     report.deleted += len(result.deletable)
+    return True
 
 
 def backup(

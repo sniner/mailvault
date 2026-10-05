@@ -797,7 +797,12 @@ class MSGraphClient:
         the message stays and is re-fetched (and deduplicated) next run -- which
         is also what happens if `permanent_delete` is not available, so the
         failure direction is "still there", never "gone unarchived".
+
+        Raises `MailboxError` once the rest is done if any deletion failed, so
+        that the caller holds the resume point back. Past it, the next run would
+        not offer those messages again.
         """
+        not_deleted = 0
         for msg_id in msg_ids:
             try:
                 self._graph_delete(msg_id)
@@ -813,3 +818,8 @@ class MSGraphClient:
                     msg_id,
                     exc,
                 )
+                not_deleted += 1
+        if not_deleted:
+            raise base.MailboxError(
+                f"{not_deleted} of {utils.counted(len(msg_ids), 'message')} not deleted"
+            )

@@ -42,6 +42,7 @@ Body.
 # snapshot is then taken from -- so a BackupResult without it means "nothing was
 # archived", not "a message with no date".
 ARCHIVED_AT = datetime(2026, 2, 20, 11, 0, tzinfo=UTC)
+LATER = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
 
 
 # A resume point as a backend would hand one back. Its shape is the backend's
@@ -1030,7 +1031,7 @@ class TestDeleteAfterExport:
     """Deletion is gated on a durable log: purge runs only after a good seal."""
 
     @staticmethod
-    def _backup_with_deletable(*store_ids: str, deletable: list):
+    def _backup_with_deletable(*store_ids: str, deletable: list, earned: dict | None = None):
         """A folder_backup stand-in that records the messages and reports which
         server ids may be deleted once the log is sealed."""
 
@@ -1048,16 +1049,17 @@ class TestDeleteAfterExport:
                 total=len(store_ids),
                 stored=len(store_ids),
                 deletable=list(deletable),
+                resume=earned,
             )
 
         return run
 
     @staticmethod
-    def _run(job, mock_client, tmp_path) -> None:
+    def _run(job, mock_client, tmp_path) -> jobs.BackupReport:
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
-            jobs.backup(job, tmp_path)
+            return jobs.backup(job, tmp_path)
 
     def test_purges_after_a_successful_seal(self, tmp_path):
         job = _make_job(folders=["INBOX"], delete_after_export=True)
@@ -1099,6 +1101,42 @@ class TestDeleteAfterExport:
 
         # A message must never leave the server when its location was not written.
         mock_client.purge.assert_not_called()
+
+    def test_a_purge_that_went_through_moves_the_resume_point(self, tmp_path):
+        job = _make_job(folders=["INBOX"], delete_after_export=True)
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = self._backup_with_deletable(
+            "aaa",
+            deletable=[1, 2],
+            earned=_token(LATER),
+        )
+
+        report = self._run(job, mock_client, tmp_path)
+
+        assert _resume_date(tmp_path) == LATER
+        assert report.complete
+
+    def test_a_failed_purge_holds_the_resume_point_back(self, tmp_path):
+        """The next run asks only for what lies past the point.
+
+        Moved past them, the messages that could not be deleted are never offered
+        again and stay on the server for good.
+        """
+        _seed_resume(tmp_path, ARCHIVED_AT)
+        job = _make_job(folders=["INBOX"], delete_after_export=True)
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = self._backup_with_deletable(
+            "aaa",
+            deletable=[1, 2],
+            earned=_token(LATER),
+        )
+        mock_client.purge.side_effect = base.MailboxError("not allowed to delete")
+
+        report = self._run(job, mock_client, tmp_path)
+
+        assert _resume_date(tmp_path) == ARCHIVED_AT
+        assert report.retried == ["INBOX"]
+        assert report.deleted == 0
 
     def test_the_trash_is_emptied_after_the_last_purge(self, tmp_path):
         # The ordering the README's "getting mail out of a mailbox that is

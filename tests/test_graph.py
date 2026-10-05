@@ -656,11 +656,16 @@ class TestPurge:
         ]
 
     def test_a_failure_leaves_the_message_in_place(self, monkeypatch):
-        """The safe direction: still there, never gone unarchived."""
+        """The safe direction: still there, never gone unarchived.
+
+        The rest is deleted all the same, and the failure is raised at the end, so
+        that the resume point stays before the message that is still there.
+        """
         harness = self._client(monkeypatch, [_resp(404), _resp(204)], permanent=True)
         harness.client.max_retries = 0
 
-        harness.client.purge("INBOX", ["m1", "m2"])  # must not raise
+        with pytest.raises(base.MailboxError, match="1 of 2 messages not deleted"):
+            harness.client.purge("INBOX", ["m1", "m2"])
 
         assert harness.request.call_count == 2
 

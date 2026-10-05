@@ -26,6 +26,10 @@
   remaining message was retried with growing pauses before it counted as failed, at least a minute
   per message. When Microsoft 365 cannot be reached at all, the folder now stops at the first such
   message and says how many were not fetched; the next run fetches them
+- **With `delete_after_export`, a message that could not be deleted is deleted on the next run.**
+  The next run did not ask for it again, so it stayed on the server until a `backup --full`. Such
+  a folder is now reported as not finished, and the next run fetches the messages again and
+  deletes them
 
 ## 0.16.0 (2026-08-31)
 
