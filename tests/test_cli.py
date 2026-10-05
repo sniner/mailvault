@@ -18,7 +18,7 @@ import pytest
 
 from mailvault import cli, conf, jobs
 from mailvault.backend import base
-from mailvault.cli import archive, mailbox
+from mailvault.cli import archive, mailbox, mcp
 from mailvault.cli.archive import report_check, report_places
 from mailvault.cli.archive import run as run_archive
 from mailvault.cli.common import (
@@ -763,6 +763,25 @@ class TestTerminated:
 
         assert unwound == [True]
         assert "Terminated" in caplog.text
+
+    def test_mcp_keeps_the_default(self, monkeypatch, sigterm_not_handled):
+        """The stdio server reads stdin in a thread that the interpreter joins on exit.
+
+        Raised as an exception, SIGTERM would leave the process running until the
+        client closes stdin.
+        """
+        monkeypatch.setattr(sys, "argv", ["mailvault", "mcp"])
+        before = signal.getsignal(signal.SIGTERM)
+        during: list[object] = []
+
+        def _serve(_args: argparse.Namespace) -> int:
+            during.append(signal.getsignal(signal.SIGTERM))
+            return 0
+
+        monkeypatch.setattr(mcp, "run", _serve)
+
+        assert cli.main() == 0
+        assert during == [before]
 
 
 class TestWhereTheOptionsLive:
