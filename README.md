@@ -199,6 +199,11 @@ A failed download needs no attention: that folder does not advance its resume
 point, the next ordinary run fetches it again, and nothing is deleted from the
 server that did not make it into the archive.
 
+The same goes for a run that is interrupted, by Ctrl-C, by a `kill` or because
+the connection drops. What it has stored stays in the archive, and the next run
+fetches only the rest. A first backup too large for one run finishes over
+several.
+
 **What no run can catch up with** is a message that arrived and was deleted
 again between two of them. It was not there at either moment mailvault looked,
 so no later run can find it: an archive holds what the mailbox held when it was

@@ -140,6 +140,15 @@ class TestAnArchiveWithMailAndNoNames:
 
         assert "archive import" in str(excinfo.value)
 
+    def test_the_message_names_an_interrupted_first_backup(self, tmp_path, dummy_eml_bytes):
+        """What an archive from issue #10 looks like, written by 0.16.0 or earlier."""
+        cas.mail_store(tmp_path).add(dummy_eml_bytes)
+
+        with pytest.raises(JobError) as excinfo:
+            guard.check_jobs(tmp_path, _jobs("gmail.com"))
+
+        assert "first backup that was interrupted" in str(excinfo.value)
+
     def test_the_override_passes_and_leaves_a_warning(self, tmp_path, dummy_eml_bytes, caplog):
         cas.mail_store(tmp_path).add(dummy_eml_bytes)
 

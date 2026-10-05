@@ -153,6 +153,13 @@ message where it does not belong. Only writing can, so only writing is checked.
 An archive nobody has written into yet accepts anything: there is nothing there
 to contaminate.
 
+An archive that holds mail but records no mailbox at all is refused the same
+way, because there is nothing to compare a job against. That is what
+`archive import` leaves, and what a first backup by mailvault 0.16.0 or earlier
+left when it was interrupted. If the configuration belongs to the archive, one
+run with `--allow-new-mailbox` records the mailbox, and the runs after it need
+nothing.
+
 
 ## Backing up in detail
 
@@ -169,6 +176,20 @@ downloaded and the content-addressed storage decides by hash what is new.
 Everywhere else -- after an upgrade, or when a server voids its own resume
 point -- the folder is listed and compared against the archive instead, and only
 the difference is fetched.
+
+### A run that is interrupted
+
+A pass over a folder writes down where its messages came from every 2,000
+messages and again when it ends, also when it ends early: by Ctrl-C, by SIGTERM
+(systemd, `timeout`, `kill`) or because the connection drops. Such a folder gets
+no resume point, so the next run lists it, compares it against the archive and
+fetches only the rest. A first backup that does not fit into one run finishes
+over several this way, each continuing from what the previous one stored.
+
+Two kinds of job cannot be compared by listing: `delete_after_export` and
+`exchange_journal`. An interrupted pass over one of them is read in full again
+on the next run; the messages already in the archive are recognised and not
+stored twice.
 
 ### Deleting from the server after export
 

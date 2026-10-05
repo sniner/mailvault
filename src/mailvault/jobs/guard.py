@@ -84,6 +84,12 @@ def _refuse_nameless_archive(store_path: pathlib.Path, allow_new: bool) -> None:
     as plausible here as anywhere else. Refused rather than waved through,
     because the flag that says "yes, really" costs one run and the mix-up costs
     an untangling.
+
+    A first backup that was interrupted before anything was sealed looks the
+    same. A backup seals in batches and whenever a pass ends, by an exception or
+    Ctrl-C included, so this takes a process killed within its first batch, or
+    an archive written by 0.16.0 or earlier, which sealed a folder only at its
+    end.
     """
     if allow_new:
         log.warning(
@@ -93,10 +99,10 @@ def _refuse_nameless_archive(store_path: pathlib.Path, allow_new: bool) -> None:
         return
     raise JobError(
         f"{store_path}: the archive holds mail but records no mailbox at all, so there"
-        f" is nothing here to tell the right configuration from the wrong one. Mail"
-        f" brought in with `archive import` is always like this. Check that the"
-        f" configuration and the archive belong together, then pass --allow-new-mailbox"
-        f" to go ahead"
+        f" is nothing here to tell the right configuration from the wrong one. That is"
+        f" how an archive looks after `archive import`, or after a first backup that"
+        f" was interrupted before it recorded anything. Check that the configuration"
+        f" and the archive belong together, then pass --allow-new-mailbox to go ahead"
     )
 
 

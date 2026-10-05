@@ -8,7 +8,10 @@ of its source files.
 
 from __future__ import annotations
 
+import collections.abc
 import logging
+import pathlib
+import types
 from datetime import datetime
 
 from mailvault import utils
@@ -84,3 +87,56 @@ def seal_log(writer: metalog.LogWriter, date: datetime) -> bool:
             utils.counted(places, "place"),
         )
     return True
+
+
+class PassLog:
+    """The metadata log of one pass over a folder, written down while it runs.
+
+    It seals every `SEAL_BATCH` entries and once more when the `with` block is
+    left, whether at its end, by an exception or by Ctrl-C. A pass that breaks
+    off keeps the locations of everything it stored, and a process killed
+    outright loses at most one batch. The next run then finds the folder's
+    messages in the log and can catch up instead of downloading it again.
+
+    `sealed` says whether the final seal reached the disk. It is set when the
+    block is left, and the resume point and any deletion on the server wait for
+    it. `recorded` counts the entries handed in.
+    """
+
+    def __init__(self, log_root: pathlib.Path, heads_root: pathlib.Path, date: datetime):
+        self._writer = metalog.LogWriter(log_root, heads_root)
+        self._date = date
+        # Counted here rather than read off the writer: a failed seal leaves the
+        # writer full, and `len(writer) >= SEAL_BATCH` would then try to write
+        # again after every entry.
+        self._since_seal = 0
+        self.recorded = 0
+        self.sealed = False
+
+    def add(
+        self,
+        mailbox: str | None,
+        folders: collections.abc.Iterable[object],
+        store_id: str,
+    ) -> None:
+        """Record one message as seen in each of `folders`, see `LogWriter.add`."""
+        self._writer.add(mailbox, folders, store_id)
+        self.recorded += 1
+        self._since_seal += 1
+        if self._since_seal >= SEAL_BATCH:
+            self._seal()
+
+    def _seal(self) -> bool:
+        self._since_seal = 0
+        return seal_log(self._writer, self._date)
+
+    def __enter__(self) -> PassLog:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: types.TracebackType | None,
+    ) -> None:
+        self.sealed = self._seal()

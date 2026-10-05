@@ -51,7 +51,7 @@ from datetime import UTC, datetime
 
 from mailvault import mailutils, utils
 from mailvault.backend import base
-from mailvault.jobs.common import seal_log
+from mailvault.jobs.common import PassLog
 from mailvault.jobs.ledger import Claim, MessageIdLedger
 from mailvault.store import cas, metalog
 
@@ -281,15 +281,64 @@ def reconcile_folder(
     # It is what made a repair that recovered nothing still change the archive:
     # 1,729 duplicates fetched, 1,729 entries written, a new log file and a new
     # link in the chain, every time it ran.
-    log_writer = metalog.LogWriter(log_root, heads_root)
-    recorded = set(archived)
+    #
+    # Written down in batches and once more on the way out, however the loop
+    # ends: a catch-up after an interrupted first backup can run for hours too.
     log.info("%s: fetching %s", ctx, utils.counted(len(wanted), "message"))
-    for fetched, (ref, claim) in enumerate(wanted, start=1):
-        if fetched % FETCH_PROGRESS_EVERY == 0:
-            log.info("%s: %s of %s fetched", ctx, f"{fetched:,}", f"{len(wanted):,}")
+    with PassLog(log_root, heads_root, datetime.now(UTC)) as pass_log:
+        _fetch_wanted(
+            mb,
+            store,
+            job_name,
+            folder,
+            wanted,
+            set(archived),
+            pass_log,
+            result,
+        )
+    # Whether the locations reached disk is the caller's business: a pass that
+    # fetched every message and could not write down where any of them belongs
+    # must not move a resume point past them.
+    result.sealed = pass_log.sealed
+    return result
+
+
+def _fetch_wanted(
+    mb: base.MailboxClient,
+    store: cas.ContentAddressedStorage,
+    job_name: str,
+    folder: str,
+    wanted: list[tuple[base.MessageRef, Claim]],
+    recorded: set[str],
+    pass_log: PassLog,
+    result: ReconcileResult,
+) -> None:
+    """Download the messages the comparison found missing, and record their places.
+
+    `recorded` holds the store ids already logged at this place and grows as
+    messages are added. A lost connection ends the loop: the messages still to
+    come count as failed, and the caller holds the resume point back.
+    """
+    ctx = f"{job_name}::{folder}"
+    for position, (ref, claim) in enumerate(wanted, start=1):
+        if position % FETCH_PROGRESS_EVERY == 0:
+            log.info("%s: %s of %s fetched", ctx, f"{position:,}", f"{len(wanted):,}")
         label = ref.message_id or ref.msg_id
         try:
             fetched = mb.fetch_message(ref.msg_id, folder)
+        except base.ConnectionLost as exc:
+            # Every message after this one would fail the same way, each with
+            # an error line of its own.
+            not_fetched = len(wanted) - position + 1
+            utils.log_failure(
+                log,
+                exc,
+                "%s: %s not fetched",
+                ctx,
+                utils.counted(not_fetched, "message"),
+            )
+            result.failed += not_fetched
+            return
         except Exception as exc:
             log.error("%s: download failed for %s: %s", ctx, label, exc)
             result.failed += 1
@@ -304,7 +353,7 @@ def reconcile_folder(
                 # They came with the message, out of the same read: nothing here
                 # goes to the network, so nothing after `store.add` can fail and
                 # leave the bytes in the store with no log entry naming them.
-                log_writer.add(job_name, fetched.places, store_id)
+                pass_log.add(job_name, fetched.places, store_id)
                 recorded.add(store_id)
         except Exception as exc:
             utils.log_failure(log, exc, "%s: storing %s failed", ctx, label)
@@ -332,10 +381,3 @@ def reconcile_folder(
             # is thousands of lines reporting that nothing happened -- under the
             # word "restored", which is what it was doing before.
             log.debug("%s: %s: a further copy, identical to the archived one", ctx, label)
-
-    # Whether the locations reached disk is the caller's business: a pass that
-    # fetched every message and could not write down where any of them belongs
-    # must not move a resume point past them. `seal_log` reports that through
-    # its return value and nowhere else.
-    result.sealed = seal_log(log_writer, datetime.now(UTC))
-    return result

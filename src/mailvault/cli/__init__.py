@@ -14,12 +14,28 @@ import importlib.metadata
 import logging
 import os
 import pathlib
+import signal
 import sys
+import types
 
 from mailvault import utils
 from mailvault.cli import archive, common, mailbox, mcp, message, query
 
 log = logging.getLogger(__name__)
+
+
+class Terminated(BaseException):
+    """SIGTERM, raised in the main thread so that the run unwinds like Ctrl-C.
+
+    Python's default for SIGTERM ends the process without running any `finally`,
+    so a backup stopped by systemd, `timeout` or `kill` did not record where the
+    mail it had already stored came from. A BaseException, so that the `except
+    Exception` that keeps one failed folder from ending a run lets it through.
+    """
+
+
+def _terminate(_signum: int, _frame: types.FrameType | None) -> None:
+    raise Terminated
 
 
 def get_version() -> str:
@@ -597,6 +613,7 @@ def main() -> int:
 
     log.info("START")
     exit_code = 0
+    previous_sigterm = signal.signal(signal.SIGTERM, _terminate)
     try:
         # The archive is named once, here, and nowhere else. Every line after
         # this is about it, and repeating the path on each of them buries the
@@ -629,6 +646,9 @@ def main() -> int:
     except KeyboardInterrupt:
         log.warning("Interrupted!")
         exit_code = 130
+    except Terminated:
+        log.warning("Terminated by SIGTERM")
+        exit_code = 143
     except BrokenPipeError:
         # `| head`, `| less` quit on the first page: nothing worth a word at any
         # level. Only the leftovers need somewhere to go, because the interpreter
@@ -654,6 +674,7 @@ def main() -> int:
             log.error("Run it again with --verbose to get the traceback behind this")
         exit_code = 1
     finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
         log.info("FINISHED")
     return exit_code
 

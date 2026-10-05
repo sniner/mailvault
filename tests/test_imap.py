@@ -322,6 +322,54 @@ class TestWalkFolder:
         assert result.failed == 1
         assert "INBOX[1]: the server sent no message body" in caplog.text
 
+    @staticmethod
+    def _dies_after_one_chunk(conn: MagicMock, failure: Exception) -> None:
+        def fetch(ids, _fields):
+            if conn.fetch.call_count > 1:
+                raise failure
+            return {i: {b"BODY[]": DUMMY_EML} for i in ids}
+
+        conn.fetch.side_effect = fetch
+
+    @pytest.mark.parametrize(
+        "failure",
+        [imaplib.IMAP4.abort("socket error: EOF"), ConnectionResetError("reset by peer")],
+    )
+    def test_a_lost_connection_ends_the_walk(self, failure, caplog):
+        """Every later chunk would fail the same way, one error line each."""
+        conn = _make_mock_conn()
+        self._dies_after_one_chunk(conn, failure)
+        client = _make_client(conn=conn)
+        result = base.BackupResult()
+
+        with caplog.at_level(logging.ERROR):
+            results = list(client._walk_folder("INBOX", list(range(1, 36)), result=result))
+
+        assert len(results) == 10
+        assert conn.fetch.call_count == 2
+        assert result.failed == 25
+        assert len([r for r in caplog.records if r.levelno == logging.ERROR]) == 1
+
+    def test_a_refused_chunk_costs_only_that_chunk(self):
+        """A NO answer is about the command; the connection is still there."""
+        conn = _make_mock_conn()
+        answers: list[Exception | None] = [None, imaplib.IMAP4.error("NO try later"), None]
+
+        def fetch(ids, _fields):
+            failure = answers[conn.fetch.call_count - 1]
+            if failure is not None:
+                raise failure
+            return {i: {b"BODY[]": DUMMY_EML} for i in ids}
+
+        conn.fetch.side_effect = fetch
+        client = _make_client(conn=conn)
+        result = base.BackupResult()
+
+        results = list(client._walk_folder("INBOX", list(range(1, 26)), result=result))
+
+        assert len(results) == 15
+        assert result.failed == 10
+
 
 class TestPlacesComeWithTheMessage:
     """Where a message is, out of the same read that fetched it.
@@ -642,6 +690,27 @@ class TestIterFolder:
         with pytest.raises(Exception, match="search failed"):
             list(client._iter_folder("INBOX"))
         conn.unselect_folder.assert_called_once()
+
+    def test_an_unselect_on_a_dead_connection_does_not_hide_why_it_died(self):
+        conn = _make_mock_conn()
+        conn.select_folder.return_value = {b"EXISTS": 1}
+        conn.search.side_effect = imaplib.IMAP4.abort("search: socket error: EOF")
+        conn.unselect_folder.side_effect = imaplib.IMAP4.abort("unselect: socket error")
+        client = _make_client(conn=conn)
+
+        with pytest.raises(imaplib.IMAP4.abort, match="search"):
+            list(client._iter_folder("INBOX"))
+
+    def test_a_pass_that_ended_is_not_failed_by_its_unselect(self):
+        """The messages are read; the next command finds out the connection is gone."""
+        conn = _make_mock_conn()
+        conn.select_folder.return_value = {b"EXISTS": 1, b"UIDVALIDITY": 1}
+        conn.search.return_value = [1]
+        conn.fetch.return_value = {1: {b"BODY[]": DUMMY_EML}}
+        conn.unselect_folder.side_effect = imaplib.IMAP4.abort("socket error: EOF")
+        client = _make_client(conn=conn)
+
+        assert len(list(client._iter_folder("INBOX"))) == 1
 
     def test_read_only_even_when_deleting(self):
         # The read pass never deletes and never opens read-write, even under
@@ -1365,4 +1434,15 @@ class TestFetchMessage:
         client = _make_client(conn=conn)
 
         with pytest.raises(imap.MailboxError):
+            client.fetch_message(7, "INBOX")
+
+    @pytest.mark.parametrize("command", ["select_folder", "fetch"])
+    def test_a_lost_connection_is_reported_as_such(self, command):
+        """So that a caller fetching one message after another can stop at the first."""
+        conn = _make_mock_conn()
+        getattr(conn, command).side_effect = imaplib.IMAP4.abort("socket error: EOF")
+        conn.unselect_folder.side_effect = imaplib.IMAP4.abort("socket error: EOF")
+        client = _make_client(conn=conn)
+
+        with pytest.raises(base.ConnectionLost, match="socket error: EOF"):
             client.fetch_message(7, "INBOX")

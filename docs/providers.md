@@ -106,6 +106,12 @@ The rest overlap with it, so backing up everything means downloading each messag
 several times to store it once. It costs time and bandwidth and adds nothing to
 the archive.
 
+**A large account takes several runs.** Google limits downloads over IMAP to
+[2,500 MB a day](https://support.google.com/a/answer/1071518), and a first
+backup of a larger account ends when it reaches that limit. Run it again the
+next day: each run continues from what the previous one stored, until the whole
+account is in the archive.
+
 **The names are translated, including Google's own.** It is `[Gmail]/All Mail`
 on one account and `[Google Mail]/Alle Nachrichten` on another, so let
 `mailvault folders` tell you which it is here. A label you cannot see there is

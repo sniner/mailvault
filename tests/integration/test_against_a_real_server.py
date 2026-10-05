@@ -12,11 +12,14 @@ repair cycle, which every unit test has only ever seen one piece of.
 from __future__ import annotations
 
 import pathlib
+import socket
 
+import imapclient
 import pytest
 
 from mailvault import jobs
 from mailvault.backend import imap
+from mailvault.jobs import guard
 from mailvault.store import cas, heads, marker, metalog
 from tests.integration import corpus
 
@@ -251,6 +254,53 @@ class TestCarryingOnWhereTheLastRunStopped:
         second = jobs.backup(job, archive, incremental=True)
 
         assert second.stored == len(corpus.AWKWARD), "the whole folder, read again"
+        assert jobs.check(archive).sound
+
+
+class TestAFirstBackupThatBreaksOff:
+    """Issue #10, with the errors a connection that is really gone raises.
+
+    The unit tests pick the exception a dead connection raises. Here the socket
+    is shut down under imapclient, and imaplib decides what comes out.
+    """
+
+    def test_the_next_run_carries_on_from_what_the_first_one_stored(
+        self,
+        dovecot,
+        tmp_path,
+        monkeypatch,
+    ):
+        user = "cutshort"
+        _fill(dovecot, user, "INBOX", corpus.numbered(25))
+        archive = _archive(tmp_path)
+        job = dovecot.job(user, ["INBOX"])
+
+        real_fetch = imapclient.IMAPClient.fetch
+        body_fetches = 0
+
+        def fetch_then_drop(self, messages, data, modifiers=None):
+            # The backup fetches ten bodies at a time: the first chunk arrives,
+            # the second goes out over a socket that is already shut down.
+            nonlocal body_fetches
+            body_fetches += 1
+            if body_fetches == 2:
+                self.socket().shutdown(socket.SHUT_RDWR)
+            return real_fetch(self, messages, data, modifiers)
+
+        monkeypatch.setattr(imapclient.IMAPClient, "fetch", fetch_then_drop)
+        first = jobs.backup(job, archive)
+        monkeypatch.undo()
+
+        assert first.retried == ["INBOX"]
+        assert first.failed == 15
+        assert _places(archive / metalog.DEFAULT_LOG_DIR) == {(user, "INBOX"): 10}
+        guard.check_jobs(archive, [job])
+
+        second = jobs.backup(job, archive)
+
+        assert second.complete
+        assert second.stored == 15, "only what the first run did not get"
+        assert _places(archive / metalog.DEFAULT_LOG_DIR) == {(user, "INBOX"): 25}
         assert jobs.check(archive).sound
 
 

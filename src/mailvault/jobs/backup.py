@@ -19,7 +19,7 @@ from typing import Any
 
 from mailvault import conf, mailutils, utils
 from mailvault.backend import base, session
-from mailvault.jobs.common import seal_log
+from mailvault.jobs.common import PassLog
 from mailvault.jobs.db import DEFAULT_QUERY_DB_NAME, refresh_db
 from mailvault.jobs.migration import migrate_archive
 from mailvault.jobs.reconcile import ArchivedPlaces, reconcile_folder
@@ -91,7 +91,7 @@ def _record_pass(
 
 
 def _location_writer(
-    log_writer: metalog.LogWriter,
+    pass_log: PassLog,
 ) -> collections.abc.Callable[[mailutils.MessageMetadata], None]:
     """Build the callback that records where a message was seen.
 
@@ -101,7 +101,7 @@ def _location_writer(
     """
 
     def _record(email: mailutils.MessageMetadata) -> None:
-        log_writer.add(email.mailbox, email.folders, email.store_id)
+        pass_log.add(email.mailbox, email.folders, email.store_id)
 
     return _record
 
@@ -250,34 +250,51 @@ def _backup_folder(
 
     observed_at = datetime.now(UTC)
     void = False
-    log_writer = metalog.LogWriter(log_root, heads_root)
-    result = mb.folder_backup(
-        folder,
-        store,
-        resume=previous,
-        callback=_location_writer(log_writer),
-    )
-
-    if result.resume_lost:
-        # The source will not honour the point any more and did nothing rather
-        # than deciding for us. Listing beats downloading the folder again, and
-        # where that is not on offer the full read is at least an explicit one.
-        log.info("%s::%s: the resume point is void", job.name, folder)
-        # From here on the stored point is dead whatever happens next: every
-        # path below either earns a new one or must forget this one.
-        void = True
-        caught_up = _catch_up_if_possible(
-            mb, store, job, folder, heads_root, log_root, places, report, void_previous=True
-        )
-        if caught_up is not None:
-            return caught_up
-        log.info("%s::%s: reading the folder in full", job.name, folder)
+    # The seal date stamps the log with when the folder was read, which is a
+    # fact about the run and stays the wall clock. Where the *next* run resumes
+    # is a claim about coverage, and that one comes back from the backend.
+    #
+    # The log is sealed in batches during the pass and once more when the block
+    # is left, also by an exception or Ctrl-C. A first pass over a large folder
+    # can run for hours; cut short, it still records what it stored, and the
+    # next run catches up from there instead of downloading the folder again.
+    with PassLog(log_root, heads_root, observed_at) as pass_log:
         result = mb.folder_backup(
             folder,
             store,
-            resume=None,
-            callback=_location_writer(log_writer),
+            resume=previous,
+            callback=_location_writer(pass_log),
         )
+
+        if result.resume_lost:
+            # The source will not honour the point any more and did nothing
+            # rather than deciding for us. Listing beats downloading the folder
+            # again, and where that is not on offer the full read is at least an
+            # explicit one.
+            log.info("%s::%s: the resume point is void", job.name, folder)
+            # From here on the stored point is dead whatever happens next: every
+            # path below either earns a new one or must forget this one.
+            void = True
+            caught_up = _catch_up_if_possible(
+                mb,
+                store,
+                job,
+                folder,
+                heads_root,
+                log_root,
+                places,
+                report,
+                void_previous=True,
+            )
+            if caught_up is not None:
+                return caught_up
+            log.info("%s::%s: reading the folder in full", job.name, folder)
+            result = mb.folder_backup(
+                folder,
+                store,
+                resume=None,
+                callback=_location_writer(pass_log),
+            )
     # Counted from the pass that stands, not from the one the source refused:
     # a void resume point makes the first call do nothing, and the read that
     # replaces it is the one that fetched the mail.
@@ -285,13 +302,8 @@ def _backup_folder(
     report.stored += result.stored - result.present
     report.present += result.present
     report.failed += result.failed
-    # Asked before the seal empties the writer: how much this pass observed, and
-    # therefore whether the log grew at all.
-    recorded = len(log_writer) > 0
-    # The seal date stamps the log with when the folder was read, which is a
-    # fact about the run and stays the wall clock. Where the *next* run resumes
-    # is a claim about coverage, and that one comes back from the backend.
-    sealed = seal_log(log_writer, observed_at)
+    recorded = pass_log.recorded > 0
+    sealed = pass_log.sealed
     resume: dict[str, Any] | None = None
     if result.complete and sealed:
         resume = result.resume

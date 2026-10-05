@@ -77,6 +77,12 @@ WHOLE_MESSAGE_KEY = b"BODY[]"
 GMAIL_LABELS_ITEM = "X-GM-LABELS"
 GMAIL_LABELS_KEY = b"X-GM-LABELS"
 
+# What a connection that is gone raises. imaplib turns most socket errors into
+# `abort`, but a reset or a timeout inside a read arrives as the OSError itself.
+# A NO or BAD answer is a plain `IMAP4.error` and is not in here: the server
+# refused one command, and the connection can still be used.
+_CONNECTION_ERRORS = (imaplib.IMAP4.abort, OSError)
+
 
 def _as_int(value: object) -> int | None:
     """An int, or None -- and a bool is not an int here, whatever Python says."""
@@ -359,6 +365,7 @@ class ImapClient:
         chunk_size: int = 10,
         result: BackupResult | None = None,
     ) -> collections.abc.Generator[tuple[int, base.Fetched], None, None]:
+        done = 0
         for msg_ids in utils.batched(message_ids, chunk_size):
             msg_ids_str = ", ".join([str(i) for i in msg_ids])
             log.debug("%s::%s: fetching %s", self.job_name, folder_name, msg_ids_str)
@@ -381,7 +388,23 @@ class ImapClient:
                             result.failed += 1
                         continue
                     yield msg_id, base.Fetched(body, self._places_from(msg_data, folder_name))
-            except (OSError, imaplib.IMAP4.error) as exc:
+            except _CONNECTION_ERRORS as exc:
+                # Every later chunk would fail the same way, each with an error
+                # line of its own. The messages not fetched count as failed, so
+                # the resume point stays where it was.
+                lost = len(message_ids) - done
+                utils.log_failure(
+                    log,
+                    exc,
+                    "%s::%s: connection to the server lost, %s not fetched",
+                    self.job_name,
+                    folder_name,
+                    utils.counted(lost, "message"),
+                )
+                if result is not None:
+                    result.failed += lost
+                return
+            except imaplib.IMAP4.error as exc:
                 utils.log_failure(
                     log,
                     exc,
@@ -394,6 +417,20 @@ class ImapClient:
                     # fetch() returns the whole chunk at once, so nothing of it
                     # was yielded before the failure.
                     result.failed += len(msg_ids)
+            done += len(msg_ids)
+
+    def _release(self, folder_name: str) -> None:
+        """UNSELECT the folder, tolerating a connection that is already gone.
+
+        Called from `finally` blocks. Raising there would replace the exception
+        that is already on its way out, and a pass that has read every message
+        would fail on its last command. If the connection is gone, the next
+        command reports it.
+        """
+        try:
+            self.conn.unselect_folder()
+        except _CONNECTION_ERRORS as exc:
+            log.debug("%s::%s: not unselected: %s", self.job_name, folder_name, exc)
 
     def _collect_metadata(
         self,
@@ -520,7 +557,7 @@ class ImapClient:
             log.error("%s::%s: %s", self.job_name, folder_name, exc)
             raise
         finally:
-            self.conn.unselect_folder()
+            self._release(folder_name)
 
     def _relocate(self, folder_name: str, msg_ids: list[int], dest_folder: str) -> None:
         """Move the given messages of `folder_name` into `dest_folder`.
@@ -717,7 +754,7 @@ class ImapClient:
                         date=_dated(getattr(envelope, "date", None)),
                     )
         finally:
-            self.conn.unselect_folder()
+            self._release(folder_name)
 
     def fetch_message(self, msg_id: int, folder_name: str) -> base.Fetched:
         """Fetch a single message by UID from the given folder, places included.
@@ -726,13 +763,19 @@ class ImapClient:
         in one FETCH inside one selection -- where it used to fetch the body,
         give the folder back, and select the same folder again to ask where the
         message was.
+
+        Raises `base.ConnectionLost` when the connection is gone, and
+        `MailboxError` when only this message could not be fetched.
         """
-        self.conn.select_folder(folder_name, readonly=True)
         try:
-            msg_data = self.conn.fetch([msg_id], self._fetch_items).get(msg_id)
-            body = msg_data.get(WHOLE_MESSAGE_KEY) if msg_data else None
-            if msg_data is None or not isinstance(body, bytes):
-                raise MailboxError(f"{folder_name}[{msg_id}]: message not found")
-            return base.Fetched(body, self._places_from(msg_data, folder_name))
-        finally:
-            self.conn.unselect_folder()
+            self.conn.select_folder(folder_name, readonly=True)
+            try:
+                msg_data = self.conn.fetch([msg_id], self._fetch_items).get(msg_id)
+            finally:
+                self._release(folder_name)
+        except _CONNECTION_ERRORS as exc:
+            raise base.ConnectionLost(f"connection to the server lost: {exc}") from exc
+        body = msg_data.get(WHOLE_MESSAGE_KEY) if msg_data else None
+        if msg_data is None or not isinstance(body, bytes):
+            raise MailboxError(f"{folder_name}[{msg_id}]: message not found")
+        return base.Fetched(body, self._places_from(msg_data, folder_name))

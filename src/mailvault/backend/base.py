@@ -29,6 +29,15 @@ class MailboxError(Exception):
     """
 
 
+class ConnectionLost(MailboxError):
+    """The connection to the server is gone, so every further request fails too.
+
+    Raised by `fetch_message` instead of an ordinary per-message failure, so that
+    a caller fetching a list of messages one by one stops at the first of them.
+    Otherwise every remaining message fails in turn, with one error line each.
+    """
+
+
 @dataclasses.dataclass
 class BackupResult:
     """Outcome of a folder backup.

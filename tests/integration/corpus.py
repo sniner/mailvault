@@ -79,6 +79,14 @@ AWKWARD = [
 IN_TWO_PLACES = _message(8, "Filed twice", message_id="<8@example.com>")
 
 
+def numbered(count: int) -> list[bytes]:
+    """Plain messages, as many as it takes for a folder read in several FETCHes."""
+    return [
+        _message(n, f"Number {n}", message_id=f"<n{n}@example.com>")
+        for n in range(1, count + 1)
+    ]
+
+
 def everything() -> list[bytes]:
     """The whole synthetic corpus, in a fixed order."""
     return [*PLAIN, *AWKWARD, IN_TWO_PLACES]

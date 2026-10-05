@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **An interrupted backup keeps what it stored, and the next run continues from there** (#10). The
+  record of where a folder's messages came from was written only when the folder was finished. A
+  first backup cut short by Ctrl-C or a dropped connection left the downloaded mail in the archive
+  without it, and the next run downloaded the whole folder again. On Gmail, where `All Mail` is the
+  whole account, a first backup that took longer than the connection lasted could never finish.
+  The record is now written every 2,000 messages and whenever a run ends, also when it ends early,
+  and the next run fetches only what is missing. A large account finishes over several runs
+- **`backup` no longer refuses the archive after an interrupted first backup.** Holding mail but
+  no mailbox name, it looked like an archive filled by `archive import`, and `backup` stopped
+  before the first login. The message now names this case too. An archive left this way by 0.16.0
+  or earlier needs one run with `--allow-new-mailbox`
+- **SIGTERM ends a run the way Ctrl-C does.** A run stopped by systemd, `timeout` or `kill` ended
+  on the spot, without writing down where the mail it had stored came from. It now does that
+  first and exits with 143
+- **A dropped connection costs one error line, not one per message still to come.** A backup
+  reported every remaining batch of ten as failed, each with an error line of its own, and a
+  catch-up every remaining message. It now stops the folder at the first failure and says how many
+  messages were not fetched; the next run fetches them
+
 ## 0.16.0 (2026-08-31)
 
 ### Added

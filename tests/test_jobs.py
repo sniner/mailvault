@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import imaplib
 import json
 import logging
 import pathlib
@@ -12,9 +13,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from mailvault import conf, jobs, mailutils
-from mailvault.backend import base
+from mailvault.backend import base, imap
+from mailvault.jobs import common, guard, migration
 from mailvault.jobs import db as db_module
-from mailvault.jobs import migration
 from mailvault.jobs.db import DEFAULT_QUERY_DB_NAME, freshness, refresh_db
 from mailvault.jobs.reconcile import archived_message_counts, places_from_log
 from mailvault.legacy import state_json as state
@@ -436,11 +437,11 @@ class TestCatchUp:
         return client
 
     @staticmethod
-    def _run(job, client, tmp_path) -> None:
+    def _run(job, client, tmp_path) -> jobs.BackupReport:
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
-            jobs.backup(job, tmp_path)
+            return jobs.backup(job, tmp_path)
 
     def test_an_archived_folder_without_a_point_is_reconciled(self, tmp_path, caplog):
         self._archive_with(tmp_path, "a", "b")
@@ -473,7 +474,12 @@ class TestCatchUp:
 
         assert order == ["point", "list"]
 
-    def test_a_log_that_did_not_reach_disk_holds_the_point_back(self, tmp_path, caplog):
+    def test_a_log_that_did_not_reach_disk_holds_the_point_back(
+        self,
+        tmp_path,
+        caplog,
+        monkeypatch,
+    ):
         """Downloads clean, locations not written: advancing would lose them.
 
         The point claims everything below it is archived. Past messages whose
@@ -485,9 +491,12 @@ class TestCatchUp:
         self._archive_with(tmp_path, "a")
         client = self._client(["a", "b"])
 
-        with patch("mailvault.jobs.reconcile.seal_log", return_value=False):
-            with caplog.at_level(logging.WARNING):
-                self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+        def refuse(self, date):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(metalog.LogWriter, "seal", refuse)
+        with caplog.at_level(logging.WARNING):
+            self._run(_make_job(folders=["INBOX"]), client, tmp_path)
 
         assert "metadata log not sealed" in caplog.text
         assert _head(tmp_path).resume is None
@@ -607,6 +616,176 @@ class TestCatchUp:
         head = _head(tmp_path)
         assert head.resume is None
         assert head.last_run_at() is not None
+
+    def test_ctrl_c_keeps_what_was_fetched(self, tmp_path):
+        """A catch-up after an interrupted first pass can run for hours as well."""
+        self._archive_with(tmp_path, "a")
+        client = self._client(["a", "b", "c", "d"])
+        client.fetch_message.side_effect = [
+            base.Fetched(_numbered_eml("b"), ["INBOX"]),
+            base.Fetched(_numbered_eml("c"), ["INBOX"]),
+            KeyboardInterrupt(),
+        ]
+
+        with pytest.raises(KeyboardInterrupt):
+            self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        assert len(_recorded(tmp_path)) == 3
+
+    def test_a_lost_connection_ends_the_catch_up(self, tmp_path):
+        """Each message after the loss would fail the same way, one error line each."""
+        self._archive_with(tmp_path, "a")
+        client = self._client(["a", "b", "c", "d"])
+        client.fetch_message.side_effect = [
+            base.Fetched(_numbered_eml("b"), ["INBOX"]),
+            base.ConnectionLost("INBOX: connection to the server lost: socket error: EOF"),
+            base.Fetched(_numbered_eml("c"), ["INBOX"]),
+            base.Fetched(_numbered_eml("d"), ["INBOX"]),
+        ]
+
+        report = self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        assert client.fetch_message.call_count == 2
+        assert len(_recorded(tmp_path)) == 2
+        assert report.failed == 2
+        assert report.retried == ["INBOX"]
+        assert _head(tmp_path).resume is None
+
+
+# Four chunks in the IMAP backend's walk, which fetches ten messages at a time.
+FOLDER_SIZE = 35
+
+
+def _numbered_eml(n: object) -> bytes:
+    """A message of its own, told apart from the others by its Message-ID."""
+    return DUMMY_EML.replace(b"<test@example.com>", f"<{n}@x>".encode())
+
+
+def _recorded(root: pathlib.Path) -> set[str]:
+    """The store ids the metadata log records at test-job::INBOX."""
+    return places_from_log(root / "meta").get(("test-job", "INBOX"), set())
+
+
+def _imap_conn(
+    failure: BaseException | None = None,
+    after: int = 1,
+) -> tuple[MagicMock, list[int]]:
+    """A mocked IMAP connection over one folder of FOLDER_SIZE messages.
+
+    Returns the connection and a list that collects the UIDs whose bodies it
+    hands out. With a `failure`, it answers `after` body FETCHes and raises
+    `failure` from every one after that. An `IMAP4.abort` is a connection that
+    is gone, so UNSELECT raises it too.
+    """
+    conn = MagicMock()
+    conn.capabilities.return_value = [b"IMAP4rev1"]
+    conn.select_folder.return_value = {b"EXISTS": FOLDER_SIZE, b"UIDVALIDITY": 1}
+    conn.search.return_value = list(range(1, FOLDER_SIZE + 1))
+    bodies: list[int] = []
+    answered = 0
+
+    def fetch(uids, items):
+        nonlocal answered
+        if items == ["ENVELOPE"]:
+            return {
+                uid: {
+                    b"ENVELOPE": MagicMock(message_id=f"<{uid}@x>".encode(), date=None),
+                }
+                for uid in uids
+            }
+        if failure is not None and answered >= after:
+            raise failure
+        answered += 1
+        bodies.extend(uids)
+        return {uid: {b"BODY[]": _numbered_eml(uid)} for uid in uids}
+
+    conn.fetch.side_effect = fetch
+    if isinstance(failure, imaplib.IMAP4.abort):
+        conn.unselect_folder.side_effect = failure
+    return conn, bodies
+
+
+def _back_up_over(conn: MagicMock, root: pathlib.Path) -> jobs.BackupReport:
+    """Run a backup of test-job::INBOX through the real IMAP backend over `conn`."""
+    job = _make_job(folders=["INBOX"])
+    client = imap.ImapClient(conn, job)
+    with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+        mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+        mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+        return jobs.backup(job, root)
+
+
+class TestAFirstPassCutShort:
+    """A first backup that breaks off keeps what it stored (issue #10).
+
+    The locations of a folder were written only once the folder was finished. A
+    first pass cut short by Ctrl-C or a dropped connection left mail in the store
+    and nothing that said whose it was: the guard then refused the archive, and
+    the next run downloaded the whole folder again. On Gmail, where `All Mail` is
+    the whole account, a first backup longer than the connection lasted could
+    never finish.
+    """
+
+    def test_a_dropped_connection_keeps_what_was_stored(self, tmp_path):
+        conn, _bodies = _imap_conn(failure=imaplib.IMAP4.abort("socket error: EOF"))
+
+        _back_up_over(conn, tmp_path)
+
+        assert len(_recorded(tmp_path)) == 10
+
+    def test_ctrl_c_keeps_what_was_stored(self, tmp_path):
+        conn, _bodies = _imap_conn(failure=KeyboardInterrupt())
+
+        with pytest.raises(KeyboardInterrupt):
+            _back_up_over(conn, tmp_path)
+
+        assert len(_recorded(tmp_path)) == 10
+
+    def test_the_guard_lets_the_next_run_in(self, tmp_path):
+        conn, _bodies = _imap_conn(failure=imaplib.IMAP4.abort("socket error: EOF"))
+        _back_up_over(conn, tmp_path)
+
+        guard.check_jobs(tmp_path, [_make_job(folders=["INBOX"])])
+
+    def test_the_next_run_fetches_only_what_is_missing(self, tmp_path):
+        conn, _bodies = _imap_conn(failure=imaplib.IMAP4.abort("socket error: EOF"))
+        _back_up_over(conn, tmp_path)
+
+        conn, bodies = _imap_conn()
+        report = _back_up_over(conn, tmp_path)
+
+        assert sorted(bodies) == list(range(11, FOLDER_SIZE + 1))
+        assert report.complete
+        assert len(_recorded(tmp_path)) == FOLDER_SIZE
+
+    def test_a_long_pass_is_written_down_as_it_goes(self, tmp_path, monkeypatch):
+        """What a kill that skips every `finally` leaves: all but the last batch."""
+        monkeypatch.setattr(common, "SEAL_BATCH", 10)
+        on_disk_before_the_end: list[int] = []
+
+        def folder_backup(folder_name, store, resume=None, callback=None):
+            assert callback is not None
+            for n in range(25):
+                _status, store_id, _path = store.add(_numbered_eml(n))
+                callback(
+                    mailutils.MessageMetadata(
+                        mailbox="test-job",
+                        store_id=store_id,
+                        folders=[folder_name],
+                    )
+                )
+            on_disk_before_the_end.append(len(_recorded(tmp_path)))
+            return base.BackupResult(total=25, stored=25)
+
+        client = _make_mock_client()
+        client.folder_backup.side_effect = folder_backup
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+            jobs.backup(_make_job(folders=["INBOX"]), tmp_path)
+
+        assert on_disk_before_the_end == [20]
+        assert len(_recorded(tmp_path)) == 25
 
 
 # ---------------------------------------------------------------------------

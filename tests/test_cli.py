@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import pathlib
+import signal
 import sys
 import tempfile
 from datetime import UTC, datetime
@@ -723,6 +724,45 @@ class TestOutputNobodyIsReading:
             run_mailbox(_args())
 
         assert seen == ["one"]
+
+
+class TestTerminated:
+    """SIGTERM from systemd, `timeout` or `kill` unwinds the run like Ctrl-C.
+
+    Python's default for SIGTERM ends the process on the spot, without running a
+    single `finally`, and a backup cut short that way did not record where the
+    mail it had already stored came from.
+    """
+
+    @pytest.fixture
+    def sigterm_not_handled(self):
+        """Fail the test, rather than end pytest, when nothing handles SIGTERM."""
+
+        def _unhandled(_signum, _frame):
+            raise AssertionError("SIGTERM reached the test's own handler")
+
+        previous = signal.signal(signal.SIGTERM, _unhandled)
+        yield
+        signal.signal(signal.SIGTERM, previous)
+
+    def test_the_run_unwinds_and_says_so(self, monkeypatch, caplog, sigterm_not_handled):
+        monkeypatch.setattr(sys, "argv", ["mailvault", "archive", "check"])
+        unwound: list[bool] = []
+
+        def _terminated(_args: argparse.Namespace) -> int:
+            try:
+                os.kill(os.getpid(), signal.SIGTERM)
+                return 0
+            finally:
+                unwound.append(True)
+
+        monkeypatch.setattr(archive, "run", _terminated)
+
+        with caplog.at_level(logging.WARNING):
+            assert cli.main() == 143
+
+        assert unwound == [True]
+        assert "Terminated" in caplog.text
 
 
 class TestWhereTheOptionsLive:
