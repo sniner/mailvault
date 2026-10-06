@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **`_cmd` fields always run, and `--allow-exec` is no longer needed** (#11). It protected
+  nothing: everyone who uses `_cmd` passes it on every run, and whoever can edit the
+  configuration can send the password to another server without running any command. The option
+  is still accepted but does nothing except log a warning. Remove it from cron entries and
+  scripts. What protects the configuration is where it lies; the deep dive has a section on it
+
 ## 0.16.1 (2026-10-05)
 
 ### Fixed

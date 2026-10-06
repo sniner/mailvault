@@ -38,7 +38,7 @@ CONFIG_TEMPLATE = """\
 name = "example.org"
 server = "imap.example.org"
 username = "jane@example.org"
-# The password can come from a command instead, which needs --allow-exec:
+# The password can come from a command instead:
 # password_cmd = "gopass show -o mail/example.org"
 password = ""
 # folders = ["INBOX", "Sent"]   # leave out to back up every folder

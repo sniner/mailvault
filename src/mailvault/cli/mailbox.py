@@ -233,6 +233,11 @@ def _run_job(
 def run(args: argparse.Namespace) -> int:
     """Run a folders/backup/verify command over the selected config jobs."""
     exit_code = 0
+    if args.allow_exec:
+        log.warning(
+            "--allow-exec no longer exists and is ignored: _cmd fields always run."
+            " Take it off the command line"
+        )
     needs_archive = args.command in ARCHIVE_COMMANDS
     if needs_archive and args.config is not None and args.archive is None:
         # Reaching for a configuration somewhere else is what somebody does who
@@ -249,7 +254,7 @@ def run(args: argparse.Namespace) -> int:
         require_archive(archive)
     path = config_file(args, archive)
     try:
-        config = conf.load(path, allow_exec=args.allow_exec)
+        config = conf.load(path)
     except conf.ConfigError:
         # Naming the file that was looked for is not enough when nobody asked
         # for it: a reader is left wondering why that path of all paths. What

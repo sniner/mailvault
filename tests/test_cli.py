@@ -798,10 +798,10 @@ class TestWhereTheOptionsLive:
         return cli.build_parser().parse_args(argv)
 
     def test_a_command_takes_its_own_options_after_it(self):
-        args = self._parse(["backup", "--job", "proton.me", "--allow-exec"])
+        args = self._parse(["backup", "--job", "proton.me", "--allow-new-mailbox"])
 
         assert args.job == ["proton.me"]
-        assert args.allow_exec is True
+        assert args.allow_new_mailbox is True
 
     def test_the_option_may_be_repeated(self):
         assert self._parse(["backup", "--job", "a", "--job", "b"]).job == ["a", "b"]
@@ -829,13 +829,38 @@ class TestWhereTheOptionsLive:
         args = self._parse(["archive", "check"])
 
         assert not hasattr(args, "job")
-        assert not hasattr(args, "allow_exec")
+        assert not hasattr(args, "allow_new_mailbox")
 
     def test_the_archive_stays_where_it_is(self):
         """Which archive is true of the whole run, so it keeps its place in front."""
         args = self._parse(["--archive", "/srv/mail", "archive", "check"])
 
         assert args.archive == pathlib.Path("/srv/mail")
+
+
+class TestAllowExecIsGone:
+    """Removed, but a cron line that still names it must keep backing up."""
+
+    @staticmethod
+    def _parse(argv: list[str]) -> argparse.Namespace:
+        return cli.build_parser().parse_args(argv)
+
+    def test_it_is_still_accepted(self):
+        assert self._parse(["backup", "--allow-exec"]).allow_exec is True
+
+    def test_help_no_longer_shows_it(self, capsys):
+        with pytest.raises(SystemExit):
+            self._parse(["backup", "--help"])
+
+        assert "--allow-exec" not in capsys.readouterr().out
+
+    def test_a_run_that_names_it_is_warned_and_goes_ahead(self, monkeypatch, caplog):
+        monkeypatch.setattr(conf, "load", lambda *a, **kw: conf.Config())
+
+        with caplog.at_level(logging.WARNING):
+            assert run_mailbox(_args(command="folders", allow_exec=True)) == 0
+
+        assert "--allow-exec no longer exists" in caplog.text
 
 
 class TestImportSource:

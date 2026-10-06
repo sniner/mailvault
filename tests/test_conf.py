@@ -129,21 +129,23 @@ def _write_job(tmp_path, body: str):
 def test_load_password_cmd_does_not_overwrite_explicit(tmp_path):
     """If both password and password_cmd exist, password_cmd wins (it resolves later)."""
     toml_file = _write_job(tmp_path, 'password = "old"\npassword_cmd = "echo new"\n')
-    config = conf.load(toml_file, allow_exec=True)
+    config = conf.load(toml_file)
     assert config.jobs[0].password == "new"
 
 
 def test_load_with_failing_cmd(tmp_path):
     toml_file = _write_job(tmp_path, 'password_cmd = "false"\n')
-    config = conf.load(toml_file, allow_exec=True)
+    config = conf.load(toml_file)
     # Command fails, password stays at default (empty string)
     assert config.jobs[0].password == ""
 
 
-def test_load_password_cmd_ignored_without_allow_exec(tmp_path):
-    toml_file = _write_job(tmp_path, 'password_cmd = "echo s3cret"\n')
-    config = conf.load(toml_file)
-    assert config.jobs[0].password == ""
+def test_a_file_that_is_not_utf8_is_not_valid_toml(tmp_path):
+    toml_file = tmp_path / "test.toml"
+    toml_file.write_bytes(b'[[job]]\nname = "j\xff"\n')
+
+    with pytest.raises(conf.ConfigError, match="not a valid TOML"):
+        conf.load(toml_file)
 
 
 def test_non_string_values_unchanged(tmp_path):
@@ -347,7 +349,7 @@ class TestTomlConfig:
     def test_load_toml_password_cmd(self, tmp_path):
         toml_file = tmp_path / "test.toml"
         toml_file.write_text('[[job]]\nname = "test"\npassword_cmd = "echo s3cret"\n')
-        config = conf.load(toml_file, allow_exec=True)
+        config = conf.load(toml_file)
         assert config.jobs[0].password == "s3cret"
 
     def test_load_toml_empty_jobs(self, tmp_path):

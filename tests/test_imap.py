@@ -169,8 +169,8 @@ class TestConnect:
 
     @patch("mailvault.backend.imap.imapclient.IMAPClient")
     def test_an_empty_password_names_the_cause(self, mock_imap_cls):
-        """A `password_cmd` that never ran leaves nothing to log in with."""
-        with pytest.raises(imap.MailboxError, match="no password for 'user'.*--allow-exec"):
+        """A failed `password_cmd` leaves nothing to log in with."""
+        with pytest.raises(imap.MailboxError, match="no password for 'user'.*'password_cmd'"):
             imap.ImapClient.connect(_make_job(password=""))
 
         # And it costs no connection to find that out.

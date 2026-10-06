@@ -69,11 +69,11 @@ def setup_logger(loglevel: int = logging.INFO, logfile: pathlib.Path | None = No
 def add_mailbox_options(parser: argparse.ArgumentParser, writes: bool = False) -> None:
     """The options a command takes that reads the configuration and logs in.
 
-    They belong to the command, not to `mailvault` itself. Which jobs to run and
-    what the configuration may do are statements about the work being done, and
-    `archive check` has no use for either -- an option whose help text has to
-    name the commands it applies to is standing one level too high. It also puts
-    them where the hand expects them: `backup --job proton.me` is how everybody
+    They belong to the command, not to `mailvault` itself. Which jobs to run is
+    a statement about the work being done, and `archive check` has no use for
+    it -- an option whose help text has to name the commands it applies to is
+    standing one level too high. It also puts them where the hand expects them:
+    `backup --job proton.me` is how everybody
     writes it, and only the parser used to insist on `--job proton.me backup`.
 
     `writes` adds the one that only means anything to a command that puts
@@ -85,11 +85,10 @@ def add_mailbox_options(parser: argparse.ArgumentParser, writes: bool = False) -
         metavar="NAME",
         help="Run only the named job; may be repeated",
     )
-    parser.add_argument(
-        "--allow-exec",
-        action="store_true",
-        help="Let the configuration's _cmd fields run, e.g. to fetch a password",
-    )
+    # Removed, but still accepted and left out of the help. A cron line that
+    # names it would otherwise fail with a usage error, and nobody reads cron's
+    # mail. `mailbox.run` warns about it.
+    parser.add_argument("--allow-exec", action="store_true", help=argparse.SUPPRESS)
     if writes:
         parser.add_argument(
             "--allow-new-mailbox",

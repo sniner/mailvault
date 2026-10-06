@@ -987,10 +987,52 @@ password_cmd = "pass show email/example.org"
 client_secret_cmd = "az keyvault secret show --name my-secret --query value -o tsv"
 ```
 
-For security, `_cmd` fields are only evaluated when `--allow-exec` is passed to
-the command that reads the configuration (`mailvault backup --allow-exec`, and
-the same for `folders` and `verify`). Without it, `_cmd` fields are ignored with
-a warning.
+The command runs through the shell, as the user who runs mailvault, and has 10
+seconds to finish. If it fails or takes longer, mailvault logs the error and the
+field gets no value from it.
+
+### Who may write the configuration
+
+A `_cmd` field is a shell command. mailvault runs it as the account that runs
+mailvault, with everything that account can reach: its home directory, its SSH
+keys, its other passwords. Whoever can write `mailvault.toml` can therefore run
+any command under that account, every time the backup runs.
+
+The commands are the obvious risk, and not the only one. The rest of the file
+decides where the password goes and what happens to the mail:
+
+- `server` can be changed to a host the writer controls. mailvault logs in
+  there, and the password, whether written into the file or fetched by
+  `password_cmd`, arrives at that host. No command needs to run for this.
+- A plain `password = "..."` can simply be read.
+- `delete_after_export` removes mail from the server once it has been
+  archived. Added to a job that was never meant to delete anything, it empties
+  the mailbox.
+
+None of this needs a hostile person. A shared drive mounted writable by several
+accounts, a sync client that overwrites files, or a colleague who edits the wrong
+`mailvault.toml` has the same effect.
+
+The protection is the file's location. The configuration is only as safe as the
+directory it lies in, so it has to be a directory that nobody else can write to:
+
+- An archive in your home directory, on a disk only you use, is fine as it is.
+  Give the file the permissions a password file gets (`chmod 600`), and keep it
+  owned by the account that runs the backup.
+- Where other people can write to the archive, on a NAS share or a shared
+  drive, do not keep the configuration in the archive. Put it where only your
+  account can write and name both the archive and the file:
+
+  ```console
+  $ mailvault --archive /srv/archive/private --config ~/.config/mailvault/private.toml backup
+  ```
+
+  The archive on the share then holds no configuration, and nothing written
+  there can change what the backup does.
+
+The same applies to what the file points at. A `password_cmd` that runs a
+program from a directory others can write to, or a `${VAR}` that comes from an
+environment others can set, moves the problem rather than solving it.
 
 ### Parameters
 

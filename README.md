@@ -92,9 +92,11 @@ everything the server offers is backed up; `port` defaults to 993 and `tls` to
 true.
 
 A plain `password = "..."` works, and so does `password_cmd`, which runs a
-command and takes its output. Any string field has such a `_cmd` variant, and
-they are only evaluated when the command that reads the configuration is given
-`--allow-exec`.
+command and takes its output. Any string field has such a `_cmd` variant.
+
+A `_cmd` field runs as the account that runs mailvault, so the file has to lie
+where nobody else can write to it; see [Who may write the
+configuration](https://github.com/sniner/mailvault/blob/main/docs/deep-dive.md#who-may-write-the-configuration).
 
 Microsoft 365 over MS Graph is a different set of keys in the same shape:
 

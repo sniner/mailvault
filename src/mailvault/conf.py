@@ -1,9 +1,8 @@
 """Loading the TOML configuration into `Config` and `JobConfig`.
 
 Parses the `[global]` options and the `[[job]]` list, expands `${VAR}` and
-`_cmd` values (the latter only with `--allow-exec`), and reports fields and
-sections that were retired in an earlier version rather than silently ignoring
-them or restoring a default.
+`_cmd` values, and reports fields and sections that were retired in an earlier
+version rather than silently ignoring them or restoring a default.
 """
 
 from __future__ import annotations
@@ -75,9 +74,7 @@ def _report_unset_vars(where: str, key: str, value: str) -> None:
         )
 
 
-def _resolve_values(
-    where: str, data: dict[str, Any], allow_exec: bool = False
-) -> dict[str, Any]:
+def _resolve_values(where: str, data: dict[str, Any]) -> dict[str, Any]:
     """Expand environment variables in string values and resolve *_cmd fields."""
     resolved = {}
     for key, value in data.items():
@@ -91,9 +88,6 @@ def _resolve_values(
         target_key = cmd_key.removesuffix("_cmd")
         cmd = resolved.pop(cmd_key)
         if not isinstance(cmd, str) or not cmd.strip():
-            continue
-        if not allow_exec:
-            log.warning("Ignoring '%s' (use --allow-exec to enable command execution)", cmd_key)
             continue
         try:
             result = subprocess.run(
@@ -232,8 +226,8 @@ class JobConfig:
             )
 
     @classmethod
-    def from_dict(cls, name: str, data: dict[str, Any], allow_exec: bool = False) -> JobConfig:
-        resolved = _resolve_values(name, data, allow_exec=allow_exec)
+    def from_dict(cls, name: str, data: dict[str, Any]) -> JobConfig:
+        resolved = _resolve_values(name, data)
         resolved = cls._drop_retired_fields(name, resolved)
         fields = {f.name for f in dataclasses.fields(cls)}
         known = {k: v for k, v in resolved.items() if k in fields}
@@ -393,7 +387,7 @@ class Config:
     incremental: bool = True
 
     @classmethod
-    def from_toml(cls, data: dict[str, Any], allow_exec: bool = False) -> Config:
+    def from_toml(cls, data: dict[str, Any]) -> Config:
         if "copy" in data:
             log.warning("[copy] no longer does anything -- %s", RETIRED_SECTIONS["copy"])
 
@@ -414,24 +408,30 @@ class Config:
                 JobConfig.from_dict(
                     name,
                     {k: v for k, v in job_data.items() if k != "name"},
-                    allow_exec=allow_exec,
                 )
             )
 
         return cls(jobs=jobs, **known_global)
 
 
-def load(path: pathlib.Path | str, allow_exec: bool = False) -> Config:
+def _read(path: pathlib.Path) -> bytes:
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise ConfigError(f"{path}: cannot read configuration: {exc.strerror or exc}") from exc
+
+
+def load(path: pathlib.Path | str) -> Config:
     """Load a TOML configuration file.
 
     The file name does not matter -- the content is always parsed as TOML.
     """
     path = pathlib.Path(path)
+    # Decoded here rather than left to `tomllib.load`, which raises a bare
+    # `UnicodeDecodeError` for a file that is not UTF-8 instead of reporting it
+    # as what it is: not a readable configuration.
     try:
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
-    except OSError as exc:
-        raise ConfigError(f"{path}: cannot read configuration: {exc.strerror or exc}") from exc
-    except tomllib.TOMLDecodeError as exc:
+        parsed = tomllib.loads(_read(path).decode())
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"{path}: not a valid TOML configuration: {exc}") from exc
-    return Config.from_toml(data, allow_exec=allow_exec)
+    return Config.from_toml(parsed)

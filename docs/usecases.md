@@ -52,7 +52,7 @@ delete_after_export = true
 4. Run the backup as usual:
 
 ```console
-$ mailvault backup --allow-exec
+$ mailvault backup
 ```
 
 Everything sitting in the folder is archived and then removed from the server.

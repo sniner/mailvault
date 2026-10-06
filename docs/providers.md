@@ -41,8 +41,7 @@ Leave `folders` out and everything the mailbox offers is backed up. That is the
 right default nearly everywhere -- Gmail is the exception.
 
 **Keep the password out of the file.** Any field can be given as `_cmd` instead,
-which runs a command and takes what it prints. It only runs when you pass
-`--allow-exec`:
+which runs a command and takes what it prints:
 
 ```toml
 password_cmd = "pass show email/example.org"
