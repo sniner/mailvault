@@ -130,14 +130,108 @@ def test_load_password_cmd_does_not_overwrite_explicit(tmp_path):
     """If both password and password_cmd exist, password_cmd wins (it resolves later)."""
     toml_file = _write_job(tmp_path, 'password = "old"\npassword_cmd = "echo new"\n')
     config = conf.load(toml_file)
-    assert config.jobs[0].password == "new"
+    assert config.jobs[0].resolve().password == "new"
 
 
 def test_load_with_failing_cmd(tmp_path):
     toml_file = _write_job(tmp_path, 'password_cmd = "false"\n')
     config = conf.load(toml_file)
     # Command fails, password stays at default (empty string)
-    assert config.jobs[0].password == ""
+    assert config.jobs[0].resolve().password == ""
+
+
+def test_a_failing_cmd_leaves_the_value_given_outright(tmp_path):
+    toml_file = _write_job(tmp_path, 'password = "given"\npassword_cmd = "false"\n')
+    assert conf.load(toml_file).jobs[0].resolve().password == "given"
+
+
+class TestCommandsRunWhenTheJobRuns:
+    """Loading runs no command; `resolve` does, when the job is about to run."""
+
+    def test_loading_runs_nothing(self, tmp_path):
+        ran = tmp_path / "ran"
+        toml_file = _write_job(tmp_path, f'password_cmd = "touch {ran}; echo pw"\n')
+
+        job = conf.load(toml_file).jobs[0]
+
+        assert not ran.exists()
+        assert job.password == ""
+        assert job.resolve().password == "pw"
+        assert ran.exists()
+
+    def test_only_the_job_that_runs_runs_its_command(self, tmp_path):
+        first, second = tmp_path / "first", tmp_path / "second"
+        toml_file = tmp_path / "test.toml"
+        toml_file.write_text(
+            f'[[job]]\nname = "one"\npassword_cmd = "touch {first}"\n'
+            f'[[job]]\nname = "two"\npassword_cmd = "touch {second}"\n'
+        )
+
+        conf.load(toml_file).jobs[1].resolve()
+
+        assert not first.exists()
+        assert second.exists()
+
+    def test_a_resolved_job_runs_nothing_again(self, tmp_path):
+        count = tmp_path / "count"
+        toml_file = _write_job(tmp_path, f'password_cmd = "echo x >> {count}; echo pw"\n')
+
+        conf.load(toml_file).jobs[0].resolve().resolve()
+
+        assert count.read_text() == "x\n"
+
+    def test_a_command_for_a_field_that_is_not_a_string_is_refused_on_loading(self, tmp_path):
+        ran = tmp_path / "ran"
+        toml_file = _write_job(tmp_path, f'port_cmd = "touch {ran}; echo 993"\n')
+
+        with pytest.raises(conf.ConfigError, match="'port' must be a number"):
+            conf.load(toml_file)
+        assert not ran.exists()
+
+    def test_a_command_for_an_unknown_field_is_named_and_never_run(self, tmp_path, caplog):
+        ran = tmp_path / "ran"
+        toml_file = _write_job(tmp_path, f'colour_cmd = "touch {ran}"\n')
+
+        with caplog.at_level(logging.WARNING, logger="mailvault.conf"):
+            job = conf.load(toml_file).jobs[0]
+        job.resolve()
+
+        assert "colour" in caplog.text
+        assert not ran.exists()
+
+    def test_commands_is_not_an_option_of_its_own(self, tmp_path, caplog):
+        toml_file = _write_job(tmp_path, 'commands = { password = "echo pw" }\n')
+
+        with caplog.at_level(logging.WARNING, logger="mailvault.conf"):
+            job = conf.load(toml_file).jobs[0]
+
+        assert "commands" in caplog.text
+        assert job.resolve().password == ""
+
+
+class TestHash:
+    """`[global] hash`: the hash an archive names its messages with."""
+
+    def test_without_one_it_is_the_one_every_older_archive_has(self, tmp_path):
+        toml_file = _write_job(tmp_path, "")
+        assert conf.load(toml_file).hash == "sha384"
+
+    def test_a_known_one_is_taken(self, tmp_path):
+        toml_file = tmp_path / "test.toml"
+        toml_file.write_text('[global]\nhash = "sha256"\n')
+        assert conf.load(toml_file).hash == "sha256"
+
+    def test_an_unknown_one_is_refused(self, tmp_path):
+        toml_file = tmp_path / "test.toml"
+        toml_file.write_text('[global]\nhash = "md5"\n')
+        with pytest.raises(conf.ConfigError, match='hash = "md5" is not a hash'):
+            conf.load(toml_file)
+
+    def test_one_that_is_not_a_string_is_refused(self, tmp_path):
+        toml_file = tmp_path / "test.toml"
+        toml_file.write_text("[global]\nhash = 256\n")
+        with pytest.raises(conf.ConfigError, match="'hash' must be a string"):
+            conf.load(toml_file)
 
 
 def test_a_file_that_is_not_utf8_is_not_valid_toml(tmp_path):
@@ -350,7 +444,7 @@ class TestTomlConfig:
         toml_file = tmp_path / "test.toml"
         toml_file.write_text('[[job]]\nname = "test"\npassword_cmd = "echo s3cret"\n')
         config = conf.load(toml_file)
-        assert config.jobs[0].password == "s3cret"
+        assert config.jobs[0].resolve().password == "s3cret"
 
     def test_load_toml_empty_jobs(self, tmp_path):
         toml_file = tmp_path / "test.toml"

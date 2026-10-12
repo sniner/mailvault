@@ -169,3 +169,53 @@ class TestAnArchiveWithMailAndNoNames:
         cas.mail_store(tmp_path).add(dummy_eml_bytes)
 
         guard.check_jobs(tmp_path, _jobs("gmail.com"))
+
+
+class TestTheHashFitsTheArchive:
+    """The configuration names the hash; the archive's messages have to agree.
+
+    With the wrong one every message fails its integrity check, and a backup
+    stores every message a second time under its other name.
+    """
+
+    def test_an_archive_without_messages_takes_any(self, tmp_path):
+        cas.mail_store(tmp_path)
+
+        guard.check_hash(tmp_path, "sha256", tmp_path / "mailvault.toml")
+        guard.check_hash(tmp_path, "sha384", tmp_path / "mailvault.toml")
+
+    def test_the_hash_the_messages_are_named_in_passes(self, tmp_path, dummy_eml_bytes):
+        cas.use_hash("sha256")
+        cas.mail_store(tmp_path).add(dummy_eml_bytes)
+
+        guard.check_hash(tmp_path, "sha256", tmp_path / "mailvault.toml")
+
+    def test_another_one_is_refused_and_the_message_names_both(self, tmp_path, dummy_eml_bytes):
+        cas.mail_store(tmp_path).add(dummy_eml_bytes)
+
+        with pytest.raises(JobError) as excinfo:
+            guard.check_hash(tmp_path, "sha256", tmp_path / "mailvault.toml")
+
+        message = str(excinfo.value)
+        assert "mailvault.toml: the hash is sha256" in message
+        assert "named in sha384" in message
+        assert 'set hash = "sha384"' in message
+
+    def test_a_name_that_fits_no_hash_is_refused_and_named(self, tmp_path):
+        store = cas.mail_store(tmp_path)
+        shard = store.root_dir / "ab" / "cd"
+        shard.mkdir(parents=True)
+        (shard / ("abcd" + "0" * 36 + ".eml")).write_bytes(b"not ours")
+
+        with pytest.raises(JobError) as excinfo:
+            guard.check_hash(tmp_path, "sha256", tmp_path / "mailvault.toml")
+
+        message = str(excinfo.value)
+        assert message.startswith("mail/ab/cd/abcd")
+        assert "fits no hash" in message
+
+    def test_an_archive_without_a_mail_directory_is_not_given_one(self, tmp_path):
+        """An archive that has not been migrated keeps its messages in the root."""
+        guard.check_hash(tmp_path, "sha256", tmp_path / "mailvault.toml")
+
+        assert not (tmp_path / cas.MAIL_DIR).exists()

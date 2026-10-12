@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 def entry_path(store: cas.ContentAddressedStorage, wanted: str) -> pathlib.Path:
     """Find the entry a message id names, given whole or only begun.
 
-    A message id is ninety-six characters and the reports print the first twelve
+    A message id is 64 or 96 characters and the reports print the first twelve
     of them, so that is what a reader has to hand and that is what this takes --
     as long as it belongs to one message and not to several.
 

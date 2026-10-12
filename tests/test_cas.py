@@ -1,3 +1,4 @@
+import hashlib
 import io
 import os
 import pathlib
@@ -850,3 +851,44 @@ class TestOpeningByStoreId:
         _status, store_id, _path = store.add(b"Subject: hello\r\n\r\nthe body")
 
         assert store.read_header_of(store_id) == b"Subject: hello\r\n\r\n"
+
+
+class TestTheRunsHash:
+    """An archive is named in one hash, and the run names and checks with that one."""
+
+    def test_no_two_hashes_have_digests_of_one_length(self):
+        """What lets one entry's name say which hash its archive is in."""
+        lengths = [len(factory().hexdigest()) for factory in cas.HASHES.values()]
+
+        assert len(set(lengths)) == len(lengths)
+
+    def test_a_name_says_which_hash_it_is_in(self):
+        assert cas.hash_by_length("a" * 64) == "sha256"
+        assert cas.hash_by_length("a" * 96) == "sha384"
+        assert cas.hash_by_length("a" * 40) is None
+
+    def test_without_a_choice_it_is_the_legacy_hash(self, tmp_path):
+        _status, store_id, _path = cas.mail_store(tmp_path).add(b"a message")
+
+        assert store_id == hashlib.sha384(b"a message").hexdigest()
+
+    def test_the_chosen_hash_names_new_entries(self, tmp_path):
+        cas.use_hash("sha256")
+
+        _status, store_id, _path = cas.mail_store(tmp_path).add(b"a message")
+
+        assert store_id == hashlib.sha256(b"a message").hexdigest()
+        assert cas.digest(b"a message") == store_id
+
+    def test_an_entry_verifies_against_the_chosen_hash(self, tmp_path):
+        cas.use_hash("sha256")
+        store = cas.mail_store(tmp_path, compress=True)
+
+        _status, _store_id, path = store.add(b"a message")
+
+        assert store.verify(path)
+
+    def test_an_unknown_hash_is_refused(self):
+        with pytest.raises(ValueError, match="md5"):
+            cas.use_hash("md5")
+        assert cas.current_hash() == cas.LEGACY_HASH

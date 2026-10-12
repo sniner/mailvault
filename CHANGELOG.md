@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **New archives name their messages with SHA-256.** `archive init` writes `hash = "sha256"` into
+  the `[global]` section of the new archive's `mailvault.toml`. An archive whose configuration
+  names no `hash` uses SHA-384 as before, so existing archives need no change. The value can be
+  changed only while the archive holds no messages: mailvault compares it with the names of the
+  messages in the archive and stops with an error when they do not fit. `archive init` on an
+  existing archive without a configuration writes the hash its messages already have
+
+### Changed
+
+- **A `_cmd` field runs only when its job runs.** Loading the configuration runs no command.
+  `backup`, `verify` and `folders` run the commands of the jobs they work on, with `--job` only
+  those of the jobs it names, and all other commands run none. A password manager asks for its
+  passphrase only when a job needs the password
+
 ## 0.17.0 (2026-10-06)
 
 ### Changed

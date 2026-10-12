@@ -739,9 +739,11 @@ structure:
 │   │   └── 0030f33161416b03e...97aa.eml
 ```
 
-The filename is the SHA-384 hash of the file content and serves as the key to
+The filename is the SHA-256 hash of the file content and serves as the key to
 the archive. This makes it easy to verify file integrity by comparing the hash
-with the filename.
+with the filename. An archive whose configuration names no `hash` uses SHA-384
+instead, and its filenames are 96 characters long instead of 64. Archives made by
+mailvault 0.17 or earlier are such archives.
 
 The archive around them:
 
@@ -789,7 +791,7 @@ ambiguous. These files are content-addressed exactly like the messages, so each
 one carries its own integrity check:
 
 ```console
-$ sha384sum meta/a1/a1b2c3….jsonl     # matches the filename, or the file is damaged
+$ sha256sum meta/a1/a1b2c3….jsonl     # matches the filename, or the file is damaged
 ```
 
 They are written once and never modified.
@@ -942,8 +944,8 @@ etc.) work the same as with IMAP. Three do not:
 ### Global options
 
 Some options apply to the whole run rather than to a single mailbox and are set
-in a `[global]` section: `compress`, `index_db` and `incremental`. They are
-marked *(global option)* in the tables below.
+in a `[global]` section: `compress`, `index_db`, `incremental` and `hash`. They
+are marked *(global option)* in the tables below.
 
 ```toml
 [global]
@@ -990,6 +992,10 @@ client_secret_cmd = "az keyvault secret show --name my-secret --query value -o t
 The command runs through the shell, as the user who runs mailvault, and has 10
 seconds to finish. If it fails or takes longer, mailvault logs the error and the
 field gets no value from it.
+
+A command runs only when its job runs: `backup`, `verify` and `folders` run the
+commands of the jobs they work on, `--job` limits that to the jobs it names, and
+the other commands run none.
 
 ### Who may write the configuration
 
@@ -1066,6 +1072,7 @@ environment others can set, moves the problem rather than solving it.
 | `incremental` | `true` | Only download messages added since the last backup run (global option) |
 | `compress` | `false` | Compress stored emails with zstd (global option) |
 | `index_db` | `false` | Maintain a queryable `index.db` alongside the archive, refreshed after each backup (global option) |
+| `hash` | `"sha384"` | The checksum the messages are named after: `"sha256"` or `"sha384"`. `archive init` writes `"sha256"` for a new archive. Change it only while the archive holds no messages: once it does, a value that does not fit them stops mailvault with an error (global option) |
 
 
 ## Migrating an older archive

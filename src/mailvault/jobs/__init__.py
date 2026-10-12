@@ -25,6 +25,7 @@ from mailvault.jobs.db import (
     search,
 )
 from mailvault.jobs.folders import folder_list
+from mailvault.jobs.guard import check_hash
 from mailvault.jobs.importing import (
     DocuwareMailArchive,
     ExternalMailArchive,
@@ -59,6 +60,7 @@ __all__ = [
     "adopt",
     "backup",
     "check",
+    "check_hash",
     "check_place_name",
     "create_db",
     "drop_db",

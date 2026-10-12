@@ -1,8 +1,9 @@
 """Loading the TOML configuration into `Config` and `JobConfig`.
 
-Parses the `[global]` options and the `[[job]]` list, expands `${VAR}` and
-`_cmd` values, and reports fields and sections that were retired in an earlier
-version rather than silently ignoring them or restoring a default.
+Parses the `[global]` options and the `[[job]]` list, expands `${VAR}`, sets the
+`_cmd` fields aside until their job runs, and reports fields and sections that
+were retired in an earlier version rather than silently ignoring them or
+restoring a default.
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ import tomllib
 import types
 import typing
 from typing import Any
+
+from mailvault.store import cas
 
 log = logging.getLogger(__name__)
 
@@ -74,43 +77,58 @@ def _report_unset_vars(where: str, key: str, value: str) -> None:
         )
 
 
-def _resolve_values(where: str, data: dict[str, Any]) -> dict[str, Any]:
-    """Expand environment variables in string values and resolve *_cmd fields."""
-    resolved = {}
+def _expand_values(where: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Expand environment variables in the string values."""
+    expanded = {}
     for key, value in data.items():
         if isinstance(value, str):
             value = _expand_env(value)
             _report_unset_vars(where, key, value)
-        resolved[key] = value
+        expanded[key] = value
+    return expanded
 
-    cmd_keys = [k for k in resolved if k.endswith("_cmd")]
-    for cmd_key in cmd_keys:
-        target_key = cmd_key.removesuffix("_cmd")
-        cmd = resolved.pop(cmd_key)
-        if not isinstance(cmd, str) or not cmd.strip():
-            continue
-        try:
-            result = subprocess.run(
-                cmd,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode != 0:
-                log.error(
-                    "Command '%s' failed (exit %d): %s",
-                    cmd,
-                    result.returncode,
-                    result.stderr.strip(),
-                )
-                continue
-            resolved[target_key] = result.stdout.strip()
-        except subprocess.TimeoutExpired:
-            log.error("Command '%s' timed out", cmd)
-        except OSError as exc:
-            log.error("Command '%s' failed: %s", cmd, exc)
-    return resolved
+
+def _split_commands(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    """Separate the values given outright from the `KEY_cmd` commands.
+
+    The commands come back by the key they fill. One that is not a string, or is
+    empty, is dropped.
+    """
+    given: dict[str, Any] = {}
+    commands: dict[str, str] = {}
+    for key, value in data.items():
+        if not key.endswith("_cmd"):
+            given[key] = value
+        elif isinstance(value, str) and value.strip():
+            commands[key.removesuffix("_cmd")] = value
+    return given, commands
+
+
+def _run_command(cmd: str) -> str | None:
+    """The output of a `KEY_cmd` command, or None when it fails."""
+    try:
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        log.error("Command '%s' timed out", cmd)
+        return None
+    except OSError as exc:
+        log.error("Command '%s' failed: %s", cmd, exc)
+        return None
+    if result.returncode != 0:
+        log.error(
+            "Command '%s' failed (exit %d): %s",
+            cmd,
+            result.returncode,
+            result.stderr.strip(),
+        )
+        return None
+    return result.stdout.strip()
 
 
 # What the `copy` command left behind. It was removed in 0.9.0, so these say
@@ -162,6 +180,24 @@ class JobConfig:
     tenant_id: str = ""
     client_id: str = ""
     client_secret: str = ""
+    # The fields given as `KEY_cmd`, by the field they fill. `resolve` runs them
+    # when the job runs, so loading the configuration runs nothing: commands that
+    # only open the archive read it too, and a password manager must not ask for
+    # its passphrase for those.
+    commands: dict[str, str] = dataclasses.field(default_factory=dict, repr=False)
+
+    def resolve(self) -> JobConfig:
+        """This job with every `KEY_cmd` run and its value filled in.
+
+        A command's value wins over a value given outright. A command that fails
+        is logged, and its field keeps whatever was given outright.
+        """
+        values = {}
+        for key, cmd in self.commands.items():
+            value = _run_command(cmd)
+            if value is not None:
+                values[key] = value
+        return dataclasses.replace(self, commands={}, **values)
 
     def validate(self) -> None:
         """Check that the backend is known and the options make sense together.
@@ -227,15 +263,20 @@ class JobConfig:
 
     @classmethod
     def from_dict(cls, name: str, data: dict[str, Any]) -> JobConfig:
-        resolved = _resolve_values(name, data)
-        resolved = cls._drop_retired_fields(name, resolved)
-        fields = {f.name for f in dataclasses.fields(cls)}
-        known = {k: v for k, v in resolved.items() if k in fields}
-        unknown = set(resolved.keys()) - fields
+        given, commands = _split_commands(_expand_values(name, data))
+        given = cls._drop_retired_fields(name, given)
+        commands = cls._drop_retired_fields(name, commands)
+        fields = {f.name for f in dataclasses.fields(cls)} - {"commands"}
+        known = {k: v for k, v in given.items() if k in fields}
+        commanded = {k: v for k, v in commands.items() if k in fields}
+        unknown = (set(given) | set(commands)) - fields
         if unknown:
             log.warning("Unknown config fields in '%s': %s", name, ", ".join(sorted(unknown)))
-        _check_types(name, known, typing.get_type_hints(cls))
-        return cls(name=name, **known)
+        # A command prints a string. Checked with a string in its place, so a
+        # `port_cmd` is refused now and not when the job runs.
+        placeholders = dict.fromkeys(commanded, "")
+        _check_types(name, known | placeholders, typing.get_type_hints(cls))
+        return cls(name=name, **known, commands=commanded)
 
     @staticmethod
     def _drop_retired_fields(name: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -385,6 +426,10 @@ class Config:
     compress: bool = False
     index_db: bool = False
     incremental: bool = True
+    # The hash the archive names its messages with. `archive init` writes it, and
+    # once the archive holds messages it must not change; `jobs.guard.check_hash`
+    # stops a run where it does not fit them.
+    hash: str = cas.LEGACY_HASH
 
     @classmethod
     def from_toml(cls, data: dict[str, Any]) -> Config:
@@ -398,6 +443,12 @@ class Config:
         if unknown_global:
             log.warning("Unknown global config fields: %s", ", ".join(sorted(unknown_global)))
         _check_types("[global]", known_global, typing.get_type_hints(cls))
+        hash_name = known_global.get("hash", cas.LEGACY_HASH)
+        if hash_name not in cas.HASHES:
+            raise ConfigError(
+                f'[global]: hash = "{hash_name}" is not a hash mailvault knows.'
+                f" Set the one the archive was made with: {' or '.join(sorted(cas.HASHES))}"
+            )
 
         jobs = []
         for job_data in _job_tables(data):

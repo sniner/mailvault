@@ -18,6 +18,7 @@ from mailvault.cli.common import (
     DEFAULT_DB_NAME,
     archive_path,
     require_archive,
+    use_archive_hash,
 )
 
 log = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ def run(args: argparse.Namespace) -> int:
     """
     archive = archive_path(args)
     require_archive(archive)
+    use_archive_hash(args, archive)
 
     db_path = archive / DEFAULT_DB_NAME
     state = jobs.freshness(archive, db_path)

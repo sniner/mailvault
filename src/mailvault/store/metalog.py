@@ -27,7 +27,8 @@ File layout -- a content-addressed store, the same discipline the mail uses:
     meta/a1/a1b2c3....jsonl
 
 The name is the hash of the content, so a file carries its own integrity check:
-`sha384sum` against the name settles it, without knowing this format at all. It
+`sha256sum` against the name settles it (`sha384sum` in an archive whose
+configuration names no hash), without knowing this format at all. It
 also shards, which keeps a decade of runs from piling thousands of files into one
 directory. Depth 1 is enough here -- the mail store uses 2 because it has to
 carry hundreds of thousands of entries, the log has orders of magnitude fewer.
@@ -208,7 +209,7 @@ def verify_file(path: pathlib.Path) -> bool:
     except OSError as exc:
         log.warning("%s: unreadable: %s", where(path), exc)
         return False
-    return cas.DEFAULT_HASH(raw).hexdigest() == path.name.removesuffix(".jsonl")
+    return cas.digest(raw) == path.name.removesuffix(".jsonl")
 
 
 def _serialize(
@@ -512,7 +513,7 @@ def examine_log(path: pathlib.Path) -> tuple[LogFile | None, Unreadable | None]:
     # a subset of the truth -- which is what every log file is anyway. Throwing
     # away 80,000 readable lines because the last one was cut short would be the
     # worse answer. The warning is what lets someone repair the archive.
-    if cas.DEFAULT_HASH(raw).hexdigest() != path.name.removesuffix(".jsonl"):
+    if cas.digest(raw) != path.name.removesuffix(".jsonl"):
         log.warning("%s: damaged -- content does not match its name", where(path))
 
     try:

@@ -19,6 +19,7 @@ from mailvault.cli.common import (
     config_file,
     report_items,
     require_archive,
+    use_archive_hash,
 )
 from mailvault.jobs import guard
 from mailvault.store import metalog
@@ -195,6 +196,7 @@ def _run_job(
     to react to and a script no way of asking.
     """
     log.info("Job: %s", job.name)
+    job = job.resolve()
 
     if args.command == "folders":
         report_folders(job.name, jobs.folder_list(job))
@@ -284,6 +286,7 @@ def run(args: argparse.Namespace) -> int:
     places = None
     if needs_archive:
         destination = archive
+        use_archive_hash(args, destination, config)
         guard.check_jobs(destination, selected, allow_new=args.allow_new_mailbox)
         # One archive, one metadata log, one reading of it -- however many jobs
         # the configuration names. Every job used to read all of it to keep the

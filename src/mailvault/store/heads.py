@@ -133,7 +133,7 @@ def _identity(job: str | None, folder: str | None) -> str:
     blake2b rather than anything else for two practical reasons and no security
     one -- it separates names, it protects nothing. `digest_size=4` yields eight
     hex characters directly, with no truncation whose admissibility somebody has
-    to think about later; and it is visibly not the sha384 of a store id, so no
+    to think about later; and it is visibly not a store id, so no
     error message can be misread as naming one. Four bytes are generous for a
     value that only has to separate places sharing a slug, realistically two.
 

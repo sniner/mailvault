@@ -6,6 +6,10 @@
 
 [global]
 compress = true
+# The checksum the messages are named after, "sha256" or "sha384". `archive
+# init` writes it, and it can be changed only while the archive holds no
+# messages. Without this line an archive uses sha384.
+# hash = "sha256"
 
 [[job]]
 name = "example.org"

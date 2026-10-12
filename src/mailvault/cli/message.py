@@ -16,6 +16,7 @@ from mailvault import jobs
 from mailvault.cli.common import (
     archive_path,
     require_archive,
+    use_archive_hash,
 )
 from mailvault.jobs.retrieval import entry_path
 from mailvault.store import cas
@@ -94,6 +95,7 @@ def run(args: argparse.Namespace) -> int:
     """
     archive = archive_path(args)
     require_archive(archive)
+    use_archive_hash(args, archive)
     if args.path:
         return locate_entries(archive, args.entry)
     return export_entries(archive, args.entry, args.output)

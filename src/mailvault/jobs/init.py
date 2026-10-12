@@ -17,6 +17,7 @@ import logging
 import pathlib
 
 from mailvault.jobs.common import JobError
+from mailvault.jobs.guard import named_hash
 from mailvault.store import cas, heads, marker, metalog
 
 log = logging.getLogger(__name__)
@@ -31,6 +32,10 @@ CONFIG_TEMPLATE = """\
 # Full reference: https://github.com/sniner/mailvault#configuration
 
 [global]
+# The checksum the messages are named after. Change it only while the archive
+# holds no messages: once it does, a value that does not fit them stops
+# mailvault with an error.
+hash = "{hash}"
 # compress = true      # store the messages zstd-compressed
 # index_db = true      # keep index.db beside the archive, for querying with SQL
 
@@ -101,7 +106,11 @@ def init_archive(path: pathlib.Path, config_name: str) -> InitResult:
     result.config = config
     result.config_existed = config.is_file()
     if not result.config_existed:
-        config.write_text(CONFIG_TEMPLATE, encoding="utf-8")
+        # An archive that already holds messages keeps the hash they are named
+        # in. `init` on an archive whose configuration lives elsewhere must not
+        # write one that contradicts it.
+        hash_name = named_hash(path) or cas.NEW_ARCHIVE_HASH
+        config.write_text(CONFIG_TEMPLATE.format(hash=hash_name), encoding="utf-8")
 
     if not marker.is_archive(path):
         marker.write(path)

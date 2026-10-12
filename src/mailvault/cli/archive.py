@@ -19,6 +19,7 @@ from mailvault.cli.common import (
     report_items,
     require_archive,
     shorten,
+    use_archive_hash,
 )
 from mailvault.store import cas, heads, marker, metalog
 
@@ -544,6 +545,8 @@ def run(args: argparse.Namespace) -> int:
     archive = archive_path(args)
     if cmd not in WITHOUT_AN_ARCHIVE:
         require_archive(archive)
+    if cmd != "init":
+        use_archive_hash(args, archive)
 
     if cmd == "init":
         # `git init [<directory>]`, and the same default: where you are standing.

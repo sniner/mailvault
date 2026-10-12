@@ -92,7 +92,8 @@ everything the server offers is backed up; `port` defaults to 993 and `tls` to
 true.
 
 A plain `password = "..."` works, and so does `password_cmd`, which runs a
-command and takes its output. Any string field has such a `_cmd` variant.
+command and takes its output. Any string field has such a `_cmd` variant. The
+command runs only when its job runs.
 
 A `_cmd` field runs as the account that runs mailvault, so the file has to lie
 where nobody else can write to it; see [Who may write the
@@ -123,6 +124,10 @@ A few settings apply to the whole run rather than to one mailbox and go into a
 compress = true      # store the messages compressed with zstd
 index_db = true      # keep the query database in step with every backup
 ```
+
+`init` also writes `hash = "sha256"` there, the checksum the messages are named
+after. Change it only while the archive holds no messages: once it does, a
+value that does not fit them stops mailvault with an error.
 
 Every option there is, and what each one does, is in the [configuration
 reference](https://github.com/sniner/mailvault/blob/main/docs/deep-dive.md#configuration-reference).

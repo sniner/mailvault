@@ -352,7 +352,7 @@ class TestTheLogChain:
         ahead = body.replace(written, '"version": 99', 1).encode("utf-8")
 
         heads_root = tmp_path / heads.DEFAULT_HEADS_DIR
-        hashval = cas.DEFAULT_HASH(ahead).hexdigest()
+        hashval = cas.digest(ahead)
         renamed = second.with_name(f"{hashval}.jsonl")
         tamper(second, ahead)
         second.rename(renamed)

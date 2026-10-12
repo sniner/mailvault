@@ -93,7 +93,9 @@ def _message(subject: str, sent: str, attachments: int = 0) -> EmailMessage:
 
 
 def _mcp_args(archive, listen=None, allow_remote=False):
-    return argparse.Namespace(archive=archive, listen=listen, allow_remote=allow_remote)
+    return argparse.Namespace(
+        archive=archive, config=None, listen=listen, allow_remote=allow_remote
+    )
 
 
 class TestStartup:

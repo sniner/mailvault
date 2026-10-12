@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -412,7 +413,9 @@ def test_archive_decompress_reports_what_it_could_not_convert(tmp_path, capsys):
     _, _, broken = store.add(b"about to be corrupted")
     tamper(broken, b"this is not a zstd frame")
 
-    exit_code = run_archive(argparse.Namespace(archive_command="decompress", archive=root))
+    exit_code = run_archive(
+        argparse.Namespace(archive_command="decompress", archive=root, config=None)
+    )
 
     assert exit_code == 1
     out = capsys.readouterr().out
@@ -431,7 +434,9 @@ def test_archive_decompress_that_works_exits_zero(tmp_path, capsys):
     store = cas.mail_store(root, compress=True)
     store.add(b"a real message")
 
-    exit_code = run_archive(argparse.Namespace(archive_command="decompress", archive=root))
+    exit_code = run_archive(
+        argparse.Namespace(archive_command="decompress", archive=root, config=None)
+    )
 
     assert exit_code == 0
     assert "failed" not in capsys.readouterr().out
@@ -439,7 +444,11 @@ def test_archive_decompress_that_works_exits_zero(tmp_path, capsys):
 
 def _check_args(archive, **overrides):
     defaults = dict(
-        archive_command="check", archive=archive, no_integrity_check=False, quarantine=False
+        archive_command="check",
+        archive=archive,
+        config=None,
+        no_integrity_check=False,
+        quarantine=False,
     )
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -519,7 +528,9 @@ class TestGet:
 
     @staticmethod
     def _get_args(archive, entry, output=None, path=False):
-        return argparse.Namespace(archive=archive, entry=entry, output=output, path=path)
+        return argparse.Namespace(
+            archive=archive, config=None, entry=entry, output=output, path=path
+        )
 
     def test_a_store_id_goes_to_standard_output(self, tmp_path, capsysbinary):
         store_id, _path = self._archive(tmp_path)
@@ -878,6 +889,7 @@ class TestImportSource:
             command="archive",
             archive_command="import",
             archive=archive,
+            config=None,
             source=source,
             name=name,
             docuware=False,
@@ -1055,6 +1067,7 @@ class TestAdoptReport:
             command="archive",
             archive_command="adopt",
             archive=archive,
+            config=None,
             name=name,
             dry_run=dry_run,
         )
@@ -1218,12 +1231,19 @@ class TestAnArchiveIsAMarkedDirectory:
     def test_migrate_is_the_one_command_that_takes_an_unmarked_directory(self, tmp_path):
         self._old_archive(tmp_path)
 
-        assert run_archive(argparse.Namespace(archive_command="migrate", archive=tmp_path)) == 0
+        assert (
+            run_archive(
+                argparse.Namespace(archive_command="migrate", archive=tmp_path, config=None)
+            )
+            == 0
+        )
         assert marker.is_archive(tmp_path)
 
     def test_and_afterwards_check_is_happy(self, tmp_path):
         self._old_archive(tmp_path)
-        run_archive(argparse.Namespace(archive_command="migrate", archive=tmp_path))
+        run_archive(
+            argparse.Namespace(archive_command="migrate", archive=tmp_path, config=None)
+        )
 
         assert run_archive(_check_args(tmp_path)) == 0
 
@@ -1284,6 +1304,130 @@ class TestArchiveInit:
             run_archive(self._init_args(tmp_path, directory=target))
 
 
+class TestTheArchiveHash:
+    """A new archive is named in sha256, one whose configuration names no hash in sha384."""
+
+    MESSAGE = b"Message-Id: <a@example.com>\r\n\r\nbody\r\n"
+    OTHER = b"Message-Id: <b@example.com>\r\n\r\nanother body\r\n"
+
+    @staticmethod
+    def _init(archive: pathlib.Path) -> int:
+        return run_archive(
+            argparse.Namespace(archive_command="init", archive=archive, directory=None)
+        )
+
+    @staticmethod
+    def _import(archive: pathlib.Path, source: pathlib.Path, body: bytes) -> int:
+        source.mkdir(parents=True, exist_ok=True)
+        (source / "message.eml").write_bytes(body)
+        return run_archive(
+            argparse.Namespace(
+                command="archive",
+                archive_command="import",
+                archive=archive,
+                config=None,
+                source=source,
+                name="imported",
+                docuware=False,
+                move=False,
+                compress=False,
+                dry_run=False,
+            )
+        )
+
+    @staticmethod
+    def _set_hash(archive: pathlib.Path, name: str) -> None:
+        config = archive / DEFAULT_CONFIG_NAME
+        text = config.read_text()
+        assert 'hash = "sha256"' in text, "the line this test rewrites"
+        config.write_text(text.replace('hash = "sha256"', f'hash = "{name}"'))
+
+    def test_init_writes_sha256_into_the_configuration(self, tmp_path):
+        self._init(tmp_path)
+
+        assert conf.load(tmp_path / DEFAULT_CONFIG_NAME).hash == "sha256"
+
+    def test_a_new_archive_names_its_messages_and_its_log_in_sha256(self, tmp_path):
+        archive = tmp_path / "archive"
+        self._init(archive)
+
+        assert self._import(archive, tmp_path / "source", self.MESSAGE) == 0
+
+        messages = [p.name for p in (archive / cas.MAIL_DIR).rglob("*.eml")]
+        logs = [p.name for p in (archive / metalog.DEFAULT_LOG_DIR).rglob("*.jsonl")]
+        assert messages == [hashlib.sha256(self.MESSAGE).hexdigest() + ".eml"]
+        assert logs
+        assert all(len(name.removesuffix(".jsonl")) == 64 for name in logs)
+
+    def test_check_reads_the_hash_from_the_configuration(self, tmp_path, capsys):
+        archive = tmp_path / "archive"
+        self._init(archive)
+        self._import(archive, tmp_path / "source", self.MESSAGE)
+        cas.use_hash(cas.LEGACY_HASH)
+        capsys.readouterr()
+
+        assert run_archive(_check_args(archive)) == 0
+        assert "sound -- every message was read" in capsys.readouterr().out
+
+    def test_a_changed_hash_stops_the_run_before_anything_is_written(self, tmp_path):
+        archive = tmp_path / "archive"
+        self._init(archive)
+        self._import(archive, tmp_path / "source", self.MESSAGE)
+        self._set_hash(archive, "sha384")
+
+        with pytest.raises(jobs.JobError, match="named in sha256"):
+            self._import(archive, tmp_path / "more", self.OTHER)
+
+        assert len(list((archive / cas.MAIL_DIR).rglob("*.eml"))) == 1
+
+    def test_an_archive_without_a_configuration_is_sha384(self, tmp_path):
+        archive = tmp_path / "archive"
+        marker.write(archive)
+
+        assert self._import(archive, tmp_path / "source", self.MESSAGE) == 0
+
+        messages = [p.name for p in (archive / cas.MAIL_DIR).rglob("*.eml")]
+        assert messages == [hashlib.sha384(self.MESSAGE).hexdigest() + ".eml"]
+
+    def test_init_on_an_older_archive_writes_the_hash_it_is_named_in(self, tmp_path):
+        """Its configuration may live elsewhere; the one written here has to fit it."""
+        archive = tmp_path / "archive"
+        marker.write(archive)
+        cas.mail_store(archive).add(self.MESSAGE)
+
+        self._init(archive)
+
+        assert conf.load(archive / DEFAULT_CONFIG_NAME).hash == "sha384"
+        assert self._import(archive, tmp_path / "source", self.OTHER) == 0
+
+    def test_opening_the_archive_runs_no_password_command(self, tmp_path):
+        archive = tmp_path / "archive"
+        self._init(archive)
+        ran = tmp_path / "ran"
+        config = archive / DEFAULT_CONFIG_NAME
+        config.write_text(
+            config.read_text().replace('password = ""', f'password_cmd = "touch {ran}"')
+        )
+
+        run_archive(_check_args(archive))
+
+        assert not ran.exists()
+
+    def test_a_job_runs_its_commands_when_it_runs(self, monkeypatch):
+        seen: dict[str, str] = {}
+
+        def _folders(job: conf.JobConfig) -> list[str]:
+            seen["password"] = job.password
+            return []
+
+        monkeypatch.setattr(jobs, "folder_list", _folders)
+        job = conf.JobConfig(name="one", commands={"password": "echo pw"})
+
+        mailbox._run_job(job, _args(command="folders"), conf.Config())
+
+        assert seen["password"] == "pw"
+
+
 class TestExitCodes:
     """A pass that did not do what it was asked must not report success."""
 
@@ -1301,13 +1445,20 @@ class TestExitCodes:
             lambda *a, **kw: metalog.CompactResult(files_before=2, verified=False),
         )
 
-        exit_code = run_archive(argparse.Namespace(archive_command="migrate", archive=tmp_path))
+        exit_code = run_archive(
+            argparse.Namespace(archive_command="migrate", archive=tmp_path, config=None)
+        )
 
         assert exit_code == 1
         assert "NOT marked" in capsys.readouterr().out
 
     def test_a_finished_migration_exits_zero(self, tmp_path):
-        assert run_archive(argparse.Namespace(archive_command="migrate", archive=tmp_path)) == 0
+        assert (
+            run_archive(
+                argparse.Namespace(archive_command="migrate", archive=tmp_path, config=None)
+            )
+            == 0
+        )
 
     def test_a_compaction_that_verified_nothing_exits_non_zero(self, tmp_path, monkeypatch):
         marker.write(tmp_path)
@@ -1317,7 +1468,9 @@ class TestExitCodes:
             lambda *a, **kw: metalog.CompactResult(files_before=2, verified=False),
         )
 
-        exit_code = run_archive(argparse.Namespace(archive_command="compact", archive=tmp_path))
+        exit_code = run_archive(
+            argparse.Namespace(archive_command="compact", archive=tmp_path, config=None)
+        )
 
         assert exit_code == 1
 
@@ -1325,7 +1478,12 @@ class TestExitCodes:
         marker.write(tmp_path)
         _archive_with_a_log(tmp_path)
 
-        assert run_archive(argparse.Namespace(archive_command="compact", archive=tmp_path)) == 0
+        assert (
+            run_archive(
+                argparse.Namespace(archive_command="compact", archive=tmp_path, config=None)
+            )
+            == 0
+        )
 
     @staticmethod
     def _backup_run(monkeypatch, tmp_path, report: jobs.BackupReport) -> int:
@@ -1356,6 +1514,7 @@ class TestDbCommands:
         defaults: dict[str, Any] = dict(
             db_command="search",
             archive=archive,
+            config=None,
             sender=None,
             recipient=None,
             subject=None,
@@ -1474,6 +1633,7 @@ class TestDbCommands:
             run_get(
                 argparse.Namespace(
                     archive=archive,
+                    config=None,
                     entry=[printed],
                     output=target,
                     path=False,

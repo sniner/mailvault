@@ -75,6 +75,50 @@ def holds_messages(store_path: pathlib.Path) -> bool:
     return next(iter(cas.mail_store(store_path).walk()), None) is not None
 
 
+def named_hash(store_path: pathlib.Path) -> str | None:
+    """The hash the archive's messages are named in, or None when it holds none.
+
+    The first entry the walk turns up decides it: an archive is never named in
+    two hashes, and no two hashes in `cas.HASHES` have digests of one length.
+    Raises JobError for a name that fits none of them.
+
+    An archive without `mail/` has not been migrated yet, and opening the store
+    would create the directory, so it is not opened.
+    """
+    if not (store_path / cas.MAIL_DIR).is_dir():
+        return None
+    store = cas.mail_store(store_path)
+    first = next(iter(store.walk()), None)
+    if first is None:
+        return None
+    found = cas.hash_by_length(store.hashval_of(first) or "")
+    if found is None:
+        raise JobError(
+            f"{store.where(first)}: named like a message, but the name fits no hash this"
+            f" version of mailvault knows. If it was put there by hand, move it out of"
+            f" the archive; if a newer mailvault wrote it, upgrade"
+        )
+    return found
+
+
+def check_hash(store_path: pathlib.Path, name: str, config_path: pathlib.Path) -> None:
+    """Raise JobError when the archive's messages are not named in the hash `name`.
+
+    `name` comes from the configuration, and nothing keeps anyone from editing
+    it. With the wrong hash every message fails its integrity check, so `archive
+    check --quarantine` would set the whole archive aside, and a backup would
+    store every message a second time under its other name. An archive without
+    messages has nothing to disagree with.
+    """
+    found = named_hash(store_path)
+    if found is not None and found != name:
+        raise JobError(
+            f"{config_path}: the hash is {name}, but the messages in this archive are"
+            f' named in {found}. If the two belong together, set hash = "{found}"'
+            f" under [global]: an archive keeps the hash it was made with"
+        )
+
+
 def _refuse_nameless_archive(store_path: pathlib.Path, allow_new: bool) -> None:
     """Stop a run aimed at an archive that holds mail under no name at all.
 

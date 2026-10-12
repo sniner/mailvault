@@ -42,11 +42,29 @@ from mailvault.store import atomic, zstd
 
 log = logging.getLogger(__name__)
 
-# The hash entries are named after, unless a caller picks another one. Defined
-# here because the store owns that decision: the metadata log checks its files
-# against the same algorithm, and a second copy of the choice is a breakage
-# waiting for the day the first one changes.
-DEFAULT_HASH: collections.abc.Callable[..., hashlib._Hash] = hashlib.sha384
+# `hashlib._Hash` exists only for the type checker, hence the string.
+HashFactory: typing.TypeAlias = "collections.abc.Callable[..., hashlib._Hash]"
+
+# The hashes an archive can name its entries with, under the names its
+# configuration uses. An archive that holds messages cannot change its hash:
+# every entry's name and every reference to an entry is a digest in it.
+HASHES: dict[str, HashFactory] = {
+    "sha256": hashlib.sha256,
+    "sha384": hashlib.sha384,
+}
+
+# The hash of an archive whose configuration names none. An archive without the
+# setting is named in sha384.
+LEGACY_HASH = "sha384"
+
+# What `archive init` writes into the configuration of a new archive.
+NEW_ARCHIVE_HASH = "sha256"
+
+# The hash this run names and checks entries with. A run works on one archive,
+# and its mail store and its metadata log have to agree on the hash, so the
+# command sets it once from the configuration before it opens either, and
+# everything that hashes reads it here instead of having it passed along.
+_run_hash = LEGACY_HASH
 
 # Suffix of the transient file an entry is written to, shared with
 # `mailvault.store.atomic` so both write disciplines look the same on disk.
@@ -78,6 +96,39 @@ TRANSIENT_MIN_AGE = 24 * 60 * 60
 # a stray file lying there was nobody's to judge, and `archive check` had to
 # pass over it in silence.
 MAIL_DIR = "mail"
+
+
+def use_hash(name: str) -> None:
+    """Name and check entries with the hash called `name` for the rest of the run.
+
+    Raises ValueError for a name that is not in `HASHES`.
+    """
+    global _run_hash
+    if name not in HASHES:
+        raise ValueError(f"unknown hash: {name!r}")
+    _run_hash = name
+
+
+def current_hash() -> str:
+    """The name of the hash this run names and checks entries with."""
+    return _run_hash
+
+
+def digest(data: bytes) -> str:
+    """The name `data` is filed under in this run's hash, without the suffix."""
+    return HASHES[_run_hash](data).hexdigest()
+
+
+def hash_by_length(hashval: str) -> str | None:
+    """The hash whose digests are as long as `hashval`, or None if none is.
+
+    The lengths differ for every hash in `HASHES`, so one entry's name says which
+    hash its archive is named in.
+    """
+    for name, factory in HASHES.items():
+        if len(factory().hexdigest()) == len(hashval):
+            return name
+    return None
 
 
 class AddStatus(enum.StrEnum):
@@ -117,10 +168,7 @@ def normalize_hashval(hashval: str) -> str:
     return hashval.lower()
 
 
-def _checked_depth(
-    depth: int,
-    hashfactory: collections.abc.Callable[..., hashlib._Hash],
-) -> int:
+def _checked_depth(depth: int, hashfactory: HashFactory) -> int:
     """A shard depth this hash can actually be cut into.
 
     A depth deeper than the hash is long would otherwise be accepted here and
@@ -247,12 +295,12 @@ class ContentAddressedStorage:
         suffix: str | None = None,
         depth: int = 2,
         compress: bool = False,
-        hashfactory: collections.abc.Callable[..., hashlib._Hash] | None = None,
+        hashfactory: HashFactory | None = None,
     ):
         self.root_dir = pathlib.Path(root_dir)
         self.root_dir.mkdir(parents=True, exist_ok=True)
         self.compress = compress
-        self.hashfactory = hashfactory or DEFAULT_HASH
+        self.hashfactory = hashfactory or HASHES[_run_hash]
         self.depth = _checked_depth(depth, self.hashfactory)
         self.suffix = suffix
         self.blocksize = 16384
@@ -546,7 +594,7 @@ class ContentAddressedStorage:
     def matching(self, prefix: str) -> list[str]:
         """The ids of every entry whose own begins with `prefix`, sorted.
 
-        A message id is ninety-six characters and nobody types one. The beginning
+        A message id is 64 or 96 characters and nobody types one. The beginning
         of one names an entry just as well as long as it names only one, and it
         costs a single directory listing to find out -- the store is filed by
         exactly that beginning.

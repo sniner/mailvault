@@ -14,7 +14,7 @@ import pathlib
 
 from mailvault import conf, jobs, utils
 from mailvault.backend import base
-from mailvault.store import marker
+from mailvault.store import cas, marker
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +72,26 @@ def config_file(args: argparse.Namespace, archive: pathlib.Path) -> pathlib.Path
     if args.config is not None:
         return args.config
     return archive / DEFAULT_CONFIG_NAME
+
+
+def use_archive_hash(
+    args: argparse.Namespace,
+    archive: pathlib.Path,
+    config: conf.Config | None = None,
+) -> None:
+    """Hash this run's messages the way the configuration says, once the archive agrees.
+
+    Every command that opens an archive comes through here, and those that have
+    no other use for the configuration read it for this alone. Without a
+    configuration file the hash is `cas.LEGACY_HASH`, as it is for a
+    configuration that names none.
+    """
+    path = config_file(args, archive)
+    if config is None:
+        exists = args.config is not None or path.exists()
+        config = conf.load(path) if exists else conf.Config()
+    jobs.check_hash(archive, config.hash, path)
+    cas.use_hash(config.hash)
 
 
 def require_archive(archive: pathlib.Path) -> None:
