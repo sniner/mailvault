@@ -792,6 +792,20 @@ class TestARefusedMessage:
         with pytest.raises(base.MessageGone):
             harness.client._download_mime("m1")
 
+    @pytest.mark.parametrize(
+        "body",
+        [{"error": {"code": "ResourceNotFound", "message": "x"}}, {}],
+    )
+    def test_any_other_404_is_a_refusal(self, monkeypatch, body):
+        """Graph answers 404 for a mailbox it cannot find as well: no reason to drop it."""
+        harness = _make_client(monkeypatch, [_json(404, body)])
+        harness.client._user = "user@example.org"
+
+        with pytest.raises(base.MailboxError) as raised:
+            harness.client._download_mime("m1")
+
+        assert not isinstance(raised.value, base.MessageGone)
+
     def test_a_refused_message_is_named(self, monkeypatch, tmp_path):
         download = self._downloads(m2=base.MailboxError("HTTP 500 Internal Server Error"))
         client = self._client(monkeypatch, download)

@@ -67,6 +67,12 @@ DELTA_EXPIRED_CODES = frozenset(
 )
 
 
+# What Graph answers, with a 404, for a message id it has no message for: the
+# message was deleted or moved to another folder. Lowercased, as `_error_code`
+# returns it.
+MESSAGE_GONE_CODE = "erroritemnotfound"
+
+
 def _is_delta_expired(resp: httpx.Response) -> bool:
     """Whether this response means the delta link is no longer usable.
 
@@ -77,11 +83,16 @@ def _is_delta_expired(resp: httpx.Response) -> bool:
         return True
     if not 400 <= resp.status_code < 500:
         return False
+    return _error_code(resp) in DELTA_EXPIRED_CODES
+
+
+def _error_code(resp: httpx.Response) -> str:
+    """The error code Graph put into the body, lowercased, or "" when there is none."""
     try:
         code = resp.json().get("error", {}).get("code", "")
     except (ValueError, AttributeError):
-        return False
-    return isinstance(code, str) and code.lower() in DELTA_EXPIRED_CODES
+        return ""
+    return code.lower() if isinstance(code, str) else ""
 
 
 def _graph_error(resp: httpx.Response) -> str:
@@ -504,13 +515,15 @@ class MSGraphClient:
     def _download_mime(self, msg_id: str) -> bytes:
         """Download a message as RFC 822 MIME content.
 
-        Raises `base.MessageGone` on 404: a message id changes when the message
-        is moved to another folder, so the old one is not found after a move
-        just as after a deletion.
+        Raises `base.MessageGone` on 404 with the code `ErrorItemNotFound`: a
+        message id changes when the message is moved to another folder, so the
+        old one is not found after a move just as after a deletion. Graph also
+        answers 404 when it cannot find the mailbox, and a message taken for
+        gone on that answer would be dropped from the retry list for good.
         """
         url = f"{GRAPH_BASE_URL}/users/{self._user}/messages/{msg_id}/$value"
         resp = self._request("GET", url)
-        if resp.status_code == 404:
+        if resp.status_code == 404 and _error_code(resp) == MESSAGE_GONE_CODE:
             raise base.MessageGone(f"{_graph_error(resp)}: no longer in the mailbox")
         if not resp.is_success:
             raise base.MailboxError(_graph_error(resp))

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A message stays on the retry list unless Microsoft 365 says it no longer exists** (#12). 0.19.0
+  dropped a message from the list on any `404 Not Found`, and Microsoft 365 also answers 404 when
+  it cannot find the mailbox. Only the error code `ErrorItemNotFound` now counts as a deleted or
+  moved message
+
 ## 0.19.0 (2026-10-17)
 
 ### Fixed
