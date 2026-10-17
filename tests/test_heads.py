@@ -172,6 +172,12 @@ class TestRoundTrip:
         assert got.resume == UID
         assert got.last_run_at() == WHEN
 
+    def test_failed_messages_come_back_as_they_were(self, tmp_path):
+        """Graph ids are strings and IMAP UIDs integers, and each must stay what it was."""
+        heads.write(tmp_path, _head(pending=["AAMkAG=", 4712]))
+
+        assert _read(tmp_path).pending == ["AAMkAG=", 4712]
+
     def test_a_place_nobody_has_backed_up_has_no_head(self, tmp_path):
         assert heads.read(tmp_path, "gmail.com", "INBOX") is None
 
@@ -262,6 +268,41 @@ class TestADamagedHead:
         assert got.resume is None, "the folder is read in full, which is the safe outcome"
         assert got.last_run_at() == WHEN
         assert "unusable resume point" in caplog.text
+
+    def test_an_unusable_list_of_failed_messages_costs_the_resume_point(self, tmp_path, caplog):
+        """The messages it names lie behind the point, so the point goes with it."""
+        self._write_raw(
+            tmp_path,
+            json.dumps(
+                {"version": 1, "job": "j", "folder": "f", "resume": UID, "pending": [True]}
+            ),
+        )
+
+        got = _read(tmp_path, "j", "f")
+
+        assert got.resume is None
+        assert got.pending == []
+        assert "unusable list of failed messages" in caplog.text
+
+    def test_a_head_without_a_list_of_failed_messages_has_none(self, tmp_path):
+        """What a version before the list wrote."""
+        self._write_raw(
+            tmp_path,
+            json.dumps({"version": 1, "job": "j", "folder": "f", "resume": UID}),
+        )
+
+        got = _read(tmp_path, "j", "f")
+
+        assert got.resume == UID
+        assert got.pending == []
+
+    def test_failed_messages_without_a_resume_point_are_dropped(self, tmp_path):
+        self._write_raw(
+            tmp_path,
+            json.dumps({"version": 1, "job": "j", "folder": "f", "pending": [3]}),
+        )
+
+        assert _read(tmp_path, "j", "f").pending == []
 
     def test_an_unparsable_timestamp_is_not_a_date(self, tmp_path, caplog):
         heads.write(tmp_path, heads.Head(job="j", folder="f", last_run="letzten Dienstag"))

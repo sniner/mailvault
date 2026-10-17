@@ -726,3 +726,114 @@ class TestALostConnection:
         assert not result.complete
         assert "4 messages not fetched" in caplog.text
         assert "download failed" not in caplog.text
+
+
+class TestARefusedMessage:
+    """A message Graph will not hand over is named, so the next run can ask again."""
+
+    @staticmethod
+    def _client(monkeypatch, download):
+        harness = _make_client(monkeypatch, [])
+        client = harness.client
+        client._user = "user@example.org"
+        client.job_name = "m365"
+        client._folder_map = {"INBOX": "folder-id"}
+        client.exchange_journal = False
+        client.delete_after_export = False
+        client.error_folder = None
+        monkeypatch.setattr(client, "_download_mime", download)
+        return client
+
+    @staticmethod
+    def _downloads(**answers: Exception) -> MagicMock:
+        """`_download_mime` raising the given exception per id, a message otherwise."""
+
+        def download(msg_id: str) -> bytes:
+            if msg_id in answers:
+                raise answers[msg_id]
+            return f"Message-ID: <{msg_id}@x>\r\n\r\nbody\r\n".encode()
+
+        return MagicMock(side_effect=download)
+
+    def test_the_error_says_what_graph_said(self):
+        resp = httpx.Response(
+            500,
+            json={"error": {"code": "ErrorInternalServerError", "message": "Try again."}},
+            headers={"request-id": "0f3c"},
+        )
+
+        assert graph._graph_error(resp) == (
+            "HTTP 500 Internal Server Error: ErrorInternalServerError: Try again."
+            " (request-id 0f3c)"
+        )
+
+    def test_an_error_without_a_body_is_the_status(self):
+        assert graph._graph_error(httpx.Response(502)) == "HTTP 502 Bad Gateway"
+
+    def test_a_download_refused_carries_the_reason(self, monkeypatch):
+        harness = _make_client(
+            monkeypatch,
+            [_json(500, {"error": {"code": "ErrorInternalServerError", "message": "x"}})],
+            max_retries=0,
+        )
+        harness.client._user = "user@example.org"
+
+        with pytest.raises(base.MailboxError, match="ErrorInternalServerError"):
+            harness.client._download_mime("m1")
+
+    def test_a_message_not_found_is_gone(self, monkeypatch):
+        """A moved message gets a new id, so its old one is not found either."""
+        harness = _make_client(
+            monkeypatch,
+            [_json(404, {"error": {"code": "ErrorItemNotFound", "message": "x"}})],
+        )
+        harness.client._user = "user@example.org"
+
+        with pytest.raises(base.MessageGone):
+            harness.client._download_mime("m1")
+
+    def test_a_refused_message_is_named(self, monkeypatch, tmp_path):
+        download = self._downloads(m2=base.MailboxError("HTTP 500 Internal Server Error"))
+        client = self._client(monkeypatch, download)
+        messages = [{"id": "m1"}, {"id": "m2"}, {"id": "m3"}]
+        monkeypatch.setattr(client, "_delta_round", lambda *_args: (messages, f"{GRAPH}/d"))
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+
+        result = client.folder_backup("INBOX", store)
+
+        assert result.stored == 2
+        assert result.failed == 1
+        assert result.unfetched == ["m2"]
+        assert result.resumable
+        assert result.resume is not None
+
+    def test_a_first_round_that_only_met_refused_messages_still_earns_a_point(
+        self, monkeypatch, tmp_path
+    ):
+        """Graph listed a message, so the folder is not one that looked empty."""
+        download = self._downloads(m1=base.MailboxError("HTTP 500 Internal Server Error"))
+        client = self._client(monkeypatch, download)
+        messages = [{"id": "m1"}]
+        monkeypatch.setattr(client, "_delta_round", lambda *_args: (messages, f"{GRAPH}/d"))
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+
+        result = client.folder_backup("INBOX", store)
+
+        assert result.unfetched == ["m1"]
+        assert result.resume is not None
+
+    def test_messages_to_retry_come_first_and_once(self, monkeypatch, tmp_path):
+        download = self._downloads(gone=base.MessageGone("HTTP 404 Not Found"))
+        client = self._client(monkeypatch, download)
+        messages = [{"id": "m1"}, {"id": "m2"}]
+        monkeypatch.setattr(client, "_delta_round", lambda *_args: (messages, f"{GRAPH}/d"))
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        point = graph._make_delta_token(f"{GRAPH}/previous")
+
+        result = client.folder_backup("INBOX", store, resume=point, retry=["old", "gone", "m2"])
+
+        assert [c.args[0] for c in download.call_args_list] == ["old", "gone", "m2", "m1"]
+        # The one Graph no longer has is neither stored nor failed.
+        assert result.stored == 3
+        assert result.failed == 0
+        assert result.unfetched == []

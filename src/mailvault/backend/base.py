@@ -38,6 +38,15 @@ class ConnectionLost(MailboxError):
     """
 
 
+class MessageGone(MailboxError):
+    """The server no longer has the message: it was deleted or moved away.
+
+    Not a failure. A message removed between the listing and the download has
+    nothing left to archive, and counting it as failed would hold the resume
+    point back for a message that can never be fetched.
+    """
+
+
 @dataclasses.dataclass
 class BackupResult:
     """Outcome of a folder backup.
@@ -57,6 +66,15 @@ class BackupResult:
     stored locally. A run with failures is incomplete, so the caller must not
     advance the incremental snapshot — otherwise those messages would sit below
     the resume point of every future run and stay lost for good.
+
+    `unfetched` lists the backend ids of the failed messages that the server
+    refused to hand over one by one, each of them also counted in `failed`. When
+    every failure is one of them (`resumable`), the caller may take the new
+    resume point after all, provided it keeps these ids and passes them back as
+    `retry` on the next pass. A message the server refuses on every attempt
+    would otherwise hold its folder back for good. A lost connection
+    adds nothing here: the messages it cut off were never asked for, and the
+    next pass reads them from the old point.
 
     `resume` is where the next pass over this folder may carry on, in whatever
     shape the backend that produced it uses. It is built from what this pass
@@ -89,11 +107,17 @@ class BackupResult:
     resume: dict[str, Any] | None = None
     resume_lost: bool = False
     deletable: list[Any] = dataclasses.field(default_factory=list)
+    unfetched: list[Any] = dataclasses.field(default_factory=list)
 
     @property
     def complete(self) -> bool:
         """True if every message seen on the server was accounted for."""
         return self.failed == 0
+
+    @property
+    def resumable(self) -> bool:
+        """True if every failure is a message in `unfetched`."""
+        return self.failed == len(self.unfetched)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -179,6 +203,7 @@ class MailboxClient(Protocol):
         folder_name: str,
         store: cas.ContentAddressedStorage,
         resume: dict[str, Any] | None = ...,
+        retry: collections.abc.Sequence[Any] = ...,
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = ...,
     ) -> BackupResult:
         """Store a folder's messages, recording each via `callback`.
@@ -189,6 +214,12 @@ class MailboxClient(Protocol):
         worked around: the pass stops and sets `BackupResult.resume_lost`, and
         what to do instead is the caller's decision. A point of None means read
         the folder in full, which is how the caller asks for exactly that.
+
+        `retry` holds the `BackupResult.unfetched` of the pass that produced
+        `resume`. Those messages lie behind the point and are fetched by id
+        first, one at a time. One that fails again is listed in `unfetched` once
+        more; one the server no longer has is dropped. With a lost point they
+        are ignored, because the read that replaces the point covers them.
 
         Returns the point for next time in `BackupResult.resume`, built from what
         was actually archived, or None when the pass earned none.
@@ -242,6 +273,8 @@ class MailboxClient(Protocol):
         The repair path's way in: it works a message at a time, where the backup
         walks a folder in chunks. Both come back with `Fetched`, and neither has
         to ask a second time where the message belongs.
+
+        Raises `MessageGone` when the server no longer has the message.
         """
         ...
 

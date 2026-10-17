@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A message the server refuses no longer holds its folder back** (#12). When Microsoft 365 or an
+  IMAP server answered a message with an error on every attempt, its folder never got a new resume
+  point. A folder without one was compared with the archive on every run, which reads every
+  archived message of that folder, and a folder with one downloaded everything since it again.
+  Now the resume point advances, and the next run asks only for the refused messages again, one at
+  a time. The backup summary lists such a folder as one "with failed messages -- fetched again
+  next run"
+- **A message deleted or moved away during a backup no longer counts as failed**, and its folder
+  is finished without it
+
+### Changed
+
+- **The log says why Microsoft 365 refused a download.** The error line carries the error code,
+  the message and the request id that Microsoft 365 sent, not only the HTTP status
+- **`db create` names the message it failed on** (#12)
+
 ## 0.18.1 (2026-10-17)
 
 ### Fixed

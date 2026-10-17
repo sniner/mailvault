@@ -1822,6 +1822,17 @@ class TestBackupVerdict:
 
         assert "1,729 messages removed from the server" in capsys.readouterr().out
 
+    def test_a_folder_with_messages_to_fetch_again_is_named(self, capsys):
+        """Its point moved on: only the failed messages are read again, not the folder."""
+        code = report_backup("m365", self._report(failed=2, carried=["Archive"]))
+
+        out = capsys.readouterr().out
+        assert "2 messages could not be stored" in out
+        assert "1 folder with failed messages -- fetched again next run" in out
+        assert "  Archive" in out
+        assert "not finished" not in out
+        assert code == 1
+
     def test_a_folder_that_fell_short_is_named_with_what_happens_to_it(self, capsys):
         code = report_backup("proton.me", self._report(failed=12, retried=["INBOX"]))
 

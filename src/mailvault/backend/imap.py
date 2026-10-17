@@ -161,20 +161,34 @@ class _UidResume:
     def saw(self, uid: int) -> None:
         """Note an archived message's UID, keeping the highest.
 
-        Only for messages that were actually stored: one that failed must not
-        raise the watermark over itself.
+        Only for messages that were actually stored, or that failed and are in
+        `BackupResult.unfetched`. Any other failure must not raise the watermark
+        over itself; an unfetched one is passed back as `retry` by a caller that
+        takes the point.
         """
         if self.highest is None or uid > self.highest:
             self.highest = uid
 
     def token(self) -> dict[str, Any] | None:
-        """The point this pass earned, or None if it archived nothing."""
-        if self.highest is None or self.uidvalidity is None:
+        """The point this pass earned, never below the one it started from.
+
+        A pass given `retry` sees UIDs below its starting point, and one that
+        sees nothing else would otherwise hand back the highest of those and
+        have the next pass download everything above it again.
+
+        None when there was no point to start from and nothing was archived.
+        """
+        if self.uidvalidity is None:
+            return None
+        # `accept` has cleared a point whose UIDVALIDITY did not match.
+        start = self._previous[1] if self._previous is not None else None
+        uids = [uid for uid in (self.highest, start) if uid is not None]
+        if not uids:
             return None
         return {
             "kind": UID_RESUME_KIND,
             "uidvalidity": self.uidvalidity,
-            "uid": self.highest,
+            "uid": max(uids),
         }
 
 
@@ -368,9 +382,9 @@ class ImapClient:
         for msg_ids in utils.batched(message_ids, chunk_size):
             msg_ids_str = ", ".join([str(i) for i in msg_ids])
             log.debug("%s::%s: fetching %s", self.job_name, folder_name, msg_ids_str)
-            msg_id = None
             try:
-                for msg_id, msg_data in self.conn.fetch(msg_ids, self._fetch_items).items():
+                answer = self.conn.fetch(msg_ids, self._fetch_items)
+                for msg_id, msg_data in answer.items():
                     body = msg_data.get(WHOLE_MESSAGE_KEY)
                     if not isinstance(body, bytes):
                         # A FETCH the server answered without the message in it.
@@ -385,8 +399,19 @@ class ImapClient:
                         )
                         if result is not None:
                             result.failed += 1
+                            result.unfetched.append(msg_id)
                         continue
                     yield msg_id, base.Fetched(body, self._places_from(msg_data, folder_name))
+                # A UID the answer leaves out was expunged since it was listed,
+                # or since it failed on an earlier run. Nothing to fetch.
+                for msg_id in msg_ids:
+                    if msg_id not in answer:
+                        log.info(
+                            "%s::%s[%s]: no longer in the folder",
+                            self.job_name,
+                            folder_name,
+                            msg_id,
+                        )
             except _CONNECTION_ERRORS as exc:
                 # Every later chunk would fail the same way, each with an error
                 # line of its own. The messages not fetched count as failed, so
@@ -410,12 +435,13 @@ class ImapClient:
                     "%s::%s[%s]: fetch failed",
                     self.job_name,
                     folder_name,
-                    msg_id,
+                    msg_ids_str,
                 )
                 if result is not None:
                     # fetch() returns the whole chunk at once, so nothing of it
                     # was yielded before the failure.
                     result.failed += len(msg_ids)
+                    result.unfetched.extend(msg_ids)
             done += len(msg_ids)
 
     def _release(self, folder_name: str) -> None:
@@ -505,6 +531,7 @@ class ImapClient:
         self,
         folder_name: str,
         resume: _UidResume | None = None,
+        retry: collections.abc.Sequence[Any] = (),
         result: BackupResult | None = None,
     ) -> collections.abc.Generator[tuple[int, base.Fetched], None, None]:
         """Select the folder read-only, search and yield its messages.
@@ -514,6 +541,10 @@ class ImapClient:
         durable -- so the folder is opened read-only even when the job deletes
         after export, and a torn run can never remove mail whose location was
         never written down. The folder is always unselected on exit.
+
+        The UIDs in `retry` come first, fetched one at a time. A FETCH that the
+        server refuses fails its whole chunk, so one bad message retried in a
+        chunk would hold back the others with it for good.
         """
         folder_info = self.conn.select_folder(folder_name, readonly=True)
         try:
@@ -526,10 +557,12 @@ class ImapClient:
                 # Nothing is yielded and nothing is fetched: what to do with
                 # a void point is the caller's call, not this backend's.
                 return
-            message_ids = self._search_folder(above_uid)
+            retrying = [uid for uid in map(_as_int, retry) if uid is not None]
+            skip = set(retrying)
+            message_ids = [uid for uid in self._search_folder(above_uid) if uid not in skip]
             items_found = len(message_ids)
             if result is not None:
-                result.total = items_found
+                result.total = items_found + len(retrying)
             # What this pass will work through, and nothing about how full the
             # folder is. The two were reported as `found 0 of 1` -- two answers
             # to two different questions, in the shape of a ratio that says one
@@ -540,6 +573,14 @@ class ImapClient:
                 folder_name,
                 utils.counted(items_found, "message"),
             )
+            if retrying:
+                log.info(
+                    "%s::%s: trying again %s that failed before",
+                    self.job_name,
+                    folder_name,
+                    utils.counted(len(retrying), "message"),
+                )
+                yield from self._walk_folder(folder_name, retrying, chunk_size=1, result=result)
             for processed, (msg_id, fetched) in enumerate(
                 self._walk_folder(folder_name, message_ids, result=result), 1
             ):
@@ -613,6 +654,7 @@ class ImapClient:
         folder_name: str,
         store: cas.ContentAddressedStorage,
         resume: dict[str, Any] | None = None,
+        retry: collections.abc.Sequence[Any] = (),
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> BackupResult:
         """Store a folder's messages read-only, recording each via `callback`.
@@ -626,7 +668,9 @@ class ImapClient:
         # Collected during the read-only pass and relocated once it is over --
         # a skip is not a failure, so the resume point may still advance either way.
         non_journal: list[int] = []
-        for msg_id, fetched in self._iter_folder(folder_name, watermark, result=result):
+        for msg_id, fetched in self._iter_folder(
+            folder_name, watermark, retry=retry, result=result
+        ):
             msg = fetched.body
             if self.exchange_journal:
                 msg = mailutils.unwrap_exchange_journal_item(msg)
@@ -665,6 +709,8 @@ class ImapClient:
             self._relocate(folder_name, non_journal, self.error_folder)
         if watermark.lost:
             return BackupResult(resume_lost=True)
+        for msg_id in result.unfetched:
+            watermark.saw(msg_id)
         result.resume = watermark.token()
         return result
 
@@ -763,7 +809,8 @@ class ImapClient:
         give the folder back, and select the same folder again to ask where the
         message was.
 
-        Raises `base.ConnectionLost` when the connection is gone, and
+        Raises `base.ConnectionLost` when the connection is gone,
+        `base.MessageGone` when the folder no longer holds the UID, and
         `MailboxError` when only this message could not be fetched.
         """
         try:
@@ -774,7 +821,9 @@ class ImapClient:
                 self._release(folder_name)
         except _CONNECTION_ERRORS as exc:
             raise base.ConnectionLost(f"connection to the server lost: {exc}") from exc
-        body = msg_data.get(WHOLE_MESSAGE_KEY) if msg_data else None
-        if msg_data is None or not isinstance(body, bytes):
-            raise MailboxError(f"{folder_name}[{msg_id}]: message not found")
+        if msg_data is None:
+            raise base.MessageGone(f"{folder_name}[{msg_id}]: no longer in the folder")
+        body = msg_data.get(WHOLE_MESSAGE_KEY)
+        if not isinstance(body, bytes):
+            raise MailboxError(f"{folder_name}[{msg_id}]: the server sent no message body")
         return base.Fetched(body, self._places_from(msg_data, folder_name))

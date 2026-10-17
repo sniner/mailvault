@@ -84,6 +84,32 @@ def _is_delta_expired(resp: httpx.Response) -> bool:
     return isinstance(code, str) and code.lower() in DELTA_EXPIRED_CODES
 
 
+def _graph_error(resp: httpx.Response) -> str:
+    """A failed response for the log: the status, and what Graph said about it.
+
+    The status line alone does not say why. Graph puts its error code and
+    message into the body, and the request id is what Microsoft support asks
+    for when a message cannot be downloaded at all.
+    """
+    text = f"HTTP {resp.status_code} {resp.reason_phrase}".rstrip()
+    try:
+        error = resp.json().get("error", {})
+    except (ValueError, AttributeError):
+        error = {}
+    if isinstance(error, dict):
+        detail = ": ".join(
+            value
+            for value in (error.get("code"), error.get("message"))
+            if isinstance(value, str)
+        )
+        if detail:
+            text = f"{text}: {detail}"
+    request_id = resp.headers.get("request-id")
+    if request_id:
+        text = f"{text} (request-id {request_id})"
+    return text
+
+
 class _DeltaExpired(Exception):
     """Graph refused the delta link it gave us; the round cannot be continued."""
 
@@ -476,10 +502,18 @@ class MSGraphClient:
         return folder_id
 
     def _download_mime(self, msg_id: str) -> bytes:
-        """Download a message as RFC 822 MIME content."""
+        """Download a message as RFC 822 MIME content.
+
+        Raises `base.MessageGone` on 404: a message id changes when the message
+        is moved to another folder, so the old one is not found after a move
+        just as after a deletion.
+        """
         url = f"{GRAPH_BASE_URL}/users/{self._user}/messages/{msg_id}/$value"
         resp = self._request("GET", url)
-        resp.raise_for_status()
+        if resp.status_code == 404:
+            raise base.MessageGone(f"{_graph_error(resp)}: no longer in the mailbox")
+        if not resp.is_success:
+            raise base.MailboxError(_graph_error(resp))
         return resp.content
 
     def fetch_message(self, msg_id: str, folder_name: str = "") -> base.Fetched:
@@ -635,6 +669,7 @@ class MSGraphClient:
         folder_name: str,
         store: cas.ContentAddressedStorage,
         resume: dict[str, Any] | None = None,
+        retry: collections.abc.Sequence[Any] = (),
         callback: collections.abc.Callable[[mailutils.MessageMetadata], None] | None = None,
     ) -> base.BackupResult:
         """Store a folder's messages, recording each via `callback`.
@@ -658,18 +693,28 @@ class MSGraphClient:
             folder_name,
             utils.counted(len(messages), "message"),
         )
+        retrying = [msg_id for msg_id in retry if isinstance(msg_id, str)]
+        if retrying:
+            log.info(
+                "%s::%s: trying again %s that failed before",
+                self.job_name,
+                folder_name,
+                utils.counted(len(retrying), "message"),
+            )
+        # A message to retry can turn up in the delta round as well, after a
+        # change to its flags; it is fetched once.
+        msg_ids = list(dict.fromkeys([*retrying, *(msg["id"] for msg in messages)]))
 
-        result = base.BackupResult(total=len(messages))
+        result = base.BackupResult(total=len(msg_ids))
         # Collected while walking the folder and relocated afterwards, so one
         # unmovable item cannot interrupt the pass. A skip is not a failure.
         non_journal: list[str] = []
-        for idx, msg_info in enumerate(messages, 1):
-            msg_id = msg_info["id"]
+        for idx, msg_id in enumerate(msg_ids, 1):
             log_ctx = f"{self.job_name}::{folder_name}[{idx}]"
             try:
                 msg = self._download_mime(msg_id)
             except base.ConnectionLost as exc:
-                not_fetched = len(messages) - idx + 1
+                not_fetched = len(msg_ids) - idx + 1
                 utils.log_failure(
                     log,
                     exc,
@@ -682,9 +727,13 @@ class MSGraphClient:
                 # No move to the error folder either: it would wait out the
                 # same retries and fail.
                 return result
+            except base.MessageGone:
+                log.info("%s: no longer in the mailbox", log_ctx)
+                continue
             except Exception as exc:
                 log.error("%s: download failed: %s", log_ctx, exc)
                 result.failed += 1
+                result.unfetched.append(msg_id)
                 continue
 
             if self.exchange_journal:
@@ -723,7 +772,7 @@ class MSGraphClient:
                     self.job_name,
                     folder_name,
                     result.stored,
-                    len(messages),
+                    len(msg_ids),
                 )
 
             # Not deleted here: a message is removed from the mailbox only after
@@ -735,7 +784,9 @@ class MSGraphClient:
         if self.error_folder:
             self._relocate(folder_name, non_journal, self.error_folder)
 
-        result.resume = _delta_token(delta_link, point, result.stored)
+        # A message in `unfetched` was listed by the server just like a stored
+        # one, so a first round that only met those has still seen mail.
+        result.resume = _delta_token(delta_link, point, result.stored + len(result.unfetched))
         return result
 
     def _relocate(self, folder_name: str, msg_ids: list[str], dest_folder: str) -> None:

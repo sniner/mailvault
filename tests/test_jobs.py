@@ -79,6 +79,7 @@ def _seed_resume(
     date: datetime,
     mailbox: str = "test-job",
     folder: str = "INBOX",
+    pending: list[str | int] | None = None,
 ) -> None:
     """Put a folder's resume point into an archive, as a run would have."""
     heads.write(
@@ -88,6 +89,7 @@ def _seed_resume(
             folder=folder,
             last_run=date.isoformat(),
             resume=_token(date),
+            pending=pending or [],
         ),
     )
 
@@ -239,7 +241,7 @@ class TestBackup:
         job = _make_job(folders=["INBOX"])
         mock_client = _make_mock_client()
 
-        def fake_folder_backup(folder_name, store, resume=None, callback=None):
+        def fake_folder_backup(folder_name, store, resume=None, retry=(), callback=None):
             if callback:
                 callback(
                     mailutils.MessageMetadata(
@@ -403,6 +405,125 @@ class TestResumePoint:
         self._run(job, mock_client, tmp_path)
 
         assert _resume_date(tmp_path) == current
+
+
+class TestFailedMessagesCarried:
+    """A message the server refuses by itself is fetched again by itself.
+
+    The folder's point moves on and the message is kept in the head. Holding
+    the point back would make a message that Graph answers with 500 on every
+    attempt cost its folder a full reconcile every night.
+    """
+
+    @staticmethod
+    def _run(job, mock_client, tmp_path, incremental: bool = True) -> jobs.BackupReport:
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+            return jobs.backup(job, tmp_path, incremental=incremental)
+
+    @staticmethod
+    def _refused(*msg_ids: str) -> base.BackupResult:
+        return base.BackupResult(
+            total=3,
+            stored=3 - len(msg_ids),
+            failed=len(msg_ids),
+            unfetched=list(msg_ids),
+            resume=ARCHIVED_TOKEN,
+        )
+
+    def test_the_point_moves_on_and_the_message_is_kept(self, tmp_path):
+        _seed_resume(tmp_path, datetime(2026, 2, 1, tzinfo=UTC))
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = self._refused("m2")
+
+        report = self._run(_make_job(folders=["INBOX"]), mock_client, tmp_path)
+
+        assert _resume_date(tmp_path) == ARCHIVED_AT
+        assert _head(tmp_path).pending == ["m2"]
+        assert report.failed == 1
+        assert report.carried == ["INBOX"]
+        assert report.retried == []
+        assert not report.complete
+
+    def test_the_next_run_asks_for_it_again(self, tmp_path):
+        job = _make_job(folders=["INBOX"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = self._refused("m2")
+        self._run(job, mock_client, tmp_path)
+
+        mock_client.folder_backup.reset_mock()
+        mock_client.folder_backup.return_value = base.BackupResult(
+            total=1,
+            stored=1,
+            resume=_token(LATER),
+        )
+        self._run(job, mock_client, tmp_path)
+
+        kwargs = mock_client.folder_backup.call_args.kwargs
+        assert kwargs.get("resume") == ARCHIVED_TOKEN
+        assert kwargs.get("retry") == ["m2"]
+        # Fetched this time, so there is nothing left to ask for.
+        assert _head(tmp_path).pending == []
+
+    def test_a_pass_that_earned_no_point_keeps_the_list(self, tmp_path):
+        _seed_resume(tmp_path, datetime(2026, 2, 1, tzinfo=UTC), pending=["m2"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = base.BackupResult(total=0, stored=0)
+
+        self._run(_make_job(folders=["INBOX"]), mock_client, tmp_path)
+
+        assert _head(tmp_path).pending == ["m2"]
+
+    def test_a_lost_connection_still_holds_the_point_back(self, tmp_path):
+        """Messages cut off by it were never asked for, so none of them is named."""
+        current = datetime(2026, 2, 1, tzinfo=UTC)
+        _seed_resume(tmp_path, current, pending=["m0"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = base.BackupResult(
+            total=5,
+            stored=2,
+            failed=3,
+            unfetched=["m1"],
+            resume=ARCHIVED_TOKEN,
+        )
+
+        report = self._run(_make_job(folders=["INBOX"]), mock_client, tmp_path)
+
+        assert _resume_date(tmp_path) == current
+        assert _head(tmp_path).pending == ["m0"]
+        assert report.retried == ["INBOX"]
+        assert report.carried == []
+
+    def test_a_void_point_takes_the_list_with_it(self, tmp_path):
+        _seed_resume(tmp_path, datetime(2026, 2, 1, tzinfo=UTC), pending=["m2"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = [
+            base.BackupResult(resume_lost=True),
+            base.BackupResult(total=1, stored=1, resume=ARCHIVED_TOKEN),
+        ]
+        # A job that may not be caught up, so the full read follows directly.
+        job = _make_job(folders=["INBOX"], delete_after_export=True)
+
+        self._run(job, mock_client, tmp_path)
+
+        assert mock_client.folder_backup.call_args.kwargs.get("retry") == []
+        assert _head(tmp_path).pending == []
+
+    def test_full_asks_for_nothing_again(self, tmp_path):
+        """A full read covers the messages anyway."""
+        _seed_resume(tmp_path, datetime(2026, 2, 1, tzinfo=UTC), pending=["m2"])
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.return_value = base.BackupResult(
+            total=1,
+            stored=1,
+            resume=ARCHIVED_TOKEN,
+        )
+
+        self._run(_make_job(folders=["INBOX"]), mock_client, tmp_path, incremental=False)
+
+        assert mock_client.folder_backup.call_args.kwargs.get("retry") == []
+        assert _head(tmp_path).pending == []
 
 
 class TestCatchUp:
@@ -607,16 +728,32 @@ class TestCatchUp:
         # The second call asks for the folder without a point at all.
         assert client.folder_backup.call_args.kwargs.get("resume") is None
 
-    def test_a_failed_fetch_holds_the_point_back(self, tmp_path):
+    def test_a_failed_fetch_is_carried_to_the_next_run(self, tmp_path):
+        """The point is started, and the message that failed is kept behind it."""
         self._archive_with(tmp_path, "a")
         client = self._client(["a", "b"])
-        client.fetch_message.side_effect = OSError("connection reset")
+        client.fetch_message.side_effect = base.MailboxError("HTTP 500 Internal Server Error")
 
-        self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+        report = self._run(_make_job(folders=["INBOX"]), client, tmp_path)
 
         head = _head(tmp_path)
-        assert head.resume is None
-        assert head.last_run_at() is not None
+        assert head.resume == {"kind": "test-backend", "at": "now"}
+        assert head.pending == [1]
+        assert report.failed == 1
+        assert report.carried == ["INBOX"]
+        assert report.retried == []
+
+    def test_a_message_gone_since_the_listing_is_no_failure(self, tmp_path):
+        self._archive_with(tmp_path, "a")
+        client = self._client(["a", "b"])
+        client.fetch_message.side_effect = base.MessageGone("INBOX[1]: no longer in the folder")
+
+        report = self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        head = _head(tmp_path)
+        assert head.resume == {"kind": "test-backend", "at": "now"}
+        assert head.pending == []
+        assert report.failed == 0
 
     def test_ctrl_c_keeps_what_was_fetched(self, tmp_path):
         """A catch-up after an interrupted first pass can run for hours as well."""
@@ -764,7 +901,7 @@ class TestAFirstPassCutShort:
         monkeypatch.setattr(common, "SEAL_BATCH", 10)
         on_disk_before_the_end: list[int] = []
 
-        def folder_backup(folder_name, store, resume=None, callback=None):
+        def folder_backup(folder_name, store, resume=None, retry=(), callback=None):
             assert callback is not None
             for n in range(25):
                 _status, store_id, _path = store.add(_numbered_eml(n))
@@ -938,7 +1075,7 @@ class TestSnapshotStateFile:
 def _fake_folder_backup(*store_ids: str, failed: int = 0):
     """Build a folder_backup stand-in that reports the given messages."""
 
-    def run(folder_name, store, resume=None, callback=None):
+    def run(folder_name, store, resume=None, retry=(), callback=None):
         for store_id in store_ids:
             if callback:
                 callback(
@@ -1035,7 +1172,7 @@ class TestDeleteAfterExport:
         """A folder_backup stand-in that records the messages and reports which
         server ids may be deleted once the log is sealed."""
 
-        def run(folder_name, store, resume=None, callback=None):
+        def run(folder_name, store, resume=None, retry=(), callback=None):
             for sid in store_ids:
                 if callback:
                     callback(
@@ -1799,6 +1936,21 @@ class TestRebuildWithLog:
         with index_db.IndexDatabase(tmp_path / "out.db") as db:
             rows = db.execute("SELECT address FROM address ORDER BY address").fetchall()
             assert [row[0] for row in rows] == ["a@example.com", "m�ller@example.com"]
+
+    def test_a_failure_names_the_message(self, tmp_path, monkeypatch, caplog):
+        """The error alone does not say which of a million messages it was."""
+        _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))
+        (store_id,) = places_from_log(tmp_path / "meta")[("job", "INBOX")]
+
+        def broken(*_args):
+            raise UnicodeEncodeError("utf-8", "\udcfc", 0, 1, "surrogates not allowed")
+
+        monkeypatch.setattr(db_module, "_insert_message", broken)
+
+        with pytest.raises(UnicodeEncodeError):
+            jobs.create_db(tmp_path, tmp_path / "out.db")
+
+        assert f"failed on message {store_id}" in caplog.text
 
     def test_replay_restores_the_places_a_message_was_seen_in(self, tmp_path):
         store_id = self._archive_with_log(tmp_path, [("mail.example.org", ["INBOX", "\\Sent"])])
@@ -2825,7 +2977,7 @@ class TestRefreshDb:
 def _storing_backup(eml: bytes):
     """A folder_backup stand-in that stores an eml and logs it, like a real run."""
 
-    def run(folder_name, store, resume=None, callback=None):
+    def run(folder_name, store, resume=None, retry=(), callback=None):
         _status, store_id, _path = store.add(eml)
         if callback:
             callback(

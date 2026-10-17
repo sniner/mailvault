@@ -347,7 +347,17 @@ class _Rows:
             return msg_id
         if store_id in self._missing:
             return None
-        msg_id = _insert_message(self._db, self._store, store_id)
+        try:
+            msg_id = _insert_message(self._db, self._store, store_id)
+        except Exception:
+            # The error itself does not say which of a million messages it was.
+            log.error(
+                "building the query database: failed on message %s,"
+                " `mailvault get %s` writes it out",
+                store_id,
+                store_id,
+            )
+            raise
         if msg_id is None:
             self._missing.add(store_id)
             return None

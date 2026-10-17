@@ -320,6 +320,7 @@ class TestWalkFolder:
 
         assert results == [(2, base.Fetched(DUMMY_EML, ["INBOX"]))]
         assert result.failed == 1
+        assert result.unfetched == [1]
         assert "INBOX[1]: the server sent no message body" in caplog.text
 
     @staticmethod
@@ -348,6 +349,8 @@ class TestWalkFolder:
         assert len(results) == 10
         assert conn.fetch.call_count == 2
         assert result.failed == 25
+        # Never asked for, so not named: the next pass reads them from the old point.
+        assert result.unfetched == []
         assert len([r for r in caplog.records if r.levelno == logging.ERROR]) == 1
 
     def test_a_refused_chunk_costs_only_that_chunk(self):
@@ -369,6 +372,31 @@ class TestWalkFolder:
 
         assert len(results) == 15
         assert result.failed == 10
+        assert result.unfetched == list(range(11, 21))
+
+    def test_a_refused_fetch_names_its_uids(self, caplog):
+        """A message fetched again on every run must be one the log can point at."""
+        conn = _make_mock_conn()
+        conn.fetch.side_effect = imaplib.IMAP4.error("BAD Invalid uidset")
+        client = _make_client(conn=conn)
+
+        with caplog.at_level(logging.ERROR):
+            list(client._walk_folder("INBOX", [7], chunk_size=1))
+
+        assert "INBOX[7]: fetch failed" in caplog.text
+
+    def test_a_uid_the_answer_leaves_out_is_reported_gone(self, caplog):
+        conn = _make_mock_conn()
+        conn.fetch.return_value = {}
+        client = _make_client(conn=conn)
+        result = base.BackupResult()
+
+        with caplog.at_level(logging.INFO):
+            results = list(client._walk_folder("INBOX", [5], result=result))
+
+        assert results == []
+        assert result.failed == 0
+        assert "INBOX[5]: no longer in the folder" in caplog.text
 
 
 class TestPlacesComeWithTheMessage:
@@ -592,12 +620,27 @@ class TestUidResume:
 
         assert resume.token() == self._point(uid=12)
 
-    def test_a_pass_that_archived_nothing_earns_no_token(self):
+    def test_a_first_pass_that_archived_nothing_earns_no_token(self):
         """The Proton Bridge case, in UID terms: no mail, no claim."""
-        resume = imap._UidResume(self._point())
+        resume = imap._UidResume(None)
         resume.accept(self._select(), "job::INBOX")
 
         assert resume.token() is None
+
+    def test_a_pass_that_archived_nothing_hands_back_its_starting_point(self):
+        """It claims nothing new, and the caller can record what it retried."""
+        resume = imap._UidResume(self._point())
+        resume.accept(self._select(), "job::INBOX")
+
+        assert resume.token() == self._point()
+
+    def test_a_retried_uid_does_not_move_the_point_back(self):
+        resume = imap._UidResume(self._point(uid=4711))
+        resume.accept(self._select(), "job::INBOX")
+
+        resume.saw(48)
+
+        assert resume.token() == self._point(uid=4711)
 
 
 class TestVoidResumePoint:
@@ -797,6 +840,77 @@ class TestFolderBackup:
         assert result.failed == 0
         assert result.complete
         assert len(list(store.walk())) == 1
+
+    def test_the_point_covers_a_refused_message(self, tmp_path):
+        """The caller keeps it and passes it back, so the next pass asks above it."""
+        conn = _make_mock_conn()
+        conn.select_folder.return_value = {b"EXISTS": 3, b"UIDVALIDITY": 42}
+        conn.search.return_value = [1, 2, 3]
+        conn.fetch.return_value = {1: {b"BODY[]": DUMMY_EML}, 2: {b"BODY[]": DUMMY_EML}, 3: {}}
+        client = _make_client(conn=conn)
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+
+        result = client.folder_backup("INBOX", store)
+
+        assert result.unfetched == [3]
+        assert result.resumable
+        assert result.resume == {"kind": imap.UID_RESUME_KIND, "uidvalidity": 42, "uid": 3}
+
+    def test_messages_to_retry_are_fetched_first_one_at_a_time(self, tmp_path):
+        """A refused FETCH fails its chunk, so a bad UID would hold its neighbours back."""
+        conn = _make_mock_conn()
+        conn.select_folder.return_value = {b"EXISTS": 20, b"UIDVALIDITY": 42}
+        conn.search.return_value = [11, 12]
+        conn.fetch.side_effect = lambda ids, _items: {
+            uid: {b"BODY[]": DUMMY_EML} for uid in ids if uid != 5
+        }
+        client = _make_client(conn=conn)
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        point = {"kind": imap.UID_RESUME_KIND, "uidvalidity": 42, "uid": 10}
+
+        result = client.folder_backup("INBOX", store, resume=point, retry=[3, 5])
+
+        assert [c.args[0] for c in conn.fetch.call_args_list] == [[3], [5], [11, 12]]
+        # UID 5 is not in the folder any more: dropped, not failed.
+        assert result.stored == 3
+        assert result.failed == 0
+        assert result.resume == {"kind": imap.UID_RESUME_KIND, "uidvalidity": 42, "uid": 12}
+
+    @pytest.mark.parametrize("answer", [{3: {b"BODY[]": DUMMY_EML}}, {}])
+    def test_a_pass_that_only_retried_keeps_its_point(self, tmp_path, answer):
+        """Stored or gone, an old UID must not pull the point back below the new mail."""
+        conn = _make_mock_conn()
+        conn.select_folder.return_value = {b"EXISTS": 20, b"UIDVALIDITY": 42}
+        conn.search.return_value = []
+        conn.fetch.return_value = answer
+        client = _make_client(conn=conn)
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        point = {"kind": imap.UID_RESUME_KIND, "uidvalidity": 42, "uid": 49}
+
+        result = client.folder_backup("INBOX", store, resume=point, retry=[3])
+
+        assert result.complete
+        assert result.resume == point
+
+    def test_a_void_point_asks_for_nothing_again(self, tmp_path):
+        conn = _make_mock_conn()
+        conn.select_folder.return_value = {b"EXISTS": 20, b"UIDVALIDITY": 43}
+        client = _make_client(conn=conn)
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+        point = {"kind": imap.UID_RESUME_KIND, "uidvalidity": 42, "uid": 10}
+
+        result = client.folder_backup("INBOX", store, resume=point, retry=[3])
+
+        assert result.resume_lost
+        conn.fetch.assert_not_called()
+
+    def test_a_uid_no_longer_in_the_folder_is_gone(self):
+        conn = _make_mock_conn()
+        conn.fetch.return_value = {}
+        client = _make_client(conn=conn)
+
+        with pytest.raises(base.MessageGone):
+            client.fetch_message(7, "INBOX")
 
     def test_callback_receives_metadata(self, tmp_path):
         conn = _make_mock_conn()

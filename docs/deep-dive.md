@@ -298,9 +298,20 @@ journal job therefore does nothing, and says so when the config is loaded.
 
 A failed download repairs itself. Servers do drop connections and answer the
 odd request with a `504 Gateway Timeout`, so a folder can end a run with
-messages it did not deliver — but that folder's snapshot is then **not**
-advanced, and the next ordinary run fetches it again from where the last one
-resumed. Nothing needs to be noticed, and nothing needs to be done.
+messages it did not deliver. Nothing needs to be noticed, and nothing needs to
+be done:
+
+- When the connection is lost, the folder's resume point is **not** advanced,
+  and the next run reads the folder again from where the last one resumed.
+- When the server refuses single messages and delivers the rest, the resume
+  point does advance, and the refused messages are noted in the folder's file in
+  `heads/`. The next run asks for these again first, one at a time, and forgets
+  each once it is stored or no longer in the mailbox. A message that Microsoft
+  365 answers with an error on every attempt costs a few requests per run this
+  way, not a new read of its folder. The backup lists such a folder as one "with
+  failed messages -- fetched again next run", and the log line for each message
+  carries the error code and request id from Microsoft 365, which Microsoft
+  support asks for.
 
 A message that did not make it into the archive is also never deleted from the
 server. With `delete_after_export`, only messages that were stored *and* whose
@@ -806,6 +817,7 @@ They are written once and never modified.
   "folder": "INBOX",
   "last_run": "2026-08-05T19:00:00+00:00",
   "resume": { "kind": "imap-uid", "uidvalidity": 1239278212, "uid": 48127 },
+  "pending": [47911],
   "log": "a1b2c3…"
 }
 ```
@@ -822,6 +834,11 @@ If a resume point cannot be read, or the server says it is no longer valid --
 IMAP reports a changed `UIDVALIDITY`, Graph rejects a delta link with `410` --
 the folder is read in full. Not by downloading it again: the archive is listed
 and compared, and only what is missing is fetched.
+
+`pending` lists the messages up to the resume point that the server would not
+hand over, by their id on the server: a UID on IMAP, a message id on Microsoft
+365. The next run asks for these again before anything else. It is written and
+discarded together with the resume point.
 
 `log` names the newest log file of that place, which is what lets `archive
 check` notice that one has gone missing.

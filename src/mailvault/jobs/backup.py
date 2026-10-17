@@ -22,7 +22,7 @@ from mailvault.backend import base, session
 from mailvault.jobs.common import PassLog
 from mailvault.jobs.db import DEFAULT_QUERY_DB_NAME, refresh_db
 from mailvault.jobs.migration import migrate_archive
-from mailvault.jobs.reconcile import ArchivedPlaces, reconcile_folder
+from mailvault.jobs.reconcile import ArchivedPlaces, ReconcileResult, reconcile_folder
 from mailvault.store import cas, heads, metalog
 
 log = logging.getLogger(__name__)
@@ -32,14 +32,17 @@ def _resume_point(
     heads_root: pathlib.Path,
     job_name: str,
     folder: str,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, list[str | int]]:
     """Where the next pass over this folder carries on, or None to read it all.
 
-    The value is handed to the backend as it was stored. Nothing here knows what
+    Comes with the messages behind that point that are still to be fetched.
+    Both are handed to the backend as they were stored. Nothing here knows what
     a `uid` or a `delta_link` means, and nothing here should.
     """
     head = heads.read(heads_root, job_name, folder)
-    return None if head is None else head.resume
+    if head is None or head.resume is None:
+        return None, []
+    return head.resume, head.pending
 
 
 def _record_pass(
@@ -48,6 +51,7 @@ def _record_pass(
     folder: str,
     last_run: datetime,
     resume: dict[str, Any] | None,
+    pending: collections.abc.Sequence[Any] = (),
     void_previous: bool = False,
 ) -> None:
     """Note that a pass read this folder, and where the next one may carry on.
@@ -67,6 +71,10 @@ def _record_pass(
     whole folder is reconciled from scratch every night, for good. Nothing is
     lost by forgetting it, because a point the source refuses buys no coverage.
 
+    `pending` goes with `resume`: the messages behind the new point that are
+    still to be fetched. It is written only together with a new point and
+    forgotten together with a void one.
+
     A head that cannot be written is logged and otherwise tolerated. The folder
     is simply fetched again next time, which the storage absorbs; aborting here
     would instead cost the remaining folders of the run for a failure that has
@@ -76,6 +84,7 @@ def _record_pass(
     head.last_run = last_run.isoformat()
     if resume is not None:
         head.resume = resume
+        head.pending = list(pending)
     elif void_previous and head.resume is not None:
         log.info(
             "%s::%s: the resume point the source rejected is forgotten,"
@@ -84,6 +93,7 @@ def _record_pass(
             folder,
         )
         head.resume = None
+        head.pending = []
     try:
         heads.write(heads_root, head)
     except OSError as exc:
@@ -136,6 +146,10 @@ class BackupReport:
     did not move -- including one that could not be read at all. Both mean the
     same for the next run, which reads those folders again; only the second is
     a list, because a folder is worth naming and a message is not.
+
+    `carried` names the folders whose resume point did move although messages
+    failed, because the server refused each of them by itself. The next run
+    fetches only those messages again, not the folder.
     """
 
     folders: int = 0
@@ -146,6 +160,7 @@ class BackupReport:
     deleted: int = 0
     failed: int = 0
     retried: list[str] = dataclasses.field(default_factory=list)
+    carried: list[str] = dataclasses.field(default_factory=list)
 
     @property
     def complete(self) -> bool:
@@ -240,7 +255,7 @@ def _backup_folder(
     which is what makes a full pass authoritative: a backend given no point has
     nothing to hold itself back from and records exactly what it found.
     """
-    previous = _resume_point(heads_root, job.name, folder) if incremental else None
+    previous, retry = _resume_point(heads_root, job.name, folder) if incremental else (None, [])
     if previous is None and incremental:
         caught_up = _catch_up_if_possible(
             mb, store, job, folder, heads_root, log_root, places, report
@@ -263,6 +278,7 @@ def _backup_folder(
             folder,
             store,
             resume=previous,
+            retry=retry,
             callback=_location_writer(pass_log),
         )
 
@@ -293,6 +309,7 @@ def _backup_folder(
                 folder,
                 store,
                 resume=None,
+                retry=[],
                 callback=_location_writer(pass_log),
             )
     # Counted from the pass that stands, not from the one the source refused:
@@ -304,8 +321,9 @@ def _backup_folder(
     report.failed += result.failed
     recorded = pass_log.recorded > 0
     sealed = pass_log.sealed
+    carried = _can_carry(result, result.resume)
     resume: dict[str, Any] | None = None
-    if result.complete and sealed:
+    if (result.complete or carried) and sealed:
         resume = result.resume
         if resume is None and previous is None:
             # Nothing came back and there was nothing to begin with. Either the
@@ -313,7 +331,7 @@ def _backup_folder(
             # and the two are indistinguishable from here, so treat it as the
             # second and read the folder in full again next run.
             log.info("%s::%s: no messages offered, resume point not started", job.name, folder)
-    elif not result.complete:
+    elif not result.complete and not carried:
         # Taking the new point now would push the failed messages out of
         # everything the next pass asks for, losing them permanently.
         log.warning(
@@ -346,10 +364,50 @@ def _backup_folder(
         )
         report.retried.append(folder)
         resume = None
+    elif carried and resume is not None:
+        _report_carried(job.name, folder, result.failed, result.total, report)
     # Written whatever the outcome: the folder *was* read, and that is all
     # `last_run` claims. Only `resume` is held back when the pass fell short.
-    _record_pass(heads_root, job.name, folder, observed_at, resume, void_previous=void)
+    _record_pass(
+        heads_root,
+        job.name,
+        folder,
+        observed_at,
+        resume,
+        result.unfetched,
+        void_previous=void,
+    )
     return recorded
+
+
+def _can_carry(
+    result: base.BackupResult | ReconcileResult,
+    resume: dict[str, Any] | None,
+) -> bool:
+    """Whether the failed messages of a pass can be fetched again by themselves.
+
+    Only when the server refused each of them by itself, so that each is named,
+    and there is a new point for them to lie behind. Otherwise the point stays
+    where it was and the next pass reads them from there with everything else.
+    """
+    return not result.complete and result.resumable and resume is not None
+
+
+def _report_carried(
+    job_name: str,
+    folder: str,
+    failed: int,
+    total: int,
+    report: BackupReport,
+) -> None:
+    log.warning(
+        "%s::%s: %s of %s failed, fetched again next run",
+        job_name,
+        folder,
+        failed,
+        utils.counted(total, "message"),
+    )
+    report.carried.append(folder)
 
 
 def _can_catch_up(job: conf.JobConfig) -> bool:
@@ -477,7 +535,8 @@ def _catch_up_folder(
     report.stored += result.restored + result.recovered_copies
     report.present += result.on_server - result.missing
     report.failed += result.failed
-    if not result.complete:
+    carried = _can_carry(result, resume)
+    if not result.complete and not carried:
         log.warning(
             "%s::%s: %s of %s failed, resume point not started",
             job.name,
@@ -500,7 +559,18 @@ def _catch_up_folder(
         )
         resume = None
         report.retried.append(folder)
-    _record_pass(heads_root, job.name, folder, observed_at, resume, void_previous=void_previous)
+    elif carried:
+        wanted = result.missing + result.extra_copies
+        _report_carried(job.name, folder, result.failed, wanted, report)
+    _record_pass(
+        heads_root,
+        job.name,
+        folder,
+        observed_at,
+        resume,
+        result.unfetched,
+        void_previous=void_previous,
+    )
     return result.restored + result.recovered_copies > 0
 
 

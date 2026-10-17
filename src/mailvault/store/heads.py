@@ -243,6 +243,10 @@ class Head:
     # hash lives in files whose names *are* their hashes, so one value here
     # vouches for all of them. A list would be unattested.
     log: str | None = None
+    # Backend ids of messages behind `resume` that the server would not hand
+    # over, fetched again by the next pass. Only meaningful with `resume`, and
+    # forgotten with it.
+    pending: list[str | int] = dataclasses.field(default_factory=list)
 
     def last_run_at(self) -> datetime | None:
         """When a run last read this place, or None if the value is unusable.
@@ -273,6 +277,7 @@ class Head:
             "last_run": self.last_run,
             "resume": self.resume,
             "log": self.log,
+            "pending": self.pending,
         }
 
 
@@ -287,6 +292,16 @@ def _is_usable_resume(value: object) -> bool:
         return False
     kind = value.get("kind")
     return isinstance(kind, str) and bool(kind)
+
+
+def _is_usable_pending(value: object) -> bool:
+    """A list of message ids, each a string (Graph) or an integer (an IMAP UID)."""
+    if not isinstance(value, list):
+        return False
+    return all(
+        isinstance(item, str) or (isinstance(item, int) and not isinstance(item, bool))
+        for item in value
+    )
 
 
 def _names_a_place(job: object, folder: object) -> bool:
@@ -336,12 +351,32 @@ def _decode(path: pathlib.Path, payload: object) -> Head | None:
         log.warning("%s: unusable resume point, the folder is read in full", where(path))
         resume = None
 
+    pending = payload.get("pending", [])
+    if not _is_usable_pending(pending):
+        # The messages it names lie behind the resume point, so the point
+        # cannot be kept without them.
+        log.warning(
+            "%s: unusable list of failed messages, the folder is read in full",
+            where(path),
+        )
+        resume = None
+        pending = []
+    if resume is None:
+        pending = []
+
     chain = payload.get("log")
     if chain is not None and not isinstance(chain, str):
         log.warning("%s: non-string log head, dropped", where(path))
         chain = None
 
-    return Head(job=job, folder=folder, last_run=last_run, resume=resume, log=chain)
+    return Head(
+        job=job,
+        folder=folder,
+        last_run=last_run,
+        resume=resume,
+        log=chain,
+        pending=pending,
+    )
 
 
 def read_file(path: pathlib.Path) -> Head | None:

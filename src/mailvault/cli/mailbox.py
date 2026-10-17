@@ -89,6 +89,7 @@ def report_backup(job_name: str, report: jobs.BackupReport) -> int:
     if report.failed:
         print(f"{utils.counted(report.failed, 'message')} could not be stored")
     report_items(report.retried, "folder", "not finished -- read again next run")
+    report_items(report.carried, "folder", "with failed messages -- fetched again next run")
     return 0 if report.complete else 1
 
 

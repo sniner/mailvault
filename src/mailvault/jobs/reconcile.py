@@ -48,6 +48,7 @@ import dataclasses
 import logging
 import pathlib
 from datetime import UTC, datetime
+from typing import Any
 
 from mailvault import mailutils, utils
 from mailvault.backend import base
@@ -85,6 +86,9 @@ class ReconcileResult:
     justifies fetching them, and on a folder of byte-identical duplicates it
     stays at zero however many are fetched. Keeping it apart from `restored` is
     what stops a run from reporting more messages restored than were missing.
+
+    `unfetched` is what `base.BackupResult.unfetched` is: the failed downloads,
+    by backend id, that a backup may fetch again by themselves next run.
     """
 
     folder: str
@@ -95,6 +99,7 @@ class ReconcileResult:
     recovered_copies: int = 0
     failed: int = 0
     sealed: bool = True
+    unfetched: list[Any] = dataclasses.field(default_factory=list)
 
     @property
     def complete(self) -> bool:
@@ -106,6 +111,11 @@ class ReconcileResult:
         `backup._catch_up_folder`.
         """
         return self.failed == 0
+
+    @property
+    def resumable(self) -> bool:
+        """True if every failure is a message in `unfetched`."""
+        return self.failed == len(self.unfetched)
 
 
 def places_from_log(log_root: pathlib.Path) -> dict[tuple[str, str | None], set[str]]:
@@ -339,9 +349,13 @@ def _fetch_wanted(
             )
             result.failed += not_fetched
             return
+        except base.MessageGone:
+            log.info("%s: %s is no longer in the folder", ctx, label)
+            continue
         except Exception as exc:
             log.error("%s: download failed for %s: %s", ctx, label, exc)
             result.failed += 1
+            result.unfetched.append(ref.msg_id)
             continue
         try:
             status, store_id, _path = store.add(fetched.body)
