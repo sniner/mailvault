@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`db create` no longer fails on an address with undeclared non-ASCII bytes** (#12). One such
+  address in a `From`, `To` or `Cc` header stopped the build with "surrogates not allowed", and no
+  `index.db` was written. The index update after `backup` with `index_db = true` failed the same
+  way. Bytes that form UTF-8 are now read as UTF-8, and any other byte becomes the replacement
+  character `�`, as in the subject
+
 ## 0.18.0 (2026-10-12)
 
 ### Added

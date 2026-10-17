@@ -321,6 +321,21 @@ def test_group_members_are_collected():
     assert to_addrs == {"b@example.com", "c@example.com"}
 
 
+def test_raw_8bit_addresses_come_out_as_encodable_text():
+    """No lone surrogate may reach a caller: SQLite cannot encode one."""
+    raw = (
+        b"From: j\xc3\xbcrgen@example.com\r\n"  # UTF-8, as RFC 6532 allows
+        b"To: M\xfcller <m\xfcller@example.com>, plain@example.com\r\n"  # Latin-1
+        b"\r\n"
+    )
+    header = mailutils.decode_email_header(raw)
+
+    from_addrs, to_addrs = mailutils.addresses(header)
+
+    assert from_addrs == {"jürgen@example.com"}
+    assert to_addrs == {"m�ller@example.com", "plain@example.com"}
+
+
 def test_date_separates_a_timezone_glued_to_the_time():
     raw = b"From: a@example.com\r\nDate: Tue, 04 Apr 00 06:41:03EST\r\n\r\n"
     header = mailutils.decode_email_header(raw)

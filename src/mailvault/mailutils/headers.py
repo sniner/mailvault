@@ -46,17 +46,27 @@ def address_field(msg: email.message.EmailMessage, label: str) -> set[str]:
         try:
             parsed = getattr(header, "addresses", None)
             if parsed is not None:
-                found.update(a.addr_spec.lower() for a in parsed if a.addr_spec)
+                specs = [a.addr_spec for a in parsed]
             else:
                 # A plain string: no policy parsing to lean on, so fall back.
-                found.update(
-                    addr.lower()
-                    for _name, addr in email.utils.getaddresses([str(header)])
-                    if addr
-                )
+                specs = [addr for _name, addr in email.utils.getaddresses([str(header)])]
+            found.update(decode_raw_bytes(spec).lower() for spec in specs if spec)
         except Exception as exc:
             log.warning("Unusable address in %s: %s", label, exc)
     return found
+
+
+def decode_raw_bytes(text: str) -> str:
+    """Decode the raw 8-bit bytes the parser left in a header value.
+
+    `BytesParser` reads a header as ASCII and keeps every other byte as a lone
+    surrogate (U+DC80 to U+DCFF). A string holding one cannot be encoded as
+    UTF-8, so SQLite rejects it. Bytes that form UTF-8, as RFC 6532 allows in an
+    address, become the characters they encode; any other byte becomes U+FFFD.
+    The policy does the same for the text of a header like Subject, but leaves
+    `addr_spec` as it was parsed.
+    """
+    return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
 
 
 def addresses(msg: email.message.EmailMessage) -> tuple[set[str], set[str]]:

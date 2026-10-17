@@ -1784,6 +1784,22 @@ class TestRebuildWithLog:
         assert result.messages == 3
         assert result.undated == 2
 
+    def test_a_recipient_with_raw_8bit_bytes_is_indexed(self, tmp_path):
+        """A Latin-1 byte in an address, with no charset to read it by."""
+        _archive_message(
+            tmp_path,
+            "job",
+            "INBOX",
+            b"From: a@example.com\r\nTo: m\xfcller@example.com\r\nMessage-ID: <a@x>\r\n\r\n",
+        )
+
+        result = jobs.create_db(tmp_path, tmp_path / "out.db")
+
+        assert result.messages == 1
+        with index_db.IndexDatabase(tmp_path / "out.db") as db:
+            rows = db.execute("SELECT address FROM address ORDER BY address").fetchall()
+            assert [row[0] for row in rows] == ["a@example.com", "m�ller@example.com"]
+
     def test_replay_restores_the_places_a_message_was_seen_in(self, tmp_path):
         store_id = self._archive_with_log(tmp_path, [("mail.example.org", ["INBOX", "\\Sent"])])
 
