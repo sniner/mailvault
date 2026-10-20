@@ -46,6 +46,10 @@ def verify(
     date older than the snapshot. This is a last resort, not part of the routine
     -- which is why it can afford to read the archive itself rather than keep an
     index alongside it.
+
+    Without `repair` it still downloads the messages whose Message-ID does not
+    settle whether they are archived, and compares them by content. It stores
+    nothing then.
     """
     if job.exchange_journal:
         raise JobError(

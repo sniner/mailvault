@@ -17,7 +17,7 @@ from mailvault.backend import base, imap
 from mailvault.jobs import common, guard, migration
 from mailvault.jobs import db as db_module
 from mailvault.jobs.db import DEFAULT_QUERY_DB_NAME, freshness, refresh_db
-from mailvault.jobs.reconcile import archived_message_counts, places_from_log
+from mailvault.jobs.reconcile import archived_message_ids, places_from_log
 from mailvault.legacy import state_json as state
 from mailvault.legacy import store_db
 from mailvault.store import cas, heads, index_db, marker, metalog
@@ -583,6 +583,35 @@ class TestCatchUp:
         self._run(_make_job(folders=["INBOX"]), client, tmp_path)
 
         assert client.fetch_message.call_count == 1
+
+    def test_a_version_listed_before_the_archived_one_is_fetched(self, tmp_path):
+        """Issue #14 on the backup path: the catch-up is where it was skipped.
+
+        Two versions under one Message-ID, the archive holds the one the server
+        lists second. Both are downloaded, and the one that was missing is
+        stored.
+        """
+        first = _numbered_eml("x").replace(b"Body", b"First version of the body")
+        second = _numbered_eml("x")
+        _archive_message(tmp_path, "test-job", "INBOX", second)
+        client = self._client([])
+        client.message_index.return_value = iter(
+            [
+                base.MessageRef(msg_id="first", message_id="<x@x>"),
+                base.MessageRef(msg_id="second", message_id="<x@x>"),
+            ]
+        )
+        bodies = {"first": first, "second": second}
+        client.fetch_message.side_effect = lambda msg_id, folder: base.Fetched(
+            bodies[msg_id], base.places_read_from([], folder)
+        )
+
+        report = self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        assert client.fetch_message.call_count == 2
+        assert (report.seen, report.stored, report.present) == (2, 1, 1)
+        store = cas.mail_store(tmp_path)
+        assert {p.read_bytes() for p in store.walk()} == {first, second}
 
     def test_the_point_is_taken_before_the_comparison(self, tmp_path):
         """Anything arriving during it is then either found or left above the point."""
@@ -2175,7 +2204,7 @@ class TestVerify:
                 base.MessageRef(msg_id="id-a", message_id="<a@example.com>"),
                 base.MessageRef(msg_id="id-b", message_id="<b@example.com>"),
             ],
-            {},
+            {"id-b": _eml("<b@example.com>", "Lost")},
         )
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
@@ -2187,8 +2216,9 @@ class TestVerify:
         assert results[0].on_server == 2
         assert results[0].missing == 1
         assert results[0].restored == 0
-        # Without --repair nothing is downloaded.
-        client.fetch_message.assert_not_called()
+        # Without --repair the unmatched message is compared, and nothing stored.
+        client.fetch_message.assert_called_once_with("id-b", "INBOX")
+        assert len(list(cas.mail_store(tmp_path).walk())) == 1
 
     def test_repair_fetches_and_stores(self, tmp_path):
         job = _make_job(folders=["INBOX"])
@@ -2219,8 +2249,8 @@ class TestVerify:
         assert len(list(store.walk())) == 2
         # The restored message reached the log too, not just the archive.
         places = places_from_log(tmp_path / metalog.DEFAULT_LOG_DIR)
-        known = archived_message_counts(store, places[("test-job", "INBOX")])
-        assert known == {"a@example.com": 1, "b@example.com": 1}
+        known = archived_message_ids(store, places[("test-job", "INBOX")])
+        assert sorted(known.values()) == ["a@example.com", "b@example.com"]
 
     def test_a_restored_message_keeps_every_place_it_is_in(self, tmp_path):
         """A repair records where the source says the message is, not where it looked.
@@ -2255,9 +2285,8 @@ class TestVerify:
         places = places_from_log(tmp_path / metalog.DEFAULT_LOG_DIR)
         assert ("test-job", "Wichtig") in places, sorted(places)
         store = cas.mail_store(tmp_path)
-        assert archived_message_counts(store, places[("test-job", "Wichtig")]) == {
-            "b@example.com": 1
-        }
+        known = archived_message_ids(store, places[("test-job", "Wichtig")])
+        assert list(known.values()) == ["b@example.com"]
 
     def test_nothing_is_asked_of_the_source_after_a_message_is_written(self, tmp_path):
         """A message in `mail/` that nothing in `meta/` names is the one thing a
@@ -2322,9 +2351,9 @@ class TestVerify:
             return real_locate(self, data, exists=exists)
 
         with patch.object(cas.ContentAddressedStorage, "locate", locate):
-            known = archived_message_counts(store, [*ids, "0" * 64])
+            known = archived_message_ids(store, [*ids, "0" * 64])
 
-        assert known == {"a@example.com": 1, "b@example.com": 1, "c@example.com": 1}
+        assert known == dict(zip(ids, ["a@example.com", "b@example.com", "c@example.com"]))
         assert located == [], "nothing is looked up before it is read"
         assert gone, "the id is a real one; the missing entry above is not"
 
@@ -2334,7 +2363,7 @@ class TestVerify:
         path.chmod(0o600)
         path.unlink()
 
-        assert archived_message_counts(store, [store_id]) == {}
+        assert archived_message_ids(store, [store_id]) == {}
 
     def test_repair_is_idempotent(self, tmp_path):
         """A second verify run right after a repair must find nothing."""
@@ -2360,65 +2389,9 @@ class TestVerify:
         """The finding from the reference archive: 1,729 reported missing, none missing.
 
         A server folder may hold the same message twice, byte for byte. The
-        archive is addressed by content and holds it once -- which is its job,
-        not a gap -- so the second copy has nothing left to claim. Counted as
-        missing it stood in the report of a complete archive after every run,
-        for good, and `--repair` fetched it every time to no effect.
+        archive holds it once. Both copies are downloaded, because the id cannot
+        tell a duplicate from a second version, and both turn out to be archived.
         """
-        job = _make_job(folders=["INBOX"])
-        _archive_message(tmp_path, "test-job", "INBOX", _eml("<a@example.com>", "Twice"))
-
-        client = _verify_client(
-            [
-                base.MessageRef(msg_id="id-a1", message_id="<a@example.com>"),
-                base.MessageRef(msg_id="id-a2", message_id="<a@example.com>"),
-            ],
-            {},
-        )
-        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
-            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
-            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
-
-            results = jobs.verify(job, tmp_path)
-
-        assert results[0].on_server == 2
-        assert results[0].missing == 0
-        assert results[0].extra_copies == 1
-
-    def test_an_extra_copy_is_still_fetched_and_reported_for_what_it_was(self, tmp_path):
-        """Fetched because only its bytes can say which of the two kinds it is.
-
-        A second copy is usually a duplicate the store cannot hold twice, and
-        occasionally the byte-different version that really is absent. Nothing
-        short of downloading it tells them apart, so it is downloaded -- and
-        counted under what it turned out to be, never under "missing".
-        """
-        job = _make_job(folders=["INBOX"])
-        _archive_message(tmp_path, "test-job", "INBOX", _eml("<a@example.com>", "First"))
-        other_version = _eml("<a@example.com>", "Second, and not the same bytes")
-
-        client = _verify_client(
-            [
-                base.MessageRef(msg_id="id-a1", message_id="<a@example.com>"),
-                base.MessageRef(msg_id="id-a2", message_id="<a@example.com>"),
-            ],
-            {"id-a2": other_version},
-        )
-        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
-            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
-            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
-
-            results = jobs.verify(job, tmp_path, repair=True)
-
-        assert results[0].missing == 0
-        assert results[0].extra_copies == 1
-        # Not "restored": nothing was missing. It differed, so it was kept.
-        assert results[0].restored == 0
-        assert results[0].recovered_copies == 1
-        assert len(list(cas.mail_store(tmp_path).walk())) == 2
-
-    def test_a_duplicate_that_really_is_one_leaves_the_archive_alone(self, tmp_path):
-        """The other outcome of the same fetch, and the common one."""
         job = _make_job(folders=["INBOX"])
         same = _eml("<a@example.com>", "Twice")
         _archive_message(tmp_path, "test-job", "INBOX", same)
@@ -2428,7 +2401,31 @@ class TestVerify:
                 base.MessageRef(msg_id="id-a1", message_id="<a@example.com>"),
                 base.MessageRef(msg_id="id-a2", message_id="<a@example.com>"),
             ],
-            {"id-a2": same},
+            {"id-a1": same, "id-a2": same},
+        )
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            results = jobs.verify(job, tmp_path)
+
+        assert results[0].on_server == 2
+        assert results[0].compared == 2
+        assert results[0].missing == 0
+
+    def test_a_second_version_under_the_same_id_is_missing(self, tmp_path):
+        """Same Message-ID, different bytes: the archive lacks it, and a repair keeps it."""
+        job = _make_job(folders=["INBOX"])
+        first = _eml("<a@example.com>", "First")
+        _archive_message(tmp_path, "test-job", "INBOX", first)
+        other_version = _eml("<a@example.com>", "Second, and not the same bytes")
+
+        client = _verify_client(
+            [
+                base.MessageRef(msg_id="id-a1", message_id="<a@example.com>"),
+                base.MessageRef(msg_id="id-a2", message_id="<a@example.com>"),
+            ],
+            {"id-a1": first, "id-a2": other_version},
         )
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
@@ -2436,9 +2433,146 @@ class TestVerify:
 
             results = jobs.verify(job, tmp_path, repair=True)
 
-        assert results[0].extra_copies == 1
-        assert results[0].recovered_copies == 0
-        assert results[0].restored == 0
+        assert results[0].missing == 1
+        assert results[0].restored == 1
+        assert len(list(cas.mail_store(tmp_path).walk())) == 2
+
+    def test_the_version_listed_first_is_not_taken_for_the_archived_one(self, tmp_path):
+        """Issue #14: the archive holds the version the server lists second.
+
+        Handing the archived copy to the first one listed left the first version
+        unfetched, while the second was downloaded and found identical.
+        """
+        job = _make_job(folders=["INBOX"])
+        first = _eml("<x@example.com>", "First version")
+        second = _eml("<x@example.com>", "Second version")
+        _archive_message(tmp_path, "test-job", "INBOX", second)
+
+        client = _verify_client(
+            [
+                base.MessageRef(msg_id="first", message_id="<x@example.com>"),
+                base.MessageRef(msg_id="second", message_id="<x@example.com>"),
+            ],
+            {"first": first, "second": second},
+        )
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            checked = jobs.verify(job, tmp_path)
+            client.message_index.return_value = iter(
+                [
+                    base.MessageRef(msg_id="first", message_id="<x@example.com>"),
+                    base.MessageRef(msg_id="second", message_id="<x@example.com>"),
+                ]
+            )
+            repaired = jobs.verify(job, tmp_path, repair=True)
+
+        assert checked[0].missing == 1
+        assert repaired[0].restored == 1
+        store = cas.mail_store(tmp_path)
+        assert {p.read_bytes() for p in store.walk()} == {first, second}
+
+    def test_an_archived_message_listed_under_another_id_is_not_missing(self, tmp_path):
+        """Issue #13: Graph's `internetMessageId` is not the Message-ID in the MIME.
+
+        Downloaded and found archived, so neither missing nor restored, and a
+        repair writes nothing.
+        """
+        job = _make_job(folders=["INBOX"])
+        sent = _eml("<mime@example.com>", "Sent")
+        _archive_message(tmp_path, "test-job", "INBOX", sent)
+        before = sorted(p.name for p in metalog.log_files(tmp_path / metalog.DEFAULT_LOG_DIR))
+
+        client = _verify_client(
+            [base.MessageRef(msg_id="id-s", message_id="<graph@example.com>")],
+            {"id-s": sent},
+        )
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            results = jobs.verify(job, tmp_path, repair=True)
+
+        assert (results[0].compared, results[0].missing, results[0].restored) == (1, 0, 0)
+        after = sorted(p.name for p in metalog.log_files(tmp_path / metalog.DEFAULT_LOG_DIR))
+        assert after == before
+
+    def test_an_archived_message_without_a_message_id_is_found_by_content(self, tmp_path):
+        """Issue #13: Exchange lists an id for a message whose MIME carries none."""
+        job = _make_job(folders=["INBOX"])
+        old = _eml("<gone@example.com>", "Old")
+        old = old.replace(b"Message-ID: <gone@example.com>\r\n", b"")
+        assert b"Message-ID" not in old
+        _archive_message(tmp_path, "test-job", "INBOX", old)
+
+        client = _verify_client(
+            [base.MessageRef(msg_id="id-o", message_id="<synthesised@example.com>")],
+            {"id-o": old},
+        )
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            results = jobs.verify(job, tmp_path)
+
+        assert (results[0].compared, results[0].missing) == (1, 0)
+
+    def test_a_copy_found_under_another_id_no_longer_counts_for_its_own(self, tmp_path):
+        """Both cases at once: an archived message carrying X is listed under G.
+
+        By count, X is archived twice and listed twice, so both copies under X
+        looked archived and the second version was never fetched. Once the
+        message listed under G turns out to be the one carrying X, X is
+        outnumbered and both of its copies are compared.
+        """
+        job = _make_job(folders=["INBOX"])
+        first = _eml("<x@example.com>", "First version")
+        second = _eml("<x@example.com>", "Second version")
+        other = _eml("<x@example.com>", "Listed under another id")
+        _archive_message(tmp_path, "test-job", "INBOX", first)
+        _archive_message(tmp_path, "test-job", "INBOX", other)
+
+        client = _verify_client(
+            [
+                base.MessageRef(msg_id="first", message_id="<x@example.com>"),
+                base.MessageRef(msg_id="second", message_id="<x@example.com>"),
+                base.MessageRef(msg_id="other", message_id="<g@example.com>"),
+            ],
+            {"first": first, "second": second, "other": other},
+        )
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            results = jobs.verify(job, tmp_path, repair=True)
+
+        fetched = [c.args[0] for c in client.fetch_message.call_args_list]
+        assert fetched == ["other", "first", "second"]
+        assert (results[0].missing, results[0].restored) == (1, 1)
+        store = cas.mail_store(tmp_path)
+        assert {p.read_bytes() for p in store.walk()} == {first, second, other}
+
+    def test_a_duplicate_that_really_is_one_leaves_the_archive_alone(self, tmp_path):
+        """The common outcome: both copies are the archived message."""
+        job = _make_job(folders=["INBOX"])
+        same = _eml("<a@example.com>", "Twice")
+        _archive_message(tmp_path, "test-job", "INBOX", same)
+
+        client = _verify_client(
+            [
+                base.MessageRef(msg_id="id-a1", message_id="<a@example.com>"),
+                base.MessageRef(msg_id="id-a2", message_id="<a@example.com>"),
+            ],
+            {"id-a1": same, "id-a2": same},
+        )
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            results = jobs.verify(job, tmp_path, repair=True)
+
+        assert (results[0].compared, results[0].missing, results[0].restored) == (2, 0, 0)
         assert len(list(cas.mail_store(tmp_path).walk())) == 1
 
     def test_a_repair_that_recovers_nothing_leaves_the_log_alone(self, tmp_path):
@@ -2460,7 +2594,7 @@ class TestVerify:
                 base.MessageRef(msg_id="id-a1", message_id="<a@example.com>"),
                 base.MessageRef(msg_id="id-a2", message_id="<a@example.com>"),
             ],
-            {"id-a2": same},
+            {"id-a1": same, "id-a2": same},
         )
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
@@ -2507,7 +2641,7 @@ class TestVerify:
                 base.MessageRef(msg_id="id-a1", message_id="<a@example.com>"),
                 base.MessageRef(msg_id="id-a2", message_id="<a@example.com>"),
             ],
-            {"id-a2": same},
+            {"id-a1": same, "id-a2": same},
         )
         with caplog.at_level(logging.INFO):
             with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
@@ -2548,7 +2682,9 @@ class TestVerify:
 
             results = jobs.verify(job, tmp_path, repair=True)
 
-        assert results[0].missing == 1
+        # Not known to be missing: it could not be compared.
+        assert results[0].missing == 0
+        assert results[0].unchecked == 1
         assert results[0].restored == 0
         assert results[0].failed == 1
 
@@ -2587,6 +2723,7 @@ class TestVerify:
             return iter([base.MessageRef(msg_id="id-a", message_id="<a@example.com>")])
 
         client.message_index.side_effect = index
+        client.fetch_message.return_value = base.Fetched(_eml("<a@example.com>"), ["INBOX"])
 
         with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
             mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)

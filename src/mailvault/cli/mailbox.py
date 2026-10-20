@@ -94,79 +94,44 @@ def report_backup(job_name: str, report: jobs.BackupReport) -> int:
 
 
 def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: bool) -> int:
-    """Say what each folder turned out to hold, and whether anything is missing.
+    """Print what each folder holds, and whether anything is missing.
 
-    The exit code says what the last line says, and nothing besides. An archive
-    with a gap in it ends non-zero whether or not `--repair` was asked to close
-    it -- the same answer `archive check` gives to a message the log names and
-    the archive does not have, and for the same reason: a run that found the
-    thing it exists to find must not look like one that found nothing.
-
-    What it does *not* count is the extra copies, nor a download of one that
-    failed. They are duplicates of mail already archived, a folder can hold
-    thousands, and a run ending non-zero over them every night would teach its
-    owner to stop reading the exit code -- which is the one thing that must not
-    happen to it. The rule holds in both directions: a count kept out of the
-    verdict is kept out of the exit code too.
-
-    Two counts where there used to be one, and the whole point of the second is
-    that it is *not* added to the first. A folder can hold the same message
-    twice, byte for byte; the archive is addressed by content and holds it once,
-    so every copy after the first is a message the server has and the archive
-    cannot separately have. Counted as missing, it made a complete archive report
-    thousands of gaps after every run, for good -- and the summary line told its
-    owner to run `--repair`, which fetched all of them and changed nothing. A
-    number that is always there and never means anything is one a reader learns
-    to skip, and the next one along with it.
-
-    So the extra copies are named where there are any, and left out of both the
-    verdict and the advice. `verify` may now say an archive is complete while
-    still reporting a few thousand of them, and that is exactly the statement
-    intended: nothing is missing, and the server keeps more copies than a
-    content-addressed store has any way of keeping.
+    The exit code follows the last line. It is non-zero while any server message
+    is not known to be archived: missing and not restored, or not downloaded at
+    all. A gap ends non-zero whether or not `--repair` was asked to close it,
+    the same answer `archive check` gives to a message the log names and the
+    archive does not have.
     """
     for r in results:
         line = f"{job_name}::{r.folder}: {r.on_server:,} on server, {r.missing:,} not archived"
-        if r.extra_copies:
-            copies = utils.counted(r.extra_copies, "further copy", "further copies")
-            line += f", {copies} of mail already archived"
-        # Only where the pass had something to fetch. A folder with nothing
-        # missing reporting "0 restored" is a number answering a question nobody
-        # asked, on every line of every repair run.
-        if repaired and (r.missing or r.extra_copies):
+        # Only where there was something to restore: "0 restored" on every line
+        # of a repair run answers a question nobody asked.
+        if repaired and r.missing:
             line += f", {r.restored:,} restored"
-            if r.recovered_copies:
-                line += f", {r.recovered_copies:,} of the further copies differed and were kept"
-            if r.failed:
-                line += f", {r.failed:,} failed"
+        if r.unchecked:
+            line += f", {r.unchecked:,} could not be downloaded"
         print(line)
     total_missing = sum(r.missing for r in results)
-    total_extra = sum(r.extra_copies for r in results)
     total_restored = sum(r.restored for r in results)
-    total_recovered = sum(r.recovered_copies for r in results)
+    total_unchecked = sum(r.unchecked for r in results)
     unsealed = [f"{job_name}::{r.folder}" for r in results if not r.sealed]
-    if not total_missing:
-        line = f"{job_name}: archive is complete"
-        if total_extra:
-            # Named in the verdict too, because a reader who sees "complete"
-            # after a run that fetched thousands of messages is owed the reason
-            # in the same breath, not three lines further up.
-            copies = utils.counted(total_extra, "further copy", "further copies")
-            line += (
-                f" -- {copies} of mail already archived, which a deduplicating"
-                f" archive holds once"
-            )
-        print(line)
-    elif not repaired:
+    if not total_missing and not total_unchecked:
+        print(f"{job_name}: archive is complete")
+    elif total_missing and not repaired:
         missing = utils.counted(total_missing, "message")
         print(f"{job_name}: {missing} missing, run again with --repair")
-    else:
+    elif total_missing:
         missing = utils.counted(total_missing, "message")
-        line = f"{job_name}: {total_restored:,} of {missing} restored"
-        if total_recovered:
-            copies = utils.counted(total_recovered, "further copy", "further copies")
-            line += f", plus {copies} that really did differ"
-        print(line)
+        print(f"{job_name}: {total_restored:,} of {missing} restored")
+    if total_unchecked:
+        # Neither missing nor archived as far as is known: the download failed,
+        # so there was nothing to compare.
+        unchecked = utils.counted(total_unchecked, "message")
+        which = "it is" if total_unchecked == 1 else "they are"
+        print(
+            f"{job_name}: {unchecked} could not be downloaded, so it is not known"
+            f" whether {which} archived; the log names the reason for each"
+        )
     # After the verdict rather than before it, because this qualifies whatever
     # the verdict said: the mail is in the archive and nothing records where it
     # belongs, so a folder counted as complete is not yet finished. Ending on
@@ -177,7 +142,7 @@ def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: boo
         "whose metadata log was not written -- what was fetched is in the archive"
         " with nothing recording where it came from, run again",
     )
-    outstanding = total_missing - total_restored if repaired else total_missing
+    outstanding = sum(r.outstanding for r in results)
     return 0 if outstanding <= 0 and not unsealed else 1
 
 
