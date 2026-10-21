@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`exchange_journal` archives the mail from a journal envelope byte for byte.** Every earlier
+  version archived a copy that Python's email package wrote out again. Long header lines and
+  headers with 8-bit characters could be rewritten: a malformed Message-ID could lose its end, an
+  8-bit header was turned into an encoded word, and DKIM and S/MIME signatures can fail on such a
+  copy. Mail archived that way stays in the archive as it is. The warning against using
+  `exchange_journal` is withdrawn
+
 ## 0.21.0 (2026-10-21)
 
 ### Known issue

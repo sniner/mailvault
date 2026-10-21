@@ -1,4 +1,6 @@
+import base64
 import email
+import email.message
 import email.policy
 import logging
 
@@ -157,7 +159,13 @@ def test_a_journal_item_carrying_non_ascii_is_written_back_out_whole():
     used to send `as_bytes` down a fallback chain. It has to come back byte for
     byte in the body, because what is written out here is what the archive keeps.
     """
-    body = "Grüße aus München -- ölig, süß\r\n".encode()
+    message = (
+        b"From: real-sender@example.com\r\n"
+        b"Subject: " + "Ölwechsel".encode() + b"\r\n"
+        b'Content-Type: text/plain; charset="utf-8"\r\n'
+        b"Content-Transfer-Encoding: 8bit\r\n"
+        b"\r\n" + "Grüße aus München -- ölig, süß".encode()
+    )
     journal = (
         b"From: journal@example.com\r\n"
         b"Subject: Journal\r\n"
@@ -169,16 +177,9 @@ def test_a_journal_item_carrying_non_ascii_is_written_back_out_whole():
         b"Journal envelope\r\n"
         b"--BOUNDARY\r\n"
         b"Content-Type: message/rfc822\r\n"
-        b"\r\n"
-        b"From: real-sender@example.com\r\n"
-        b"Subject: " + "Ölwechsel".encode() + b"\r\n"
-        b'Content-Type: text/plain; charset="utf-8"\r\n'
-        b"Content-Transfer-Encoding: 8bit\r\n"
-        b"\r\n" + body + b"--BOUNDARY--\r\n"
+        b"\r\n" + message + b"\r\n--BOUNDARY--\r\n"
     )
-    result = mailutils.unwrap_exchange_journal_item(journal)
-    assert result is not None
-    assert body.rstrip(b"\r\n") in result
+    assert mailutils.unwrap_exchange_journal_item(journal) == message
 
 
 def test_unwrap_exchange_journal_not_a_journal():
@@ -190,6 +191,168 @@ Just a plain email, no RFC822 attachments.
 """
     result = mailutils.unwrap_exchange_journal_item(plain)
     assert result is None
+
+
+def _journal_report(message: bytes, nl: bytes = b"\r\n") -> bytes:
+    """A journal report as Microsoft 365 sends it: the report, then the message."""
+    lines = [
+        b"From: Microsoft Outlook <journal-sender@example.com>",
+        b"To: journal@example.org",
+        b"Subject: Quarterly report",
+        b"X-MS-Journal-Report:",
+        b"MIME-Version: 1.0",
+        b'Content-Type: multipart/mixed; boundary="_journal_"',
+        b"",
+        b"--_journal_",
+        b'Content-Type: text/plain; charset="us-ascii"',
+        b"Content-Transfer-Encoding: 7bit",
+        b"",
+        b"Sender: sender@example.com",
+        b"Subject: Quarterly report",
+        b"Message-Id: <abc@example.com>",
+        b"To: recipient@example.com",
+        b"--_journal_",
+        b"Content-Type: message/rfc822",
+        b"",
+    ]
+    return nl.join(lines) + nl + message + nl + b"--_journal_--" + nl
+
+
+_SIGNED = (
+    b"Message-ID: <signed@example.com>\r\n"
+    b"MIME-Version: 1.0\r\n"
+    b'Content-Type: multipart/signed; protocol="application/pkcs7-signature";'
+    b' micalg=sha-256; boundary="S"\r\n'
+    b"\r\n"
+    b"--S\r\n"
+    b"Content-Type: text/plain\r\n"
+    b"Content-Description: s\xe4\r\n"
+    b"\r\n"
+    b"signed text\r\n"
+    b"--S\r\n"
+    b"Content-Type: application/pkcs7-signature\r\n"
+    b"\r\n"
+    b"AAAA\r\n"
+    b"--S--\r\n"
+)
+
+_FORWARDED = (
+    b"Message-ID: <outer@example.com>\r\n"
+    b'Content-Type: multipart/mixed; boundary="F"\r\n'
+    b"\r\n"
+    b"--F\r\n"
+    b"Content-Type: text/plain\r\n"
+    b"\r\n"
+    b"see below\r\n"
+    b"--F\r\n"
+    b"Content-Type: message/rfc822\r\n"
+    b"\r\n"
+    b"Message-ID: <inner@example.com>\r\n"
+    b"\r\n"
+    b"forwarded\r\n"
+    b"--F--\r\n"
+)
+
+_JOURNALLED = {
+    "onedrive id": (
+        b"Message-ID: <Share-0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b,"
+        b"rcid_0123456789abcdef0123@odspnotify>\r\nSubject: s\r\n\r\nbody\r\n"
+    ),
+    "8-bit subject": b"Message-ID: <a@example.com>\r\nSubject: s\xe4\r\n\r\nbody\r\n",
+    # Exchange adds headers like this to every message; written back, each
+    # became an encoded word.
+    "long exchange header": (
+        b"X-MS-Exchange-Organization-MessageLatency: SRV=" + b"A" * 140 + b";1\r\n"
+        b"Subject: s\r\n\r\nbody\r\n"
+    ),
+    "long address line": (
+        b"To: Foo <foo@example.com>, " + b"x" * 60 + b"@example.com\r\n\r\nbody\r\n"
+    ),
+    "malformed address": b"From: Foo [Bar] <foo@example.com>\r\n\r\nbody\r\n",
+    "odd folding": b"Subject: a\r\n\t  b\r\n  c\r\nX-Empty:\r\n\r\nbody",
+    "signed, 8-bit in the signed part": _SIGNED,
+    "forwards a message of its own": _FORWARDED,
+}
+
+
+@pytest.mark.parametrize("message", _JOURNALLED.values(), ids=_JOURNALLED.keys())
+def test_a_journal_item_gives_the_message_byte_for_byte(message):
+    """What the archive keeps is the message as it was received, not a rewrite of it."""
+    assert mailutils.unwrap_exchange_journal_item(_journal_report(message)) == message
+
+
+def test_a_journal_item_with_lf_line_ends_gives_the_message_unchanged():
+    message = b"Message-ID: <a,b@example.com>\nSubject: s\xe4\n\nbody\n"
+    report = _journal_report(message, nl=b"\n")
+
+    assert mailutils.unwrap_exchange_journal_item(report) == message
+
+
+def test_the_standard_library_rewrites_a_message_it_writes_back():
+    """Before and after: why the attached message is cut out rather than written out.
+
+    The first assertion pins the behaviour of the standard library, not of
+    mailvault. If it fails, `as_bytes()` has started to write a parsed message
+    back unchanged, which does not make it the right tool here.
+    """
+    message = _JOURNALLED["onedrive id"]
+    report = _journal_report(message)
+    parsed = email.message_from_bytes(report, policy=email.policy.default)
+    attached = next(p for p in parsed.walk() if p.get_content_type() == "message/rfc822")
+    inner = attached.get_payload(0)
+    assert isinstance(inner, email.message.Message)
+    written_back = inner.as_bytes(policy=email.policy.SMTP)
+
+    assert not written_back.startswith(message.split(b"\r\n")[0] + b"\r\n")
+    assert mailutils.unwrap_exchange_journal_item(report) == message
+
+
+def test_an_undeliverable_bounce_gives_the_journal_message():
+    """The bounce carries a malformed delivery status first, the journal message second."""
+    message = b"Message-ID: <a@example.com>\r\nSubject: s\xe4\r\n\r\nbody"
+    bounce = (
+        b"Subject: Undeliverable: Quarterly report\r\n"
+        b'Content-Type: multipart/report; report-type=delivery-status; boundary="R"\r\n'
+        b"\r\n"
+        b"--R\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"\r\n"
+        b"Delivery has failed.\r\n"
+        b"--R\r\n"
+        b"Content-Type: message/rfc822\r\n"
+        b"\r\n"
+        b"Content-Type: message/delivery-status\r\n"
+        b"\r\n"
+        b"Reporting-MTA: dns; mail.example.com\r\n"
+        b"--R\r\n"
+        b"Content-Type: message/rfc822\r\n"
+        b"\r\n" + message + b"\r\n"
+        b"--R--\r\n"
+    )
+
+    assert mailutils.unwrap_exchange_journal_item(bounce) == message
+
+
+def test_an_attached_message_sent_in_base64_is_decoded():
+    """Not allowed by RFC 2046, and still the message as it was sent once decoded."""
+    message = b"Message-ID: <a@example.com>\r\nSubject: s\xe4\r\n\r\nbody\r\n"
+    report = (
+        b'Content-Type: multipart/mixed; boundary="B"\r\n'
+        b"\r\n"
+        b"--B\r\n"
+        b"Content-Type: message/rfc822\r\n"
+        b"Content-Transfer-Encoding: base64\r\n"
+        b"\r\n" + base64.encodebytes(message) + b"--B--\r\n"
+    )
+
+    assert mailutils.unwrap_exchange_journal_item(report) == message
+
+
+def test_a_journal_item_without_its_close_delimiter_still_gives_the_message():
+    message = b"Message-ID: <a@example.com>\r\n\r\nbody\r\n"
+    report = _journal_report(message).removesuffix(b"\r\n--_journal_--\r\n")
+
+    assert mailutils.unwrap_exchange_journal_item(report) == message
 
 
 # ---------------------------------------------------------------------------
