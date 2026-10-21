@@ -54,6 +54,14 @@ class TestOverview:
         assert read.cc is None
         assert read.message_id is None
 
+    def test_a_malformed_message_id_arrives_whole(self):
+        """The standard library's parser would cut it at the comma (#16)."""
+        raw = b"Message-ID: <Share-0f1e,rcid_abc@odspnotify>\r\nSubject: x\r\n\r\nbody\r\n"
+
+        read = content.overview(raw)
+
+        assert read.message_id == "<Share-0f1e,rcid_abc@odspnotify>"
+
     def test_the_plain_body_wins_over_the_html_one(self):
         msg = _message("plain text")
         msg.add_alternative("<p>html</p>", subtype="html")

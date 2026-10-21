@@ -41,8 +41,11 @@ class SchemaError(Exception):
 # rebuilt from the archive, so the answer to a mismatch is to build it again.
 # Raise this whenever `SCHEMA` changes in a way a reader would notice -- an added
 # index counts, because what a reader gets without it is the right answer at a
-# cost nothing would explain to them.
-SCHEMA_VERSION = 2
+# cost nothing would explain to them. So does a column whose values change for
+# the same message: version 3 has the tables of version 2, but `message.email_id`
+# holds the Message-ID as written, where version 2 held it as Python's header
+# parser cut it short. A file holding both would group them apart.
+SCHEMA_VERSION = 3
 
 # Page size of a database this version creates. SQLite reads a page at a time,
 # and over a network share every page is a round trip -- a query that has to look
