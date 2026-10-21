@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Known issue
+
+- **Do not use `exchange_journal` for now.** Every version so far, this one included, archives the
+  mail unwrapped from a journal envelope not as it was received, but as a copy Python's email
+  package wrote out again. Long header lines and headers with 8-bit characters can be rewritten,
+  a malformed Message-ID can lose its end, and DKIM and S/MIME signatures can fail on the archived
+  copy. Mail archived this way stays in the archive as it is. A coming release archives the mail
+  unchanged
+
 ### Fixed
 
 - **Message-IDs are no longer cut short when they are read** (#16). Python's email package keeps

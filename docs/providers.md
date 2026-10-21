@@ -277,7 +277,8 @@ Two things belong elsewhere, because they are not a question of the provider:
 
 * **An Exchange journal mailbox** is archived differently -- every message it
   holds is an envelope with the actual mail inside, and that is what should end
-  up in the archive. It works on both backends: [Exchange journal
+  up in the archive. **Do not use it for now**, every version so far archives a
+  rewritten copy of the mail: [Exchange journal
   mailboxes](deep-dive.md#exchange-journal-mailboxes)
 * **Every option there is**, for either backend, with its default and what it
   does: [configuration reference](deep-dive.md#configuration-reference)

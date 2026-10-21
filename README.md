@@ -15,7 +15,10 @@ IMAP) and Proton Mail through the local Bridge. What people use it for:
   `delete_after_export` a message is removed from the server once it is
   archived — and only once its place has been written down durably.
 * **Archiving an Exchange journal mailbox.** The journal envelopes are
-  unwrapped, so what lands in the archive is the original mail.
+  unwrapped, so that the mail inside them is archived. **Do not use this for
+  now:** every version so far archives a rewritten copy of that mail, not the
+  original. See [Exchange journal
+  mailboxes](https://github.com/sniner/mailvault/blob/main/docs/deep-dive.md#exchange-journal-mailboxes).
 * **Consolidating what has piled up elsewhere.** `.eml` files from other tools
   are imported into the same archive, where duplicates recognise themselves.
 

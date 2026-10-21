@@ -258,10 +258,18 @@ else.
 
 ### Exchange journal mailboxes
 
+**Do not use `exchange_journal` for now.** Every version up to and including
+0.21.0 archives the unwrapped mail not as it was received, but as a copy that
+Python's email package wrote out again. Long header lines and headers with 8-bit
+characters can be rewritten: a malformed Message-ID can lose its end, an 8-bit
+header is turned into an encoded word, and DKIM and S/MIME signatures can fail
+on the archived copy. Mail archived this way stays in the archive as it is. A
+coming release archives the mail unchanged.
+
 Exchange journaling wraps every mail it records in an envelope: the journal
 report is the message, and the original mail is an attachment inside it. Backing
 such a mailbox up as-is would archive the envelopes, not the mail. With
-`exchange_journal = true` each item is unwrapped and the original is what goes
+`exchange_journal = true` each item is unwrapped and the mail inside is what goes
 into the archive. This works on both backends -- IMAP and Microsoft 365.
 
 Journal mailboxes collect other things too, though: a bounce, a notification, or
@@ -925,7 +933,8 @@ ignore_folder_names = ['.*/Calendar/?.*']
 folders = ["INBOX", "Archive"]
 ```
 
-An example for MS Exchange journal export:
+An example for MS Exchange journal export (do not use it for now, see [Exchange
+journal mailboxes](#exchange-journal-mailboxes)):
 
 ```toml
 [[job]]
@@ -1093,7 +1102,7 @@ environment others can set, moves the problem rather than solving it.
 |--------|---------|-------------|
 | `tls_check_hostname` | `true` | Verify the server hostname against the TLS certificate |
 | `tls_verify_cert` | `true` | Verify the TLS certificate |
-| `exchange_journal` | `false` | Extract original emails from MS Exchange journal messages (see [Exchange journal mailboxes](#exchange-journal-mailboxes)) |
+| `exchange_journal` | `false` | Extract original emails from MS Exchange journal messages. Do not use it for now, see [Exchange journal mailboxes](#exchange-journal-mailboxes) |
 | `error_folder` | — | Where to file items that are not journal envelopes; only meaningful with `exchange_journal` |
 | `trash_folder` | — | IMAP/Gmail only: folder emptied after each backup pass; requires `delete_after_export` (see [Deleting from the server](#deleting-from-the-server-after-export)) |
 | `permanent_delete` | `false` | MS Graph only: delete for good instead of into Deleted Items; requires `delete_after_export` (see [Deleting from the server](#deleting-from-the-server-after-export)) |
