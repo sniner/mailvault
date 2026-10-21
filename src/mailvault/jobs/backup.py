@@ -499,11 +499,10 @@ def _catch_up_folder(
     report: BackupReport,
     void_previous: bool = False,
 ) -> bool:
-    """Read a folder in full, downloading only what the archive does not have.
+    """Read a folder in full, downloading only what the archive may not have.
 
-    Returns whether anything reached the log, which for this pass means whether
-    anything was fetched at all: every message it stores gets its place written
-    down in the same breath.
+    Returns whether anything was restored. Every message it stores has its
+    place written to the log right away.
 
     Reached when a folder holds archived mail but no resume point -- an archive
     upgraded from a format that had none, or one whose state file was lost. The
@@ -526,14 +525,11 @@ def _catch_up_folder(
     result = reconcile_folder(
         mb, store, log_root, heads_root, archived, job.name, folder, repair=True
     )
-    # A catch-up stores what the folder was missing, and the copies that turned
-    # out to differ after all. Both are mail that was not in the archive before
-    # this pass, which is what the count outside means -- and everything the
-    # listing matched to something already archived is what `present` means,
-    # whether it was matched once or three times over.
+    # Whatever was not found missing or left undecided is archived, matched by
+    # Message-ID or by content.
     report.seen += result.on_server
-    report.stored += result.restored + result.recovered_copies
-    report.present += result.on_server - result.missing
+    report.stored += result.restored
+    report.present += result.on_server - result.missing - result.unchecked
     report.failed += result.failed
     carried = _can_carry(result, resume)
     if not result.complete and not carried:
@@ -542,7 +538,7 @@ def _catch_up_folder(
             job.name,
             folder,
             result.failed,
-            utils.counted(result.missing, "message"),
+            utils.counted(result.compared + result.unchecked, "message"),
         )
         resume = None
         report.retried.append(folder)
@@ -560,7 +556,7 @@ def _catch_up_folder(
         resume = None
         report.retried.append(folder)
     elif carried:
-        wanted = result.missing + result.extra_copies
+        wanted = result.compared + result.unchecked
         _report_carried(job.name, folder, result.failed, wanted, report)
     _record_pass(
         heads_root,
@@ -571,7 +567,7 @@ def _catch_up_folder(
         result.unfetched,
         void_previous=void_previous,
     )
-    return result.restored + result.recovered_copies > 0
+    return result.restored > 0
 
 
 def _purge_after_seal(

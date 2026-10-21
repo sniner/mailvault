@@ -233,8 +233,8 @@ example.org::INBOX: 77,592 on server, 43 not archived, 43 restored
 example.org: 43 of 43 messages restored
 ```
 
-It compares headers rather than downloading everything, so a large mailbox takes
-minutes, not hours. See [Verify and
+It compares Message-IDs and downloads only the messages they do not settle, not
+the whole mailbox. See [Verify and
 repair](https://github.com/sniner/mailvault/blob/main/docs/deep-dive.md#verify-and-repair).
 
 

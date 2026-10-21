@@ -4,40 +4,32 @@ There are two ways to read a folder in full, and they differ in what they trust.
 
 The **real** full read downloads every message and lets the content-addressed
 storage decide by hash what is new. It trusts nothing, which is why `--full`
-uses it: someone asking for that is asking not to be second-guessed.
+uses it.
 
-The **synthetic** full read -- this module -- lists the folder, compares against
-what the archive already holds, and downloads only the difference. Listing costs
-a handful of requests where downloading costs one per message, so it is the one
-that can be reached for automatically: after an upgrade that left no resume
-point, or when a source invalidates the point it gave us.
+The **synthetic** full read, this module, lists the folder, compares the listing
+with what the archive holds at that place, and downloads only what the
+comparison cannot settle. Listing costs a handful of requests where downloading
+costs one per message, so the backup uses it by itself: after an upgrade that
+left no resume point, after a pass that broke off, or when a source voids the
+point it gave us. `verify` uses it too.
 
-What it trades for that is the comparison key. The archive is addressed by the
-hash of the bytes, which the server does not know, so the only key both sides
-share without transferring the message is the Message-ID.
+The only key the server and the archive share without a download is the
+Message-ID, and it is not reliable. The server's value can differ from the one
+in the message (Graph's `internetMessageId`, common in Sent Items), the message
+can carry none while the server lists one, and different messages can share
+one. So the Message-ID decides only the plain case: an id the archive holds at
+least as often as the server lists it. Everything else is downloaded and decided
+by its hash, which is exact:
 
-It is compared by *count*, not by presence. A place can hold two messages with
-the same Message-ID and different bytes -- those are two objects here -- and a
-plain "is it archived?" would let the second pass as already there. Counting
-catches it: the server showing an id twice where one copy is archived means one
-is missing.
+- an id the archive does not hold at this place
+- an id the server lists more often than the archive holds it, every copy of it,
+  because the id cannot say which of them is the archived one
+- an id one of whose archived copies turned out to be a server message listed
+  under another id: that copy no longer counts for its own id, which can leave
+  the id outnumbered
 
-The bias that leaves runs the safe way. Byte-identical duplicates on the server
-collapse into a single object in the storage, so every copy after the first
-finds nothing left to claim and is downloaded again to be discarded. On a real
-folder that is a few thousand needless downloads -- bandwidth, on a command that
-runs rarely, against a message that would otherwise be missing for good.
-
-What those needless downloads must not do is *count* as missing mail, and that
-is the difference between the two numbers this reports. A Message-ID the archive
-has never seen at this place is a gap. One whose copies are merely outnumbered is
-not: it is a message that is archived, of which the server holds more copies than
-a content-addressed store can hold objects. Counted together, a folder with two
-thousand duplicates reported two thousand missing messages after every run, for
-good, on an archive that was not missing one -- and told its owner to run
-`--repair`, which fetched them all and changed nothing. They are still fetched,
-because from the outside a second copy might be the byte-different version that
-really is absent; they are just no longer called missing.
+A wrong guess here costs downloads, never mail. A backup pays them once and
+starts a resume point afterwards; `verify` pays them on every run.
 """
 
 from __future__ import annotations
@@ -53,7 +45,7 @@ from typing import Any
 from mailvault import mailutils, utils
 from mailvault.backend import base
 from mailvault.jobs.common import PassLog
-from mailvault.jobs.ledger import Claim, MessageIdLedger
+from mailvault.jobs.ledger import Match, match_by_message_id, same_message_id
 from mailvault.store import cas, metalog
 
 log = logging.getLogger(__name__)
@@ -75,17 +67,14 @@ FETCH_PROGRESS_EVERY = 250
 class ReconcileResult:
     """Outcome of comparing one server folder against the local archive.
 
-    `missing` and `extra_copies` are the two ways a server message can fail to be
-    accounted for, and they are kept apart because only the first is a gap. The
-    second is a copy too many of something already archived -- usually one the
-    store cannot hold twice, occasionally a byte-different version that really is
-    absent, and never distinguishable until it has been fetched.
+    `compared` counts the server messages downloaded because their Message-ID
+    did not settle whether they are archived, and `missing` those of them whose
+    content is not archived at this place. `restored` counts the missing ones a
+    repair pass stored and recorded.
 
-    `restored` counts the gaps a repair pass closed. `recovered_copies` counts the
-    extra copies that turned out to be new content after all -- the case that
-    justifies fetching them, and on a folder of byte-identical duplicates it
-    stays at zero however many are fetched. Keeping it apart from `restored` is
-    what stops a run from reporting more messages restored than were missing.
+    `unchecked` counts the messages that could not be downloaded, so nothing is
+    known about them. `failed` adds the missing ones a repair could not store;
+    it is the count that holds a resume point back.
 
     `unfetched` is what `base.BackupResult.unfetched` is: the failed downloads,
     by backend id, that a backup may fetch again by themselves next run.
@@ -93,10 +82,10 @@ class ReconcileResult:
 
     folder: str
     on_server: int = 0
+    compared: int = 0
     missing: int = 0
-    extra_copies: int = 0
     restored: int = 0
-    recovered_copies: int = 0
+    unchecked: int = 0
     failed: int = 0
     sealed: bool = True
     unfetched: list[Any] = dataclasses.field(default_factory=list)
@@ -116,6 +105,11 @@ class ReconcileResult:
     def resumable(self) -> bool:
         """True if every failure is a message in `unfetched`."""
         return self.failed == len(self.unfetched)
+
+    @property
+    def outstanding(self) -> int:
+        """Server messages not known to be archived at this place after the pass."""
+        return self.missing - self.restored + self.unchecked
 
 
 def places_from_log(log_root: pathlib.Path) -> dict[tuple[str, str | None], set[str]]:
@@ -168,17 +162,16 @@ class ArchivedPlaces:
         return self._places
 
 
-def archived_message_counts(
+def archived_message_ids(
     store: cas.ContentAddressedStorage,
     store_ids: collections.abc.Iterable[str],
     log_ctx: str = "",
-) -> collections.Counter[str]:
-    """Count the archived copies per normalised Message-ID.
+) -> dict[str, str]:
+    """Read the normalised Message-ID of each archived message, by store id.
 
-    Counted rather than collected, because the archive is addressed by content:
-    two messages sharing a Message-ID and differing in their bytes are two
-    objects here, and only a count can tell that the server showing that id twice
-    means one of them is missing.
+    A message without a usable Message-ID maps to "". A store id the store no
+    longer holds, or cannot read, is left out: it does not count as archived, so
+    a server message with that content is restored.
 
     The log says which messages are at a place; the Message-ID itself is only in
     the message, so each one is parsed. That is one header read per archived
@@ -190,10 +183,6 @@ def archived_message_counts(
     archive rather than on the server, which is not what one would guess from the
     outside.
 
-    Messages without a usable Message-ID are omitted: they cannot serve as a
-    comparison key and must count as "not present" so they are re-fetched, which
-    is harmless because the storage deduplicates by content.
-
     Each entry is opened by its id rather than looked up first, which is one
     round trip instead of two -- the same reason `db._insert_message` does it
     that way. Asking `locate(exists=True)` where the file is costs up to two
@@ -201,10 +190,8 @@ def archived_message_counts(
     before the `open()` that actually reads, and every one of them goes over the
     share this pass is already the slowest part of.
     """
-    known: collections.Counter[str] = collections.Counter()
-    read = 0
-    for store_id in store_ids:
-        read += 1
+    known: dict[str, str] = {}
+    for read, store_id in enumerate(store_ids, start=1):
         if log_ctx and read % ARCHIVE_PROGRESS_EVERY == 0:
             log.info("%s: %s read from the archive", log_ctx, utils.counted(read, "message"))
         try:
@@ -217,8 +204,7 @@ def archived_message_counts(
         except (OSError, ValueError) as exc:
             log.warning("%s: unreadable, not counted as archived: %s", store_id, exc)
             continue
-        known[mailutils.normalize_message_id(mailutils.message_id(header))] += 1
-    known.pop("", None)
+        known[store_id] = mailutils.normalize_message_id(mailutils.message_id(header))
     return known
 
 
@@ -232,36 +218,40 @@ def reconcile_folder(
     folder: str,
     repair: bool = False,
 ) -> ReconcileResult:
-    """List one folder, compare it against the archive, optionally fetch the gap.
+    """List one folder, compare it against the archive, and settle what is unclear.
 
-    With `repair` false this only reports, which is what `verify` does on its
-    own. With it true the missing messages are downloaded and their locations
-    written to the log, which is what makes this a full read that skips what is
-    already there.
+    The messages the Message-ID does not settle are downloaded and compared by
+    hash either way. With `repair` false nothing is written, which is what
+    `verify` does on its own. With it true the missing messages are stored and
+    their locations written to the log, which makes this a full read that skips
+    what is already there.
     """
     ctx = f"{job_name}::{folder}"
     # Said before the work, not after it: this reads one header per archived
     # message and has nothing to report until every one of them is done.
     log.info("%s: reading %s", ctx, utils.counted(len(archived), "archived message"))
-    known = MessageIdLedger(archived_message_counts(store, archived, log_ctx=ctx))
-    log.info("%s: %s in archive", ctx, utils.counted(len(known), "message"))
+    present = archived_message_ids(store, archived, log_ctx=ctx)
+    log.info("%s: %s in archive", ctx, utils.counted(len(present), "message"))
 
     result = ReconcileResult(folder=folder)
-    # Each one carries which of the two it is: the downloader treats them alike,
-    # and what the pass reports afterwards depends on telling them apart.
-    wanted: list[tuple[base.MessageRef, Claim]] = []
     log.info("%s: listing the folder on the server", ctx)
-    for ref in mb.message_index(folder):
-        result.on_server += 1
-        claim = known.claim(mailutils.normalize_message_id(ref.message_id))
-        if claim is Claim.ABSENT:
-            result.missing += 1
-            wanted.append((ref, claim))
-        elif claim is Claim.EXHAUSTED:
-            result.extra_copies += 1
-            wanted.append((ref, claim))
-        if result.on_server % SERVER_PROGRESS_EVERY == 0:
-            log.info("%s: %s indexed", ctx, utils.counted(result.on_server, "message"))
+    listed = _list_folder(mb, folder, ctx)
+    result.on_server = len(listed)
+
+    if not repair:
+        _Comparison(mb, store, job_name, folder, present, result).run(listed)
+    else:
+        # The log is sealed in batches and once more on the way out, however
+        # the loop ends: a catch-up after an interrupted first backup can run
+        # for hours too.
+        with PassLog(log_root, heads_root, datetime.now(UTC)) as pass_log:
+            comparison = _Comparison(mb, store, job_name, folder, present, result)
+            comparison.repair_into(pass_log, set(archived))
+            comparison.run(listed)
+        # Whether the locations reached disk is the caller's business: a pass
+        # that fetched every message and could not write down where any of them
+        # belongs must not move a resume point past them.
+        result.sealed = pass_log.sealed
 
     log.info(
         "%s: %s of %s on the server are not archived",
@@ -269,97 +259,194 @@ def reconcile_folder(
         f"{result.missing:,}",
         utils.counted(result.on_server, "message"),
     )
-    if result.extra_copies:
-        # Said separately, and said at all: on a folder that holds duplicates
-        # this is where the download count comes from, and a reader watching
-        # thousands of messages being fetched after "0 not archived" would
-        # otherwise have no way to account for them.
-        log.info(
-            "%s: %s of mail already archived, fetched to find out whether the content differs",
-            ctx,
-            utils.counted(result.extra_copies, "further copy", "further copies"),
-        )
-    if not repair or not wanted:
-        return result
-
-    # A fetched message whose place is not yet recorded needs its location in the
-    # log -- otherwise nothing says it belongs here. One that *is* recorded needs
-    # nothing: the log holds observations, a repeated observation says no more
-    # than the first, and `compact` exists to take such repeats back out. Writing
-    # them and undoing them later is work in both directions.
-    #
-    # It is what made a repair that recovered nothing still change the archive:
-    # 1,729 duplicates fetched, 1,729 entries written, a new log file and a new
-    # link in the chain, every time it ran.
-    #
-    # Written down in batches and once more on the way out, however the loop
-    # ends: a catch-up after an interrupted first backup can run for hours too.
-    log.info("%s: fetching %s", ctx, utils.counted(len(wanted), "message"))
-    with PassLog(log_root, heads_root, datetime.now(UTC)) as pass_log:
-        _fetch_wanted(
-            mb,
-            store,
-            job_name,
-            folder,
-            wanted,
-            set(archived),
-            pass_log,
-            result,
-        )
-    # Whether the locations reached disk is the caller's business: a pass that
-    # fetched every message and could not write down where any of them belongs
-    # must not move a resume point past them.
-    result.sealed = pass_log.sealed
     return result
 
 
-def _fetch_wanted(
+def _list_folder(
     mb: base.MailboxClient,
-    store: cas.ContentAddressedStorage,
-    job_name: str,
     folder: str,
-    wanted: list[tuple[base.MessageRef, Claim]],
-    recorded: set[str],
-    pass_log: PassLog,
-    result: ReconcileResult,
-) -> None:
-    """Download the messages the comparison found missing, and record their places.
+    ctx: str,
+) -> list[tuple[base.MessageRef, str]]:
+    """The folder's messages with their normalised Message-IDs, in listing order."""
+    listed: list[tuple[base.MessageRef, str]] = []
+    for ref in mb.message_index(folder):
+        listed.append((ref, mailutils.normalize_message_id(ref.message_id)))
+        if len(listed) % SERVER_PROGRESS_EVERY == 0:
+            log.info("%s: %s indexed", ctx, utils.counted(len(listed), "message"))
+    return listed
 
-    `recorded` holds the store ids already logged at this place and grows as
-    messages are added. A lost connection ends the loop: the messages still to
-    come count as failed, and the caller holds the resume point back.
+
+class _Comparison:
+    """Download what the Message-ID cannot settle, and decide it by hash.
+
+    `present` maps the store ids archived at this place to the Message-IDs their
+    headers carry. Without `repair_into` nothing is written.
     """
-    ctx = f"{job_name}::{folder}"
-    for position, (ref, claim) in enumerate(wanted, start=1):
-        if position % FETCH_PROGRESS_EVERY == 0:
-            log.info("%s: %s of %s fetched", ctx, f"{position:,}", f"{len(wanted):,}")
+
+    def __init__(
+        self,
+        mb: base.MailboxClient,
+        store: cas.ContentAddressedStorage,
+        job_name: str,
+        folder: str,
+        present: dict[str, str],
+        result: ReconcileResult,
+    ):
+        self._mb = mb
+        self._store = store
+        self._job_name = job_name
+        self._folder = folder
+        self._ctx = f"{job_name}::{folder}"
+        self._present = present
+        self._result = result
+        self._pass_log: PassLog | None = None
+        self._recorded: set[str] = set()
+
+    def repair_into(self, pass_log: PassLog, recorded: set[str]) -> None:
+        """Store the missing messages and record their places in `pass_log`.
+
+        `recorded` holds the store ids already logged at this place and grows as
+        messages are added.
+        """
+        self._pass_log = pass_log
+        self._recorded = recorded
+
+    def run(self, listed: list[tuple[base.MessageRef, str]]) -> None:
+        """Compare in rounds until the Message-ID settles everything not downloaded.
+
+        A round downloads every message the ids do not settle. One that turns
+        out to be an archived message the server lists under another id takes
+        that message out of the count for the id it carries, and the next round
+        asks the ledger again about the messages not downloaded yet. Each round
+        downloads at least one message, so the loop ends.
+        """
+        counts = collections.Counter(key for key in self._present.values() if key)
+        withdrawn: set[str] = set()
+        pending = listed
+        first = True
+        while pending:
+            matches = match_by_message_id(counts, [key for _ref, key in pending])
+            wanted = [item for item, m in zip(pending, matches) if m is not Match.ARCHIVED]
+            if not wanted:
+                return
+            self._announce(matches, first)
+            first = False
+            pending = [item for item, m in zip(pending, matches) if m is Match.ARCHIVED]
+            found = self._compare(wanted)
+            if found is None:
+                return
+            for key, store_id in found:
+                archived_key = self._present[store_id]
+                if (
+                    archived_key
+                    and store_id not in withdrawn
+                    and not same_message_id(key, archived_key)
+                ):
+                    withdrawn.add(store_id)
+                    counts[archived_key] -= 1
+
+    def _announce(self, matches: list[Match], first: bool) -> None:
+        unknown = matches.count(Match.UNKNOWN)
+        outnumbered = matches.count(Match.OUTNUMBERED)
+        if not first:
+            log.info(
+                "%s: %s more to compare: an archived message with their Message-ID"
+                " is listed on the server under another one",
+                self._ctx,
+                utils.counted(unknown + outnumbered, "message"),
+            )
+            return
+        if unknown:
+            log.info(
+                "%s: %s under a Message-ID not archived here, downloaded to compare"
+                " their content",
+                self._ctx,
+                utils.counted(unknown, "message"),
+            )
+        if outnumbered:
+            # On a folder with duplicates most downloads come from here, and a
+            # complete archive downloading thousands of messages needs a reason
+            # in the log.
+            log.info(
+                "%s: %s under a Message-ID the server lists more often than the"
+                " archive holds it, downloaded to compare their content",
+                self._ctx,
+                utils.counted(outnumbered, "message"),
+            )
+
+    def _compare(
+        self,
+        wanted: list[tuple[base.MessageRef, str]],
+    ) -> list[tuple[str, str]] | None:
+        """Download `wanted` and decide each by hash.
+
+        Returns `(Message-ID, store id)` for each one archived at this place, or
+        None when the connection was lost: every message after that one would
+        fail the same way, each with an error line of its own.
+        """
+        found: list[tuple[str, str]] = []
+        for position, (ref, key) in enumerate(wanted, start=1):
+            if position % FETCH_PROGRESS_EVERY == 0:
+                log.info(
+                    "%s: %s of %s fetched",
+                    self._ctx,
+                    f"{position:,}",
+                    f"{len(wanted):,}",
+                )
+            try:
+                store_id = self._compare_one(ref)
+            except base.ConnectionLost as exc:
+                not_fetched = len(wanted) - position + 1
+                utils.log_failure(
+                    log,
+                    exc,
+                    "%s: %s not fetched",
+                    self._ctx,
+                    utils.counted(not_fetched, "message"),
+                )
+                self._result.unchecked += not_fetched
+                self._result.failed += not_fetched
+                return None
+            if store_id is not None:
+                found.append((key, store_id))
+        return found
+
+    def _compare_one(self, ref: base.MessageRef) -> str | None:
+        """Download one message; return its store id if it is archived here."""
         label = ref.message_id or ref.msg_id
         try:
-            fetched = mb.fetch_message(ref.msg_id, folder)
-        except base.ConnectionLost as exc:
-            # Every message after this one would fail the same way, each with
-            # an error line of its own.
-            not_fetched = len(wanted) - position + 1
-            utils.log_failure(
-                log,
-                exc,
-                "%s: %s not fetched",
-                ctx,
-                utils.counted(not_fetched, "message"),
-            )
-            result.failed += not_fetched
-            return
+            fetched = self._mb.fetch_message(ref.msg_id, self._folder)
         except base.MessageGone:
-            log.info("%s: %s is no longer in the folder", ctx, label)
-            continue
+            log.info("%s: %s is no longer in the folder", self._ctx, label)
+            return None
+        except base.ConnectionLost:
+            raise
         except Exception as exc:
-            log.error("%s: download failed for %s: %s", ctx, label, exc)
-            result.failed += 1
-            result.unfetched.append(ref.msg_id)
-            continue
+            log.error("%s: download failed for %s: %s", self._ctx, label, exc)
+            self._result.unchecked += 1
+            self._result.failed += 1
+            self._result.unfetched.append(ref.msg_id)
+            return None
+        self._result.compared += 1
+        store_id = self._store.hashval(fetched.body)
+        if store_id in self._present:
+            log.debug("%s: %s is archived, id=%s", self._ctx, label, store_id)
+            return store_id
+        self._result.missing += 1
+        if self._pass_log is None:
+            log.info("%s: not archived: %s", self._ctx, label)
+        else:
+            self._restore(label, fetched, self._pass_log)
+        return None
+
+    def _restore(self, label: str, fetched: base.Fetched, pass_log: PassLog) -> None:
+        """Store a missing message and record where it was seen."""
         try:
-            status, store_id, _path = store.add(fetched.body)
-            if store_id not in recorded:
+            status, store_id, _path = self._store.add(fetched.body)
+            # Recorded only where the place is not in the log yet. A message the
+            # log names here and the store had lost needs its bytes back, not a
+            # second entry saying the same thing.
+            if store_id not in self._recorded:
                 # The source's places, not the folder this pass happens to be
                 # walking. A Gmail message carries labels, and a repair that
                 # wrote `[folder]` put it back with the others stripped off.
@@ -367,31 +454,11 @@ def _fetch_wanted(
                 # They came with the message, out of the same read: nothing here
                 # goes to the network, so nothing after `store.add` can fail and
                 # leave the bytes in the store with no log entry naming them.
-                pass_log.add(job_name, fetched.places, store_id)
-                recorded.add(store_id)
+                pass_log.add(self._job_name, fetched.places, store_id)
+                self._recorded.add(store_id)
         except Exception as exc:
-            utils.log_failure(log, exc, "%s: storing %s failed", ctx, label)
-            result.failed += 1
-            continue
-        if claim is Claim.ABSENT:
-            # A gap closed, whether or not the bytes were new here: the archive
-            # may well hold this message under another folder, and what was
-            # missing at *this* place is the record that it belongs here too.
-            result.restored += 1
-            log.info("%s: restored %s: %s id=%s", ctx, label, status, store_id)
-        elif status is cas.AddStatus.NEW:
-            # An extra copy that was not a duplicate after all -- the byte-
-            # different second version, and the reason these get fetched.
-            result.recovered_copies += 1
-            log.info(
-                "%s: %s: a further copy whose content differs, kept id=%s",
-                ctx,
-                label,
-                store_id,
-            )
-        else:
-            # The ordinary outcome for a further copy, and the reason it is not
-            # said out loud: on a folder that holds thousands of duplicates this
-            # is thousands of lines reporting that nothing happened -- under the
-            # word "restored", which is what it was doing before.
-            log.debug("%s: %s: a further copy, identical to the archived one", ctx, label)
+            utils.log_failure(log, exc, "%s: storing %s failed", self._ctx, label)
+            self._result.failed += 1
+            return
+        self._result.restored += 1
+        log.info("%s: restored %s: %s id=%s", self._ctx, label, status, store_id)

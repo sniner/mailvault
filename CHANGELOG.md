@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A second version of a message under the same Message-ID is no longer skipped** (#14). When a
+  folder held two different messages with the same Message-ID and the archive held one of them,
+  the comparison with the archive could take the missing one for the archived one, depending on
+  the order the server listed them in. The missing message was then never downloaded, neither by
+  `verify --repair` nor by a backup of a folder without a resume point, and `verify` reported the
+  folder as complete. Now every message under such a Message-ID is downloaded and compared with
+  the archive by content
+- **`verify` no longer reports archived messages as missing when the server lists them under
+  another Message-ID** (#13). Microsoft 365 reports a Message-ID for some messages that differs
+  from the one in the message, and lists one for messages that have none. `verify` reported these
+  as missing on every run, and `--repair` counted them as restored without changing anything. Now
+  they are downloaded and found in the archive by their content
+
+### Changed
+
+- **`verify` downloads the messages whose Message-ID does not show whether they are archived,
+  also without `--repair`**, and compares them with the archive by content. Without `--repair` it
+  stores nothing. A folder that holds the same message several times now costs one download per
+  copy on every `verify`
+- **The `verify` report no longer counts "further copies".** Every message is now either archived
+  or missing. A message that cannot be downloaded is reported as "could not be downloaded" and
+  makes `verify` end with exit code 1, because it is not known whether it is archived. For
+  anything using the library rather than the command: `VerifyResult` has lost `extra_copies` and
+  `recovered_copies`, and has gained `compared` and `unchecked`
+
 ## 0.19.1 (2026-10-17)
 
 ### Fixed

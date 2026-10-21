@@ -1701,11 +1701,18 @@ class TestVerifyReportRepairCounts:
 
         assert "2 restored" in capsys.readouterr().out
 
-    def test_further_copies_alone_are_enough_to_report(self, capsys):
-        """Nothing was missing, but something *was* fetched -- say what came of it."""
-        report_verify("job", self._results(on_server=3, extra_copies=1), repaired=True)
+    def test_messages_compared_and_found_archived_report_no_repair_counts(self, capsys):
+        report_verify("job", self._results(on_server=3, compared=2), repaired=True)
 
-        assert "0 restored" in capsys.readouterr().out
+        line = capsys.readouterr().out.splitlines()[0]
+        assert "restored" not in line, line
+
+    def test_messages_that_could_not_be_downloaded_are_named(self, capsys):
+        report_verify("job", self._results(on_server=3, unchecked=1, failed=1), repaired=True)
+
+        out = capsys.readouterr().out
+        assert "1 could not be downloaded" in out.splitlines()[0]
+        assert "it is not known whether it is archived" in out
 
 
 class TestVerifyExitCode:
@@ -1737,17 +1744,19 @@ class TestVerifyExitCode:
 
         assert report_verify("job", results, repaired=True) == 1
 
-    def test_further_copies_are_no_reason_to_fail(self, capsys):
-        """Thousands of them are the ordinary state of a folder, every night."""
-        results = self._results(extra_copies=1729)
+    def test_duplicates_found_archived_are_no_reason_to_fail(self, capsys):
+        """Thousands of them are the ordinary state of a folder."""
+        results = self._results(on_server=3458, compared=3458)
 
         assert report_verify("job", results, repaired=False) == 0
+        assert "archive is complete" in capsys.readouterr().out
 
-    def test_a_failed_copy_download_is_no_reason_either(self, capsys):
-        """It is a duplicate of mail already archived; nothing is missing for it."""
-        results = self._results(extra_copies=2, failed=2)
+    def test_a_message_that_could_not_be_compared_fails_the_run(self, capsys):
+        """Not known to be archived is not archived as far as the verdict goes."""
+        results = self._results(unchecked=2, failed=2)
 
-        assert report_verify("job", results, repaired=True) == 0
+        assert report_verify("job", results, repaired=True) == 1
+        assert "archive is complete" not in capsys.readouterr().out
 
     def test_mail_that_was_fetched_and_not_recorded_is_said_and_counted(self, capsys):
         """Restored, but nothing says where it belongs -- so the folder is not done."""

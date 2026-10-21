@@ -352,10 +352,9 @@ example.org::INBOX: 77,592 on server, 43 not archived
 example.org: 43 messages missing, run again with --repair
 ```
 
-The comparison only lists the folder's message headers, which costs a handful
-of requests instead of one download per message — checking a large mailbox
-takes minutes, not hours. With `--repair` the missing messages are downloaded
-and added to the archive:
+The comparison lists the folder and matches its messages with the archive by
+`Message-ID`, which costs a handful of requests instead of one download per
+message. With `--repair` the missing messages are added to the archive:
 
 ```console
 $ mailvault verify --repair
@@ -363,10 +362,24 @@ example.org::INBOX: 77,592 on server, 43 not archived, 43 restored
 example.org: 43 of 43 messages restored
 ```
 
-Messages are matched by their `Message-ID`. A message whose `Message-ID` is
-missing or ambiguous is treated as not archived and fetched again, which is
-harmless: the content-addressed storage recognizes the duplicate and discards
-it. `verify` does not support `exchange_journal` jobs, because there the archived
+Where the `Message-ID` does not show whether a message is archived, `verify`
+downloads it and compares it with the archive by content, also without
+`--repair`:
+
+- The archive holds no message with that `Message-ID` in this folder. Microsoft
+  365 reports a `Message-ID` for some messages that differs from the one in the
+  message, common in Sent Items, and lists one for messages that have none.
+- The server lists a `Message-ID` more often than the archive holds it. Every
+  message under it is downloaded, because the `Message-ID` cannot say which of
+  them is the archived one: a folder can hold the same message twice, and it can
+  hold two different messages with the same `Message-ID`.
+
+A message found in the archive this way counts as archived, and nothing is
+written. On a folder with many duplicates this takes a while on every run. A
+message that cannot be downloaded is reported as such, and `verify` ends with
+exit code 1, because it is not known whether it is archived.
+
+`verify` does not support `exchange_journal` jobs, because there the archived
 message and the server's journal envelope carry different `Message-ID`s.
 
 
