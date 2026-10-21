@@ -594,7 +594,7 @@ class ContentAddressedStorage:
     def matching(self, prefix: str) -> list[str]:
         """The ids of every entry whose own begins with `prefix`, sorted.
 
-        A message id is 64 or 96 characters and nobody types one. The beginning
+        A store id is 64 or 96 characters and nobody types one. The beginning
         of one names an entry just as well as long as it names only one, and it
         costs a single directory listing to find out -- the store is filed by
         exactly that beginning.

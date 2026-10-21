@@ -396,7 +396,7 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
     store = cas.mail_store(source)
 
     def ids(paths: list[pathlib.Path]) -> list[str]:
-        """The message ids of entries -- what `get` and the log take."""
+        """The store ids of entries -- what `get` and the log take."""
         return [store.hashval_of(path) or str(path) for path in paths]
 
     print(

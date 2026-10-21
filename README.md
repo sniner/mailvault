@@ -267,7 +267,8 @@ $ mailvault db search --from example.com --since 2024-01-01
 ```
 
 `--from`, `--to`, `--subject`, `--mailbox`, `--folder`, `--since`, `--until` and
-`--limit`. The message id in the table is shortened to be read, and it is enough
+`--limit`. The second column is the store id, the id of the message in the
+archive (not its Message-ID header). The table shortens it, and that is enough
 to work with: `get` takes the beginning of an id the way git takes a
 short commit hash, and says so when the one you gave fits more than one message.
 For anything that goes on to another program there is `--ids`, which prints them
@@ -324,8 +325,8 @@ is what gives that mail a place.
 
 ## Getting a message out
 
-`mailvault get` hands over a single message, exactly as it was stored, by the id
-the reports print -- whole or just its beginning. Name several and give
+`mailvault get` hands over a single message, exactly as it was stored, by the store
+id the reports print -- whole or just its beginning. Name several and give
 `--output` a directory to get one file each:
 
 ```console

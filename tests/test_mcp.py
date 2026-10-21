@@ -186,7 +186,7 @@ class TestTools:
         tmp_path, ids = archive
         server = mcpserver.build_server(tmp_path)
 
-        result = _structured(server, "get_message", {"message_id": ids[0][:12]})
+        result = _structured(server, "get_message", {"store_id": ids[0][:12]})
 
         assert result["store_id"] == ids[0]
         assert result["subject"] == "Invoice 4711"
@@ -205,7 +205,7 @@ class TestTools:
         tmp_path, ids = archive
         server = mcpserver.build_server(tmp_path)
 
-        result = _call(server, "get_attachment", {"message_id": ids[0][:12], "index": 1})
+        result = _call(server, "get_attachment", {"store_id": ids[0][:12], "index": 1})
 
         block = result.content[0]
         assert isinstance(block, mcp.types.EmbeddedResource)
@@ -235,11 +235,11 @@ class TestTools:
         server = mcpserver.build_server(tmp_path)
 
         with pytest.raises(ToolError, match="not in this archive"):
-            _call(server, "get_message", {"message_id": "ff" * 6})
+            _call(server, "get_message", {"store_id": "ff" * 6})
 
     def test_a_wrong_attachment_index_does_too(self, archive):
         tmp_path, ids = archive
         server = mcpserver.build_server(tmp_path)
 
         with pytest.raises(ToolError, match="numbered 1 to 1"):
-            _call(server, "get_attachment", {"message_id": ids[0][:12], "index": 9})
+            _call(server, "get_attachment", {"store_id": ids[0][:12], "index": 9})

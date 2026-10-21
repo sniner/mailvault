@@ -21,9 +21,9 @@ log = logging.getLogger(__name__)
 
 
 def entry_path(store: cas.ContentAddressedStorage, wanted: str) -> pathlib.Path:
-    """Find the entry a message id names, given whole or only begun.
+    """Find the entry a store id names, given whole or only begun.
 
-    A message id is 64 or 96 characters and the reports print the first twelve
+    A store id is 64 or 96 characters and the reports print the first twelve
     of them, so that is what a reader has to hand and that is what this takes --
     as long as it belongs to one message and not to several.
 
@@ -69,7 +69,7 @@ def entry_path(store: cas.ContentAddressedStorage, wanted: str) -> pathlib.Path:
     if len(matches) > 1:
         log.debug("%s: begins %s", hashval, ", ".join(matches))
         raise JobError(
-            f"{hashval}: the beginning of {utils.counted(len(matches), 'message id')}"
+            f"{hashval}: the beginning of {utils.counted(len(matches), 'store id')}"
             f" in this archive -- name the one you mean by its whole id"
         )
     entry = store.locate(matches[0], exists=True)

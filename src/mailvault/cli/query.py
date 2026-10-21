@@ -27,7 +27,7 @@ from mailvault.cli.common import (
 log = logging.getLogger(__name__)
 
 
-# How much of a message id a table shows. The full value is 64 or 96 characters and
+# How much of a store id a table shows. The full value is 64 or 96 characters and
 # would be three lines of terminal for a column nobody reads across. It is
 # printed bare, with no ellipsis after it: this much of an id is what `get`
 # takes, and a mark saying "shortened" is a character that gets selected

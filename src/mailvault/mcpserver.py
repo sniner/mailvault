@@ -83,10 +83,10 @@ def _full_id(store: cas.ContentAddressedStorage, path: pathlib.Path) -> str:
     return store.hashval_of(path) or path.name.split(".", 1)[0]
 
 
-def _read_message(archive: pathlib.Path, message_id: str) -> tuple[str, bytes]:
+def _read_message(archive: pathlib.Path, store_id: str) -> tuple[str, bytes]:
     """Resolve an id the way `get` does and hand back the whole message."""
     store = cas.mail_store(archive)
-    path = retrieval.entry_path(store, message_id)
+    path = retrieval.entry_path(store, store_id)
     return _full_id(store, path), store.read(path)
 
 
@@ -164,7 +164,7 @@ def build_server(archive: pathlib.Path) -> MCPServer:
         return SearchResult(hits=hits, count=len(hits), note=note, stale=complaint)
 
     @server.tool()
-    def get_message(message_id: str) -> MessageResult:
+    def get_message(store_id: str) -> MessageResult:
         """Read one archived message: headers, body text, attachment list.
 
         Takes a `store_id` as `search` returns it, whole or just its beginning
@@ -175,7 +175,7 @@ def build_server(archive: pathlib.Path) -> MCPServer:
         inlined -- fetch one with `get_attachment` when its content is needed.
         """
         try:
-            full_id, raw = _read_message(archive, message_id)
+            full_id, raw = _read_message(archive, store_id)
         except jobs.JobError as exc:
             raise ToolError(str(exc)) from exc
         read = content.overview(raw)
@@ -196,7 +196,7 @@ def build_server(archive: pathlib.Path) -> MCPServer:
 
     @server.tool()
     def get_attachment(
-        message_id: str,
+        store_id: str,
         index: int | None = None,
         filename: str | None = None,
     ) -> mcp.types.EmbeddedResource:
@@ -208,7 +208,7 @@ def build_server(archive: pathlib.Path) -> MCPServer:
         before fetching something enormous.
         """
         try:
-            full_id, raw = _read_message(archive, message_id)
+            full_id, raw = _read_message(archive, store_id)
             info, data = content.attachment(raw, index=index, filename=filename)
         except (jobs.JobError, ValueError) as exc:
             raise ToolError(str(exc)) from exc

@@ -193,7 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
         "get",
         help="Hand over a stored message, or say where it lies",
         description=(
-            "Write out a message, exactly as it was stored. Takes the message id the"
+            "Write out a message, exactly as it was stored. Takes the store id the"
             " reports print, whole or just its beginning -- as much of one as names a"
             " single message is enough. Without --output the message goes to standard"
             " output, which is the way to look at one the reports could only name."
@@ -223,7 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
         "entry",
         nargs="+",
         metavar="ID",
-        help="Message id, whole or the beginning of one, as the reports print it",
+        help="Store id, whole or the beginning of one, as the reports print it",
     )
 
     p_archive = sub.add_parser(
@@ -548,7 +548,7 @@ def build_db_parser(sub: argparse._SubParsersAction) -> None:
             "Find archived messages by who sent them, who received them, what they"
             " are about, when they were sent, or where they were kept. Every filter"
             " given has to match; text matches anywhere in the value and ignores"
-            " case. Prints the message ids `get` takes, so a search and"
+            " case. Prints the store ids `get` takes, so a search and"
             " an export make a pipeline."
         ),
     )
@@ -577,7 +577,7 @@ def build_db_parser(sub: argparse._SubParsersAction) -> None:
     output.add_argument(
         "--ids",
         action="store_true",
-        help="Print message ids alone, one per line, for feeding to another command",
+        help="Print store ids alone, one per line, for feeding to another command",
     )
     output.add_argument("--csv", action="store_true", help="Print as CSV, with a header row")
     output.add_argument("--json", action="store_true", help="Print as a JSON array")

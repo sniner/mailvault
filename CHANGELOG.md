@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The id that `get` takes is called "store id" everywhere.** The help texts and the README called
+  it "message id", which is easily taken for the Message-ID header. It is the id of a message in
+  the archive, as `db search` prints it
+- **MCP server: `get_message` and `get_attachment` take the message as `store_id`**, no longer as
+  `message_id`. The `message_id` in the result of `get_message` is still the Message-ID header
+
 ## 0.20.0 (2026-10-21)
 
 ### Fixed
