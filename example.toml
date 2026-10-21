@@ -29,8 +29,6 @@ server = "exchange.example.org"
 username = "john.doe@example.org"
 password_cmd = "pass show email/exchange"
 tls_check_hostname = false
-# Do not use exchange_journal for now: every version so far archives a rewritten
-# copy of the mail. See "Exchange journal mailboxes" in docs/deep-dive.md.
 exchange_journal = true
 delete_after_export = true
 folders = ["INBOX"]
