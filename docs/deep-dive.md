@@ -730,8 +730,8 @@ because its bytes differ. See [why the same mail can be in there
 twice](#why-the-same-mail-can-be-in-there-twice).
 
 The columns are `message_id` (the row's own id, internal to the database),
-`email_id` (the `Message-ID` header) and `store_id` (the content hash, which is
-what `get` takes).
+`email_id` (the `Message-ID` header as written in the message) and `store_id`
+(the content hash, which is what `get` takes).
 
 **Archives that predate the location record** have no metadata log to say where
 a message came from, and such a message is not in the database at all: the log is

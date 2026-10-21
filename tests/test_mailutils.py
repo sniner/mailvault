@@ -1,3 +1,5 @@
+import email
+import email.policy
 import logging
 
 import pytest
@@ -204,12 +206,15 @@ Just a plain email, no RFC822 attachments.
         ("<ABC@Example.COM>", "abc@example.com"),
         # Header folding turns up in raw MIME but never on the server side.
         ("<abc@example.com>\r\n", "abc@example.com"),
-        # Unfolding leaves the space behind, which makes the value malformed;
-        # the header parser then truncates it. Both sides do so identically.
-        ("<abc\r\n @example.com>", "abc"),
+        ("<abc\r\n @example.com>", "abc@example.com"),
         ("", ""),
         (None, ""),
         ("<>", ""),
+        # The cases of the key() test in ossuary-mailvault.
+        ("<Abc@Example.ORG>", "abc@example.org"),
+        ("  <abc@\r\n example.org> (comment)", "abc@example.org"),
+        ("abc@example.org", "abc@example.org"),
+        ("<abc@example.org", "abc@example.org"),
     ],
 )
 def test_normalize_message_id(value, expected):
@@ -224,6 +229,82 @@ def test_normalize_message_id_matches_across_sources():
     assert mailutils.normalize_message_id(from_header) == mailutils.normalize_message_id(
         from_server
     )
+
+
+@pytest.mark.parametrize(
+    "written,key",
+    [
+        (b"<abc.def@example.com>", "abc.def@example.com"),
+        (b"<a!#$%&'*+-/=?^_`{|}~b@example.com>", "a!#$%&'*+-/=?^_`{|}~b@example.com"),
+        (b"<abc@[192.0.2.1]>", "abc@[192.0.2.1]"),
+        (b"<" + b"x" * 200 + b"@mail.example.com>", "x" * 200 + "@mail.example.com"),
+        (b"   <abc@example.com>", "abc@example.com"),
+        (b"\r\n <abc@example.com>", "abc@example.com"),
+        (b"<abc\r\n @example.com>", "abc@example.com"),
+        (b"<abc@example.com> (comment)", "abc@example.com"),
+        (b'<"a b"@example.com>', '"ab"@example.com'),
+        # Not valid by RFC 5322. The standard library's parser keeps only what
+        # comes before the first character it does not expect.
+        (b"<Share-0f1e,rcid_abc@odspnotify>", "share-0f1e,rcid_abc@odspnotify"),
+        (b"<a$b@host@domain.example>", "a$b@host@domain.example"),
+        (b"<abc def@example.com>", "abcdef@example.com"),
+        (b"<a@example.com> <b@example.com>", "a@example.com"),
+        (b"abc@example.com", "abc@example.com"),
+        (b"<=?utf-8?q?x?=@example.com>", "=?utf-8?q?x?=@example.com"),
+        (b"<first\xe4,x@example.com>", "first�,x@example.com"),
+    ],
+)
+def test_the_archive_and_the_server_give_the_same_key(written, key):
+    """Nothing of a Message-ID is lost, however malformed, on any Python version.
+
+    The archived value is read from a parsed message, the server value is the
+    header as written, the way IMAP's ENVELOPE and Graph's internetMessageId
+    report it. The IMAP backend decodes it as ASCII with replacement.
+    """
+    eml = b"Message-ID: " + written + b"\r\nSubject: x\r\n\r\nbody\r\n"
+    archived = mailutils.message_id(mailutils.decode_email_header(eml))
+    server = written.decode("ascii", "replace")
+
+    assert archived == " ".join(server.split())
+    assert mailutils.normalize_message_id(archived) == key
+    assert mailutils.normalize_message_id(server) == key
+
+
+@pytest.mark.parametrize(
+    "written,cut_short",
+    [
+        (b"<Share-0f1e,rcid_abc@odspnotify>", "<Share-0f1e"),
+        (b"<a$b@host@domain.example>", "<a$b@host>"),
+        (b"<abc def@example.com>", "<abc"),
+        (b"<a@example.com> <b@example.com>", "<a@example.com>"),
+    ],
+)
+def test_the_standard_policy_still_cuts_a_malformed_message_id_short(written, cut_short):
+    """Before and after: the standard policy against the one mailvault reads with.
+
+    The first assertion pins a defect of the standard library, not of mailvault.
+    If it fails, a Python version has changed what its parser makes of a
+    malformed Message-ID. mailvault does not depend on that, but it is the
+    reason `reading.MessageIDHeader` exists, which may then no longer be needed.
+    """
+    eml = b"Message-ID: " + written + b"\r\nSubject: x\r\n\r\nbody\r\n"
+    standard = email.message_from_bytes(eml, policy=email.policy.default)
+
+    assert str(standard["Message-ID"]).strip() == cut_short
+    assert mailutils.message_id(mailutils.decode_email_header(eml)) == written.decode()
+
+
+def test_two_onedrive_notifications_keep_two_keys():
+    """Issue #16: the part before the comma repeats across notifications."""
+
+    def archived(written: bytes) -> str:
+        eml = b"Message-ID: " + written + b"\r\nSubject: x\r\n\r\nbody\r\n"
+        return mailutils.message_id(mailutils.decode_email_header(eml))
+
+    first = archived(b"<Share-0f1e,rcid_aaa@odspnotify>")
+    second = archived(b"<Share-0f1e,rcid_bbb@odspnotify>")
+
+    assert mailutils.normalize_message_id(first) != mailutils.normalize_message_id(second)
 
 
 # ---------------------------------------------------------------------------
@@ -241,21 +322,6 @@ def test_metadata_record():
 def test_metadata_explicit_folders():
     md = mailutils.metadata(mailbox="mb", folder="INBOX", store_id="x", folders=["A", "B"])
     assert md.folders == ["A", "B"]
-
-
-@pytest.mark.parametrize(
-    "server_value,archived_value",
-    [
-        # Python's header parser truncates at the second "@", so the value the
-        # server reports and the value stored in the archive differ literally.
-        ("<00a3$dec0@schneider@pcvisit.example>", "<00a3$dec0@schneider>"),
-        ("<a@b@c@d>", "<a@b>"),
-    ],
-)
-def test_normalize_message_id_matches_truncated_headers(server_value, archived_value):
-    assert mailutils.normalize_message_id(server_value) == mailutils.normalize_message_id(
-        archived_value
-    )
 
 
 @pytest.mark.parametrize(

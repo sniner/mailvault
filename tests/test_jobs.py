@@ -2473,6 +2473,42 @@ class TestVerify:
         store = cas.mail_store(tmp_path)
         assert {p.read_bytes() for p in store.walk()} == {first, second}
 
+    def test_ids_that_share_their_start_do_not_stand_for_each_other(self, tmp_path):
+        """Issue #16: OneDrive notifications, whose ids repeat up to a comma.
+
+        The archive holds A and B, the server lists B and C. Cut at the comma as
+        the standard library's parser cuts them, all three had one key, the
+        counts matched, and C was taken as archived without a look.
+        """
+        job = _make_job(folders=["INBOX"])
+        a, b, c = (
+            _eml(f"<Share-0f1e,rcid_{n}@odspnotify>", f"Shared {n}") for n in ("a", "b", "c")
+        )
+        _archive_message(tmp_path, "test-job", "INBOX", a)
+        _archive_message(tmp_path, "test-job", "INBOX", b)
+
+        def listing():
+            return iter(
+                [
+                    base.MessageRef(msg_id="id-b", message_id="<Share-0f1e,rcid_b@odspnotify>"),
+                    base.MessageRef(msg_id="id-c", message_id="<Share-0f1e,rcid_c@odspnotify>"),
+                ]
+            )
+
+        client = _verify_client(list(listing()), {"id-b": b, "id-c": c})
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            checked = jobs.verify(job, tmp_path)
+            client.message_index.return_value = listing()
+            repaired = jobs.verify(job, tmp_path, repair=True)
+
+        assert (checked[0].on_server, checked[0].missing) == (2, 1)
+        assert repaired[0].restored == 1
+        store = cas.mail_store(tmp_path)
+        assert {p.read_bytes() for p in store.walk()} == {a, b, c}
+
     def test_an_archived_message_listed_under_another_id_is_not_missing(self, tmp_path):
         """Issue #13: Graph's `internetMessageId` is not the Message-ID in the MIME.
 
@@ -2970,6 +3006,28 @@ class TestRefreshDb:
 
         for _ in range(3):
             assert refresh_db(tmp_path, db_path).unreadable is True
+
+    def test_a_projection_of_version_2_is_rebuilt_with_whole_message_ids(self, tmp_path):
+        """Issue #16: version 2 held the Message-ID as the standard parser cut it.
+
+        The tables are the same in both versions, so only the version number
+        keeps `db update` from writing whole ids next to cut ones.
+        """
+        written = "<Share-0f1e,rcid_a@odspnotify>"
+        _archive_message(tmp_path, "job", "INBOX", _eml(written))
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+        refresh_db(tmp_path, db_path)
+        with index_db.IndexDatabase(db_path) as db:
+            db.execute("UPDATE message SET email_id = '<Share-0f1e'")
+            db.execute("PRAGMA user_version = 2")
+            db.commit()
+
+        assert refresh_db(tmp_path, db_path).unreadable is True
+        jobs.create_db(tmp_path, db_path, force=True)
+
+        with index_db.IndexDatabase(db_path) as db:
+            rows = db.execute("SELECT email_id FROM message").fetchall()
+        assert [row[0] for row in rows] == [written]
 
     def test_a_refreshed_projection_reports_itself_current(self, tmp_path):
         _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))

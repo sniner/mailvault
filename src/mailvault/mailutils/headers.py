@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import collections.abc
 import email.message
-import email.policy
 import email.utils
 import logging
 import re
@@ -108,31 +107,37 @@ def subject(msg: email.message.EmailMessage) -> str:
 
 
 def message_id(msg: email.message.EmailMessage) -> str:
+    """The Message-ID as written in the message, unfolded; "" when there is none.
+
+    Only for a message parsed with `reading.POLICY`. The standard policy cuts a
+    malformed value short.
+    """
     return header_text(msg, "Message-Id")
 
 
 def normalize_message_id(value: str | None) -> str:
-    """Normalise a Message-ID so that values from different sources compare equal.
+    """The key a Message-ID is compared by, the same for every source.
 
-    Besides folding whitespace, angle brackets and case, the value is run through
-    the same header parser that produced the archived Message-ID. That parser
-    silently truncates malformed values -- "<a$b@host@domain.example>" becomes
-    "<a$b@host>" -- so a value reported verbatim by a server would never match its
-    archived counterpart unless both are treated identically.
+    What stands between the first "<" and the next ">", or the whole value when
+    there is no "<", without whitespace and in lower case. A comment after the
+    ">" and a second id in the same header drop out; a value cut off before its
+    ">" keeps everything after the "<". It is the rule of `key()` in
+    ossuary-mailvault, so both tools compare the same way.
 
-    Returns an empty string for missing or unusable values, which callers must
-    treat as "cannot be matched" rather than as a valid key.
+    No header parser is involved. The one in the standard library truncates a
+    malformed value without an error, and different messages would end up under
+    one key: `<Share-0f1e,rcid_abc@odspnotify>` becomes `<Share-0f1e`.
+
+    Returns "" for a missing or empty value, which callers must treat as
+    "cannot be matched" rather than as a key.
     """
     if not value:
         return ""
-    collapsed = " ".join(value.split())
-    if not collapsed:
-        return ""
-    try:
-        parsed = str(email.policy.default.header_fetch_parse("Message-Id", collapsed))
-    except Exception:
-        # CPython's email header parser raises HeaderParseError and, on some patch
-        # levels (e.g. 3.11/3.12), IndexError on malformed values such as "<>".
-        # Such a value cannot serve as a comparison key -- treat it as unusable.
-        return ""
-    return parsed.strip().strip("<>").strip().casefold()
+    start = value.find("<")
+    if start < 0:
+        inner = value
+    else:
+        rest = value[start + 1 :]
+        end = rest.find(">")
+        inner = rest if end < 0 else rest[:end]
+    return "".join(inner.split()).lower()

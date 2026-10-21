@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Message-IDs are no longer cut short when they are read** (#16). Python's email package keeps
+  only the part of a malformed Message-ID it understands. The share notifications of OneDrive and
+  SharePoint have a comma in their Message-ID, so different notifications ended up with the same
+  one, and `verify` or a backup of a folder without a resume point could take a missing
+  notification for an archived one. The Message-ID is now read as it is written in the message and
+  compared without angle brackets, whitespace and case. The archived messages are not affected,
+  and `verify` is right from its next run. The MCP tool `get_message` shows the whole Message-ID
+
+### Changed
+
+- **`index.db` has to be built again with `mailvault db create --force`.** It holds the Message-ID
+  of every message, and a file built by an earlier version holds them cut short. mailvault does not
+  update it until it has been rebuilt. The rebuild reads every message in the archive once. After
+  it, `v_duplicates` no longer lists different OneDrive notifications as duplicates
+
 ## 0.20.1 (2026-10-21)
 
 ### Changed
