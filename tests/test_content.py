@@ -33,6 +33,23 @@ def _message(body: str = "the body", attachments: int = 0) -> EmailMessage:
     return msg
 
 
+# A multipart/related that declares a boundary of its own while every part is
+# separated by the outer one. The parser leaves its payload a string.
+_NESTED_MULTIPART_WITHOUT_PARTS = (
+    b'Content-Type: multipart/mixed; boundary="outer"\r\n'
+    b"\r\n"
+    b"--outer\r\n"
+    b'Content-Type: multipart/related; boundary="inner"\r\n'
+    b"\r\n"
+    b"\r\n"
+    b"--outer\r\n"
+    b"Content-Type: text/plain\r\n"
+    b"\r\n"
+    b"the body\r\n"
+    b"--outer--\r\n"
+)
+
+
 class TestOverview:
     def test_headers_arrive_as_written_and_the_date_as_iso(self):
         read = content.overview(_message().as_bytes())
@@ -126,6 +143,14 @@ class TestOverview:
 
         assert "readable anyway" in read.body
 
+    def test_a_nested_multipart_without_parts_costs_nothing_but_itself(self):
+        """`get_body()` raises on it; the text part next to it is still the body."""
+        read = content.overview(_NESTED_MULTIPART_WITHOUT_PARTS)
+
+        assert read.body_type == "text/plain"
+        assert "the body" in read.body
+        assert read.attachments == []
+
 
 class TestAttachment:
     def test_by_the_index_the_overview_listed(self):
@@ -150,6 +175,10 @@ class TestAttachment:
     def test_a_message_with_no_attachments_says_so(self):
         with pytest.raises(ValueError, match="has no attachments"):
             content.attachment(_message().as_bytes(), index=1)
+
+    def test_a_nested_multipart_without_parts_is_no_attachment(self):
+        with pytest.raises(ValueError, match="has no attachments"):
+            content.attachment(_NESTED_MULTIPART_WITHOUT_PARTS, index=1)
 
     def test_a_filename_that_is_not_there_names_what_is(self):
         with pytest.raises(ValueError, match="file-0.pdf"):

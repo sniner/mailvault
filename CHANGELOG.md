@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **MCP server: `get_message` and `get_attachment` no longer fail on a message whose nested
+  multipart has no parts.** A mail program can declare a boundary for an inner multipart and then
+  separate every part with the outer boundary. The body is now taken from the text parts of such
+  a message, and its attachments are listed as usual
+
 ## 0.21.2 (2026-10-22)
 
 ### Fixed

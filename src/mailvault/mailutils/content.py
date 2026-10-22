@@ -79,6 +79,35 @@ def _leaf_parts(
     return [msg]
 
 
+def _body_part(msg: email.message.EmailMessage) -> email.message.EmailMessage | None:
+    """The part a reader gets as the body: plain where there is one, else HTML.
+
+    `get_body()` picks it on every message it can walk. On a multipart whose
+    boundary never occurs, nested inside one that parses, it raises
+    AttributeError: the parser leaves such a part's payload a string, and for a
+    multipart/related CPython takes its first character for the start part.
+    The text parts around it are still there, so they are searched in order
+    instead, with the same preference.
+    """
+    preference = ("plain", "html")
+    try:
+        # The same narrowing as in `reading`: the default policy makes
+        # EmailMessage instances, the annotation just does not say so.
+        return msg.get_body(preferencelist=preference)  # type: ignore[return-value]
+    except AttributeError:
+        pass
+    texts = [
+        part
+        for part in _leaf_parts(msg)
+        if part.get_content_maintype() == "text" and not part.is_attachment()
+    ]
+    for subtype in preference:
+        for part in texts:
+            if part.get_content_subtype() == subtype:
+                return part
+    return None
+
+
 def _text_of(part: email.message.EmailMessage) -> str:
     """The text of one part, whatever its transfer encoding and charset claim.
 
@@ -128,7 +157,7 @@ def _attachment_parts(
     alternative renderings of the body carry neither and are not attachments,
     they are the body again.
     """
-    body = msg.get_body(preferencelist=("plain", "html"))
+    body = _body_part(msg)
     return [
         part
         for part in _leaf_parts(msg)
@@ -151,13 +180,11 @@ def _date_of(msg: email.message.EmailMessage) -> str | None:
 def overview(raw: bytes, body_limit: int = BODY_LIMIT) -> MessageContent:
     """Reduce a stored message to headers, body text and an attachment list."""
     msg = reading.decode_email(raw)
-    body_part = msg.get_body(preferencelist=("plain", "html"))
+    body_part = _body_part(msg)
     if body_part is None:
         text, body_type = "", None
     else:
-        # The same narrowing as everywhere in this package: the policy makes
-        # EmailMessage, the stdlib annotation says Message.
-        text = _text_of(body_part)  # type: ignore[arg-type]
+        text = _text_of(body_part)
         body_type = body_part.get_content_type()
     return MessageContent(
         subject=_header_or_none(msg, "Subject"),
