@@ -577,6 +577,21 @@ class ContentAddressedStorage:
             self._copy(reader, m.update)
         return m.hexdigest() == claimed
 
+    def verify_entry(self, hashval: str) -> bool:
+        """True when the entry with this id still matches it.
+
+        What `verify` is for a caller that has the id rather than the path: the
+        store finds the entry under either of its names, compressed or not.
+
+        Raises FileNotFoundError when the store holds nothing under the id. A
+        caller that checks a list of ids it was given has to tell a missing entry
+        from a damaged one.
+        """
+        m = self.hashfactory()
+        with self.reading(hashval) as reader:
+            self._copy(reader, m.update)
+        return m.hexdigest() == normalize_hashval(hashval)
+
     def locate(
         self,
         data: io.IOBase | bytes | str,

@@ -454,6 +454,35 @@ def test_cas_verify_needs_an_entry(tmp_path):
         store.verify(stray)
 
 
+def test_cas_verify_entry_by_id(tmp_path):
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    _, hashval, path = store.add(b"original content")
+    assert store.verify_entry(hashval)
+
+    tamper(path, b"tampered with")
+    assert not store.verify_entry(hashval)
+
+
+def test_cas_verify_entry_finds_the_compressed_name(tmp_path):
+    packed = cas.ContentAddressedStorage(
+        root_dir=tmp_path / "cas",
+        suffix=".eml",
+        compress=True,
+    )
+    _, hashval, path = packed.add(b"compressible " * 100)
+    plain = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+
+    assert path.name.endswith(".eml.zst")
+    assert plain.verify_entry(hashval)
+
+
+def test_cas_verify_entry_tells_a_missing_entry_apart(tmp_path):
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+
+    with pytest.raises(FileNotFoundError):
+        store.verify_entry(hashlib.sha384(b"never stored").hexdigest())
+
+
 def test_cas_hashval_matches_what_add_stores_under(tmp_path):
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
     _, hashval, _ = store.add(b"hash me")
