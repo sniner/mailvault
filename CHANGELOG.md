@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.22.0 (2026-10-22)
 
 ### Added
 
@@ -10,7 +10,7 @@
   every record of it; `archive check` cannot see that. Run again when nothing was recorded since,
   it prints the same id, so it can run after every backup. It refuses while a metadata-log file is
   damaged or missing, and names the file and the way out. `--dry-run` says what would be sealed.
-  See [Sealing an archive](docs/sealing.md)
+  See [Sealing an archive](https://github.com/sniner/mailvault/blob/main/docs/sealing.md)
 - **`archive seal --check ID` checks the archive against a seal** and names the time of the seal
   in its verdict. It reads every message the seal covers, needs the whole id, and works on any
   copy of the archive, a restored backup without its configuration included
