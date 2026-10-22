@@ -129,11 +129,11 @@ def _refuse_nameless_archive(store_path: pathlib.Path, allow_new: bool) -> None:
     because the flag that says "yes, really" costs one run and the mix-up costs
     an untangling.
 
-    A first backup that was interrupted before anything was sealed looks the
-    same. A backup seals in batches and whenever a pass ends, by an exception or
-    Ctrl-C included, so this takes a process killed within its first batch, or
-    an archive written by 0.16.0 or earlier, which sealed a folder only at its
-    end.
+    A first backup that was interrupted before any of its log was written looks
+    the same. A backup writes the log in batches and whenever a pass ends, by an
+    exception or Ctrl-C included, so this takes a process killed within its first
+    batch, or an archive written by 0.16.0 or earlier, which wrote a folder's log
+    only at its end.
     """
     if allow_new:
         log.warning(

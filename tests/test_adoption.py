@@ -31,7 +31,7 @@ def _placed(archive: pathlib.Path, mailbox: str | None, folder: str, body: bytes
         archive / metalog.DEFAULT_LOG_DIR, archive / heads.DEFAULT_HEADS_DIR
     )
     writer.add(mailbox, [folder], store_id)
-    writer.seal(datetime.now(UTC))
+    writer.flush(datetime.now(UTC))
     return store_id
 
 
@@ -166,15 +166,15 @@ class TestWhenTheLogCannotBeWritten:
         def refuse(self, date):
             raise OSError("no space left on device")
 
-        monkeypatch.setattr(metalog.LogWriter, "seal", refuse)
+        monkeypatch.setattr(metalog.LogWriter, "flush", refuse)
         result = jobs.adopt(tmp_path, "docuware-2019")
 
         assert (result.found, result.recorded) == (2, 0)
         assert metalog.log_files(tmp_path / metalog.DEFAULT_LOG_DIR) == []
 
     def test_it_is_tried_once_per_batch_and_not_once_per_message(self, tmp_path, monkeypatch):
-        """A failed seal leaves the writer full, so "is it full" would retry forever."""
-        monkeypatch.setattr(adoption, "SEAL_BATCH", 2)
+        """A failed flush leaves the writer full, so "is it full" would retry forever."""
+        monkeypatch.setattr(adoption, "FLUSH_BATCH", 2)
         _orphans(tmp_path, 7)
         attempts = []
 
@@ -182,7 +182,7 @@ class TestWhenTheLogCannotBeWritten:
             attempts.append(len(self))
             raise OSError("no space left on device")
 
-        monkeypatch.setattr(metalog.LogWriter, "seal", refuse)
+        monkeypatch.setattr(metalog.LogWriter, "flush", refuse)
         jobs.adopt(tmp_path, "docuware-2019")
 
         assert attempts == [2, 4, 6, 7], "one attempt per batch, each carrying the last"
@@ -190,7 +190,7 @@ class TestWhenTheLogCannotBeWritten:
 
 class TestBatches:
     def test_the_observations_go_out_in_batches(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(adoption, "SEAL_BATCH", 2)
+        monkeypatch.setattr(adoption, "FLUSH_BATCH", 2)
         _orphans(tmp_path, 5)
 
         result = jobs.adopt(tmp_path, "docuware-2019")
@@ -200,7 +200,7 @@ class TestBatches:
         assert len(files) == 3, "two full batches and the remainder"
 
     def test_and_form_one_chain(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(adoption, "SEAL_BATCH", 2)
+        monkeypatch.setattr(adoption, "FLUSH_BATCH", 2)
         _orphans(tmp_path, 4)
 
         jobs.adopt(tmp_path, "docuware-2019")

@@ -236,7 +236,7 @@ class TestWhatAnImportRecords:
 
     def test_it_is_written_down_in_batches(self, tmp_path, monkeypatch):
         """A batch is what `--move` may let go of, so it must reach the log first."""
-        monkeypatch.setattr(importing, "SEAL_BATCH", 2)
+        monkeypatch.setattr(importing, "FLUSH_BATCH", 2)
         archive = tmp_path / "archive"
         _sources(tmp_path / "src", 5)
 
@@ -249,7 +249,7 @@ class TestWhatAnImportRecords:
         assert len(files) == 3, "two full batches and the remainder"
 
     def test_the_batches_form_one_chain(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(importing, "SEAL_BATCH", 2)
+        monkeypatch.setattr(importing, "FLUSH_BATCH", 2)
         archive = tmp_path / "archive"
         _sources(tmp_path / "src", 4)
 
@@ -288,36 +288,36 @@ class TestWhatAnImportRecords:
 class TestMoveWaitsForTheLog:
     """A file whose provenance is not written down must not be the one that goes."""
 
-    def test_sources_go_only_after_the_batch_is_sealed(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(importing, "SEAL_BATCH", 2)
+    def test_sources_go_only_after_the_batch_is_written(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(importing, "FLUSH_BATCH", 2)
         archive = tmp_path / "archive"
         sources = _sources(tmp_path / "src", 3)
-        sealed: list[int] = []
+        flushed: list[int] = []
 
-        real_seal = metalog.LogWriter.seal
+        real_flush = metalog.LogWriter.flush
 
-        def seal(self, date):
-            # What is on disk at the moment of the seal: the sources of the
+        def flush(self, date):
+            # What is on disk at the moment of the flush: the sources of the
             # batch being written must all still be there.
-            sealed.append(sum(path.exists() for path in sources))
-            return real_seal(self, date)
+            flushed.append(sum(path.exists() for path in sources))
+            return real_flush(self, date)
 
-        monkeypatch.setattr(metalog.LogWriter, "seal", seal)
+        monkeypatch.setattr(metalog.LogWriter, "flush", flush)
         importing.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
             cas.mail_store(archive), provenance=_provenance(archive), move=True
         )
 
-        assert sealed == [3, 1], "nothing removed before its seal, everything after"
+        assert flushed == [3, 1], "nothing removed before its flush, everything after"
         assert not any(path.exists() for path in sources)
 
-    def test_a_failed_seal_leaves_the_sources_alone(self, tmp_path, monkeypatch):
+    def test_a_failed_flush_leaves_the_sources_alone(self, tmp_path, monkeypatch):
         archive = tmp_path / "archive"
         sources = _sources(tmp_path / "src", 2)
 
         def refuse(self, date):
             raise OSError("no space left on device")
 
-        monkeypatch.setattr(metalog.LogWriter, "seal", refuse)
+        monkeypatch.setattr(metalog.LogWriter, "flush", refuse)
         result = importing.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
             cas.mail_store(archive), provenance=_provenance(archive), move=True
         )
@@ -385,7 +385,7 @@ class TestAnImportedArchiveIsWholeInItself:
 
     def test_compact_moves_the_head_with_it(self, tmp_path, monkeypatch):
         """Otherwise the head names a file compact has just removed."""
-        monkeypatch.setattr(importing, "SEAL_BATCH", 1)
+        monkeypatch.setattr(importing, "FLUSH_BATCH", 1)
         archive = self._import(tmp_path)
 
         metalog.compact(archive / metalog.DEFAULT_LOG_DIR, archive / heads.DEFAULT_HEADS_DIR)

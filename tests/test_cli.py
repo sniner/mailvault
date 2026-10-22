@@ -461,7 +461,7 @@ def _archive_with_a_log(root, extra_store_ids=()):
     writer = metalog.LogWriter(root / metalog.DEFAULT_LOG_DIR, root / heads.DEFAULT_HEADS_DIR)
     for known in (store_id, *extra_store_ids):
         writer.add("job", ["INBOX"], known)
-    writer.seal(datetime(2026, 8, 1, tzinfo=UTC))
+    writer.flush(datetime(2026, 8, 1, tzinfo=UTC))
     return store, store_id
 
 
@@ -1017,7 +1017,7 @@ class TestPlacesReport:
                 f"From: a\r\nSubject: {folder}{number}\r\n\r\nbody".encode()
             )
             writer.add(mailbox, [folder], store_id)
-        writer.seal(WHEN)
+        writer.flush(WHEN)
 
     def test_an_import_name_stands_where_the_mailbox_would(self, tmp_path, capsys):
         """The empty column is what says this place has nobody behind it."""
@@ -1040,7 +1040,7 @@ class TestPlacesReport:
             tmp_path / metalog.DEFAULT_LOG_DIR, tmp_path / heads.DEFAULT_HEADS_DIR
         )
         writer.add("gmail.com", ["INBOX", "\\All"], store_id)
-        writer.seal(WHEN)
+        writer.flush(WHEN)
 
         report_places(self._summary(tmp_path))
 
@@ -1115,7 +1115,7 @@ class TestAdoptReport:
         def refuse(self, date):
             raise OSError("no space left on device")
 
-        monkeypatch.setattr(metalog.LogWriter, "seal", refuse)
+        monkeypatch.setattr(metalog.LogWriter, "flush", refuse)
 
         assert run_archive(self._adopt_args(archive)) == 1
 
@@ -1202,7 +1202,7 @@ class TestAnArchiveIsAMarkedDirectory:
             root / metalog.DEFAULT_LOG_DIR, root / heads.DEFAULT_HEADS_DIR
         )
         writer.add("job", ["INBOX"], store_id)
-        writer.seal(WHEN)
+        writer.flush(WHEN)
         return root
 
     def test_check_refuses_an_unmigrated_archive_instead_of_calling_it_broken(self, tmp_path):
@@ -1651,7 +1651,7 @@ class TestDbCommands:
             archive / metalog.DEFAULT_LOG_DIR, archive / heads.DEFAULT_HEADS_DIR
         )
         writer.add("job", ["Sent"], cas.mail_store(archive).add(b"another")[1])
-        writer.seal(datetime(2026, 8, 2, tzinfo=UTC))
+        writer.flush(datetime(2026, 8, 2, tzinfo=UTC))
         return archive
 
     def test_a_search_answer_carries_the_word_that_it_may_be_short(self, tmp_path, capsys):
@@ -1760,7 +1760,7 @@ class TestVerifyExitCode:
 
     def test_mail_that_was_fetched_and_not_recorded_is_said_and_counted(self, capsys):
         """Restored, but nothing says where it belongs -- so the folder is not done."""
-        results = self._results(missing=2, restored=2, sealed=False)
+        results = self._results(missing=2, restored=2, flushed=False)
 
         code = report_verify("job", results, repaired=True)
 

@@ -757,7 +757,7 @@ class TestIterFolder:
 
     def test_read_only_even_when_deleting(self):
         # The read pass never deletes and never opens read-write, even under
-        # delete_after_export: removal happens later, in purge, after the seal.
+        # delete_after_export: removal happens later, in purge, after the flush.
         conn = _make_mock_conn()
         msg_date = datetime(2026, 2, 20, tzinfo=UTC)
         conn.select_folder.return_value = {b"EXISTS": 1}
@@ -1096,7 +1096,7 @@ class TestFolderBackup:
         result = client.folder_backup("INBOX", store)
         assert result.stored == 1
         # folder_backup does not delete -- it marks the archived item deletable,
-        # and the runner removes it later, through purge, once the log is sealed.
+        # and the runner removes it later, through purge, once the log is written.
         assert result.deletable == [1]
         conn.delete_messages.assert_not_called()
 

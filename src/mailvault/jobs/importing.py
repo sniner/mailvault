@@ -31,7 +31,7 @@ import pathlib
 from datetime import UTC, datetime
 
 from mailvault import utils
-from mailvault.jobs.common import SEAL_BATCH, seal_log
+from mailvault.jobs.common import FLUSH_BATCH, flush_log
 from mailvault.store import cas, metalog, zstd
 
 log = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ class ImportResult:
     fell short where only the tidying up did.
 
     `recorded` is what the log has taken and made durable, and it is not the same
-    as `stored + present`: a seal that fails leaves the messages in the archive
+    as `stored + present`: a flush that fails leaves the messages in the archive
     and their provenance unwritten, which is a thing the report has to be able to
     say out loud.
     """
@@ -101,7 +101,7 @@ def _record(
     a duplicate observation that `archive compact` drops. The other order deletes
     a file whose provenance was never written, and nothing brings that back.
 
-    A seal that fails keeps the sources too. What was observed stays in the
+    A flush that fails keeps the sources too. What was observed stays in the
     writer and goes out with the next batch, so nothing has to be repeated by
     hand; what has not been written down must not be let go of in the meantime.
 
@@ -113,7 +113,7 @@ def _record(
     """
     if provenance is not None:
         observed = len(provenance.log)
-        if not seal_log(provenance.log, datetime.now(UTC)):
+        if not flush_log(provenance.log, datetime.now(UTC)):
             return
         result.recorded += observed
     for path in pending:
@@ -180,7 +180,7 @@ class ExternalMailArchive:
         # repeats itself is exactly what the two counts are asked about. A real
         # run needs no such thing: the second `add` finds the first one's entry.
         would_hold: set[str] = set()
-        since_seal = 0
+        since_flush = 0
         for eml in self.walk():
             try:
                 data = _read_eml(eml)
@@ -209,10 +209,10 @@ class ExternalMailArchive:
                 provenance.log.add(None, [provenance.name], uid)
             if move and not dry_run:
                 pending.append(eml)
-            since_seal += 1
-            if since_seal >= SEAL_BATCH:
+            since_flush += 1
+            if since_flush >= FLUSH_BATCH:
                 _record(provenance, pending, result)
-                since_seal = 0
+                since_flush = 0
         _record(provenance, pending, result)
         return result
 

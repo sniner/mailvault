@@ -29,7 +29,7 @@ def _archive(root: pathlib.Path, messages: int = 3, logged: int | None = None):
     writer = metalog.LogWriter(root / metalog.DEFAULT_LOG_DIR, root / heads.DEFAULT_HEADS_DIR)
     for store_id in ids[: messages if logged is None else logged]:
         writer.add("job", ["INBOX"], store_id)
-    writer.seal(WHEN)
+    writer.flush(WHEN)
     return store, ids
 
 
@@ -65,7 +65,7 @@ class TestASoundArchive:
             tmp_path / metalog.DEFAULT_LOG_DIR, tmp_path / heads.DEFAULT_HEADS_DIR
         )
         writer.add("job", ["INBOX", "Archive", "Sent"], store_id)
-        writer.seal(WHEN)
+        writer.flush(WHEN)
 
         result = check(tmp_path)
 
@@ -297,7 +297,7 @@ class TestTheLogChain:
         )
         for store_id in store_ids:
             writer.add("job", [folder], store_id)
-        return writer.seal(WHEN)
+        return writer.flush(WHEN)
 
     def test_an_intact_chain_is_no_finding(self, tmp_path):
         store, ids = _archive(tmp_path)

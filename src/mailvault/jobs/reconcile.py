@@ -87,7 +87,7 @@ class ReconcileResult:
     restored: int = 0
     unchecked: int = 0
     failed: int = 0
-    sealed: bool = True
+    flushed: bool = True
     unfetched: list[Any] = dataclasses.field(default_factory=list)
 
     @property
@@ -95,7 +95,7 @@ class ReconcileResult:
         """True when nothing was left unaccounted for.
 
         Says nothing about the log: a pass can download every missing message and
-        still fail to write down where they belong. `sealed` answers that, and a
+        still fail to write down where they belong. `flushed` answers that, and a
         caller that advances a resume point has to ask both -- see
         `backup._catch_up_folder`.
         """
@@ -241,7 +241,7 @@ def reconcile_folder(
     if not repair:
         _Comparison(mb, store, job_name, folder, present, result).run(listed)
     else:
-        # The log is sealed in batches and once more on the way out, however
+        # The log is written in batches and once more on the way out, however
         # the loop ends: a catch-up after an interrupted first backup can run
         # for hours too.
         with PassLog(log_root, heads_root, datetime.now(UTC)) as pass_log:
@@ -251,7 +251,7 @@ def reconcile_folder(
         # Whether the locations reached disk is the caller's business: a pass
         # that fetched every message and could not write down where any of them
         # belongs must not move a resume point past them.
-        result.sealed = pass_log.sealed
+        result.flushed = pass_log.flushed
 
     log.info(
         "%s: %s of %s on the server are not archived",

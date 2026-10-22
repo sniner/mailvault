@@ -114,7 +114,7 @@ def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: boo
     total_missing = sum(r.missing for r in results)
     total_restored = sum(r.restored for r in results)
     total_unchecked = sum(r.unchecked for r in results)
-    unsealed = [f"{job_name}::{r.folder}" for r in results if not r.sealed]
+    unwritten = [f"{job_name}::{r.folder}" for r in results if not r.flushed]
     if not total_missing and not total_unchecked:
         print(f"{job_name}: archive is complete")
     elif total_missing and not repaired:
@@ -137,13 +137,13 @@ def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: boo
     # belongs, so a folder counted as complete is not yet finished. Ending on
     # the line that names the way out is the point of putting it last.
     report_items(
-        unsealed,
+        unwritten,
         "folder",
         "whose metadata log was not written -- what was fetched is in the archive"
         " with nothing recording where it came from, run again",
     )
     outstanding = sum(r.outstanding for r in results)
-    return 0 if outstanding <= 0 and not unsealed else 1
+    return 0 if outstanding <= 0 and not unwritten else 1
 
 
 def _run_job(

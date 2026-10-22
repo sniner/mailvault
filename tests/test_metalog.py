@@ -29,7 +29,7 @@ def _write(
     writer = metalog.LogWriter(root, _heads(root))
     for store_id in store_ids:
         writer.add(mailbox, [folder] if folder is not None else [], store_id)
-    return writer.seal(WHEN)
+    return writer.flush(WHEN)
 
 
 def _read_log(path) -> metalog.LogFile:
@@ -51,7 +51,7 @@ class TestWriting:
         """An unchanged folder must not litter the log with empty files."""
         writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
 
-        assert writer.seal(WHEN) == []
+        assert writer.flush(WHEN) == []
         assert not (tmp_path / "meta").exists()
 
     def test_name_is_the_hash_of_the_content(self, tmp_path):
@@ -82,7 +82,7 @@ class TestWriting:
         writer.add("job", ["INBOX", "\\Sent"], STORE_ID)
         writer.add("other", ["INBOX"], STORE_ID)
 
-        paths = writer.seal(WHEN)
+        paths = writer.flush(WHEN)
 
         assert len(paths) == 3
         places = {(f.mailbox, f.folder) for f in metalog.read_all(tmp_path / "meta")}
@@ -93,14 +93,14 @@ class TestWriting:
         for folder in ("a", "b", "c", "d", "e"):
             writer.add("job", [folder], STORE_ID)
 
-        paths = writer.seal(WHEN)
+        paths = writer.flush(WHEN)
 
         assert len({p.name for p in paths}) == 5
 
     def test_the_same_observations_again_are_a_new_link(self, tmp_path):
         """What the chain costs, said out loud.
 
-        Before there was a chain, two seals of the same content produced the same
+        Before there was a chain, two flushes of the same content produced the same
         bytes and therefore the same file -- content addressing folded them. Now
         the second names the first as its predecessor, so it differs and is its
         own file. That is not a regression to fix but what a chain *is*: seeing
@@ -108,7 +108,7 @@ class TestWriting:
         observations.
 
         It costs little in practice. A folder with a resume point offers nothing
-        the next run has not seen, so nothing is observed and nothing is sealed;
+        the next run has not seen, so nothing is observed and nothing is written;
         and `compact` folds a place's whole chain back into one file.
         """
         root = tmp_path / "meta"
@@ -141,7 +141,7 @@ class TestWriting:
         writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         writer.add("job", [b"\\Sent"], STORE_ID)
 
-        (path,) = writer.seal(WHEN)
+        (path,) = writer.flush(WHEN)
 
         logfile = metalog.read_log(path)
         assert logfile is not None
@@ -152,7 +152,7 @@ class TestWriting:
         writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         writer.add("job", [], STORE_ID)
 
-        (path,) = writer.seal(WHEN)
+        (path,) = writer.flush(WHEN)
 
         logfile = metalog.read_log(path)
         assert logfile is not None
@@ -173,14 +173,14 @@ class TestWriting:
         header = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
         assert set(header) == {"version", "mailbox", "folder", "date", "prev"}
 
-    def test_writer_is_reusable_after_sealing(self, tmp_path):
+    def test_writer_is_reusable_after_flushing(self, tmp_path):
         writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         writer.add("job", ["INBOX"], STORE_ID)
-        writer.seal(WHEN)
+        writer.flush(WHEN)
 
         assert len(writer) == 0
         assert writer.places == 0
-        assert writer.seal(WHEN) == []
+        assert writer.flush(WHEN) == []
 
 
 class TestReading:
@@ -368,7 +368,7 @@ class TestCompact:
         writer = metalog.LogWriter(root, _heads(root))
         for store_id in store_ids:
             writer.add(mailbox, [folder], store_id)
-        writer.seal(when)
+        writer.flush(when)
 
     def test_sweeps_up_after_an_interrupted_write(self, tmp_path):
         """Compaction is the pass that has the log open, so it tidies it.
@@ -519,9 +519,9 @@ class TestSummarize:
         root = tmp_path / "meta"
         writer = metalog.LogWriter(root, _heads(root))
         writer.add("job", ["INBOX"], STORE_ID)
-        writer.seal(datetime(2026, 1, 1, tzinfo=UTC))
+        writer.flush(datetime(2026, 1, 1, tzinfo=UTC))
         writer.add("job", ["INBOX"], "ee" * 48)
-        writer.seal(WHEN)
+        writer.flush(WHEN)
 
         (place,) = metalog.summarize(root).places
 
@@ -546,23 +546,23 @@ class TestTheChain:
     """Each place's files name their predecessor; the newest is named by its head."""
 
     @staticmethod
-    def _seal(root, store_ids, mailbox="job", folder="INBOX"):
+    def _flush(root, store_ids, mailbox="job", folder="INBOX"):
         writer = metalog.LogWriter(root, _heads(root))
         for store_id in store_ids:
             writer.add(mailbox, [folder], store_id)
-        return writer.seal(WHEN)
+        return writer.flush(WHEN)
 
     def test_the_first_file_of_a_place_starts_one(self, tmp_path):
         root = tmp_path / "meta"
 
-        (path,) = self._seal(root, ["aa"])
+        (path,) = self._flush(root, ["aa"])
 
         assert _read_log(path).prev is None
 
     def test_the_head_names_the_newest(self, tmp_path):
         root = tmp_path / "meta"
-        self._seal(root, ["aa"])
-        (second,) = self._seal(root, ["bb"])
+        self._flush(root, ["aa"])
+        (second,) = self._flush(root, ["bb"])
 
         head = _read_head(_heads(root), "job", "INBOX")
 
@@ -570,7 +570,7 @@ class TestTheChain:
 
     def test_following_it_back_reaches_every_file_of_the_place(self, tmp_path):
         root = tmp_path / "meta"
-        names = [self._seal(root, [sid])[0].name.removesuffix(".jsonl") for sid in "abc"]
+        names = [self._flush(root, [sid])[0].name.removesuffix(".jsonl") for sid in "abc"]
 
         walked = []
         hashval = _read_head(_heads(root), "job", "INBOX").log
@@ -584,8 +584,8 @@ class TestTheChain:
 
     def test_two_places_keep_two_chains(self, tmp_path):
         root = tmp_path / "meta"
-        self._seal(root, ["aa"], folder="INBOX")
-        self._seal(root, ["bb"], folder="Sent")
+        self._flush(root, ["aa"], folder="INBOX")
+        self._flush(root, ["bb"], folder="Sent")
 
         inbox = _read_head(_heads(root), "job", "INBOX")
         sent = _read_head(_heads(root), "job", "Sent")
@@ -602,7 +602,7 @@ class TestTheChain:
         writer = metalog.LogWriter(root, _heads(root))
         writer.add(None, ["docuware-2019"], STORE_ID)
 
-        (path,) = writer.seal(WHEN)
+        (path,) = writer.flush(WHEN)
 
         head = heads.read(_heads(root), None, "docuware-2019")
         assert head is not None
@@ -616,7 +616,7 @@ class TestTheChain:
         writer = metalog.LogWriter(root, _heads(root))
         writer.add(None, [], STORE_ID)
 
-        (path,) = writer.seal(WHEN)
+        (path,) = writer.flush(WHEN)
 
         assert _read_log(path).prev is None
         assert heads.head_files(_heads(root)) == []
@@ -626,7 +626,7 @@ class TestTheChain:
         root = tmp_path / "meta"
         writer = metalog.LogWriter(root, _heads(root))
         writer.add("job", [], STORE_ID)
-        (path,) = writer.seal(WHEN)
+        (path,) = writer.flush(WHEN)
 
         head = heads.read(_heads(root), "job", None)
 
@@ -650,8 +650,8 @@ class TestCompactAndTheChain:
         """It holds everything that came before, so naming what is about to be
         removed would point at something deliberately gone."""
         root = tmp_path / "meta"
-        TestTheChain._seal(root, ["aa"])
-        TestTheChain._seal(root, ["bb"])
+        TestTheChain._flush(root, ["aa"])
+        TestTheChain._flush(root, ["bb"])
 
         metalog.compact(root, _heads(root))
 
@@ -660,8 +660,8 @@ class TestCompactAndTheChain:
 
     def test_and_the_head_is_moved_onto_it(self, tmp_path):
         root = tmp_path / "meta"
-        TestTheChain._seal(root, ["aa"])
-        TestTheChain._seal(root, ["bb"])
+        TestTheChain._flush(root, ["aa"])
+        TestTheChain._flush(root, ["bb"])
 
         metalog.compact(root, _heads(root))
 
@@ -671,8 +671,8 @@ class TestCompactAndTheChain:
 
     def test_compacting_twice_changes_nothing(self, tmp_path):
         root = tmp_path / "meta"
-        TestTheChain._seal(root, ["aa"])
-        TestTheChain._seal(root, ["bb"])
+        TestTheChain._flush(root, ["aa"])
+        TestTheChain._flush(root, ["bb"])
         metalog.compact(root, _heads(root))
         before = _read_head(_heads(root), "job", "INBOX").log
 

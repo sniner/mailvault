@@ -3,7 +3,7 @@
 A backup writes the message (into the content-addressed storage) and its location
 (into the log); everything else a query might want -- sender, subject, date --
 stays in the message itself. Deletion after export is gated on the log being
-sealed, so a message leaves the server only once its location is durable. With
+written, so a message leaves the server only once its location is durable. With
 `--index-db` it also refreshes a queryable `index.db` projection afterwards
 (see `mailvault.jobs.db`).
 """
@@ -216,7 +216,7 @@ def _empty_trash(mb: base.MailboxClient, job: conf.JobConfig) -> None:
     """Finish off the deletions of this job, once every folder has been purged.
 
     What a provider like Gmail keeps in its trash folder arrives there during
-    `purge`, which runs per folder after the seal -- so this belongs after the
+    `purge`, which runs per folder after the flush -- so this belongs after the
     loop, not in it. Emptied any earlier it clears what an earlier run left and
     keeps what this one just deleted, and the mailbox stays full.
 
@@ -265,11 +265,11 @@ def _backup_folder(
 
     observed_at = datetime.now(UTC)
     void = False
-    # The seal date stamps the log with when the folder was read, which is a
-    # fact about the run and stays the wall clock. Where the *next* run resumes
-    # is a claim about coverage, and that one comes back from the backend.
+    # The log date records when the folder was read, which is a fact about the
+    # run and stays the wall clock. Where the *next* run resumes is a claim
+    # about coverage, and that one comes back from the backend.
     #
-    # The log is sealed in batches during the pass and once more when the block
+    # The log is written in batches during the pass and once more when the block
     # is left, also by an exception or Ctrl-C. A first pass over a large folder
     # can run for hours; cut short, it still records what it stored, and the
     # next run catches up from there instead of downloading the folder again.
@@ -320,10 +320,10 @@ def _backup_folder(
     report.present += result.present
     report.failed += result.failed
     recorded = pass_log.recorded > 0
-    sealed = pass_log.sealed
+    flushed = pass_log.flushed
     carried = _can_carry(result, result.resume)
     resume: dict[str, Any] | None = None
-    if (result.complete or carried) and sealed:
+    if (result.complete or carried) and flushed:
         resume = result.resume
         if resume is None and previous is None:
             # Nothing came back and there was nothing to begin with. Either the
@@ -347,7 +347,7 @@ def _backup_folder(
         # the point back re-fetches the folder next run and writes the log
         # again, rather than advancing past locations that were never recorded.
         log.warning(
-            "%s::%s: metadata log not sealed, resume point not advanced",
+            "%s::%s: metadata log not written, resume point not advanced",
             job.name,
             folder,
         )
@@ -355,7 +355,7 @@ def _backup_folder(
     # Purged before the point is written. The next run asks only for what lies
     # past it, so a point moved past messages that could not be deleted would
     # leave them on the server for good.
-    purged = _purge_after_seal(mb, job, folder, result, sealed, report)
+    purged = _purge_after_flush(mb, job, folder, result, flushed, report)
     if not purged and resume is not None:
         log.warning(
             "%s::%s: not all deleted, resume point not advanced",
@@ -542,14 +542,14 @@ def _catch_up_folder(
         )
         resume = None
         report.retried.append(folder)
-    elif not result.sealed:
+    elif not result.flushed:
         # Downloads were clean but the locations did not reach disk. The same
         # rule as the ordinary pass in `_backup_folder`: holding the point back
         # reads the folder again next run and writes the log again, where
         # advancing would push messages whose place was never recorded out of
         # everything a later run asks for.
         log.warning(
-            "%s::%s: metadata log not sealed, resume point not started",
+            "%s::%s: metadata log not written, resume point not started",
             job.name,
             folder,
         )
@@ -570,12 +570,12 @@ def _catch_up_folder(
     return result.restored > 0
 
 
-def _purge_after_seal(
+def _purge_after_flush(
     mb: base.MailboxClient,
     job: conf.JobConfig,
     folder: str,
     result: base.BackupResult,
-    sealed: bool,
+    flushed: bool,
     report: BackupReport,
 ) -> bool:
     """Delete the archived messages from the server, but only once the log is on disk.
@@ -585,13 +585,13 @@ def _purge_after_seal(
 
     This is the ordering the archive depends on when it deletes after export: a
     message's location reaches the log and is fsync'd *before* the message is
-    removed from its source. A seal that failed holds the deletion back entirely
+    removed from its source. A flush that failed holds the deletion back entirely
     -- the messages stay on the server and are re-fetched next run, which the
     content-addressed storage deduplicates -- rather than leaving `.eml` files in
     the archive whose one unrecoverable fact, where they were seen, went with the
     deleted server copy.
 
-    Deletion does not wait for a *complete* folder, only a sealed one: the
+    Deletion does not wait for a *complete* folder, only for a written log: the
     messages in `deletable` were stored and their locations written, so removing
     them is safe even when other messages of the same folder failed. Those failed
     ones are not in `deletable`, so they stay and are retried while the snapshot
@@ -599,9 +599,9 @@ def _purge_after_seal(
     """
     if not job.delete_after_export or not result.deletable:
         return True
-    if not sealed:
+    if not flushed:
         log.error(
-            "%s::%s: metadata log not sealed, %s left on the server",
+            "%s::%s: metadata log not written, %s left on the server",
             job.name,
             folder,
             utils.counted(len(result.deletable), "message"),

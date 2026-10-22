@@ -661,7 +661,7 @@ class ImapClient:
 
         Nothing is deleted here: the ids of successfully stored messages are
         collected in `BackupResult.deletable`, and the caller purges them only
-        after the metadata log is sealed.
+        after the metadata log is written.
         """
         result = BackupResult()
         watermark = _UidResume(resume)
@@ -700,7 +700,7 @@ class ImapClient:
             # The UID, which is what the next pass will ask the server about.
             watermark.saw(msg_id)
             # Not deleted here: a message is removed from the server only after
-            # the folder's log is sealed. A non-journal item skipped above never
+            # the folder's log is written. A non-journal item skipped above never
             # reaches this point, so it can never be deleted unarchived.
             if self.delete_after_export:
                 result.deletable.append(msg_id)
@@ -717,7 +717,7 @@ class ImapClient:
         """Delete the given messages from the server and expunge them.
 
         The folder is opened read-write only here, and only the backup runner
-        calls it -- after the metadata log for the folder has been sealed. So a
+        calls it -- after the metadata log for the folder has been written. So a
         message is removed from its source only once the record of where it was
         seen is durable; a run interrupted before this point leaves every message
         in place, to be re-fetched (and deduplicated) next time.

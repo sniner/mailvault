@@ -1,6 +1,6 @@
 """Errors and helpers shared across the job commands.
 
-`seal_log` is here rather than in one of them because all three write the same
+`flush_log` is here rather than in one of them because all three write the same
 log and owe it the same discipline: what was not recorded must not be let go of.
 A backup holds the deletion on the server back, an import holds back the removal
 of its source files.
@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 # The same number as `db.CREATE_DB_BATCH`, arrived at for the same reason and
 # kept apart from it: one is about a transaction, this one is about a file, and
 # a shared constant would tie two decisions together that only happen to agree.
-SEAL_BATCH = 2000
+FLUSH_BATCH = 2000
 
 
 class JobError(Exception):
@@ -51,11 +51,11 @@ def check_place_name(name: str) -> str:
     return name
 
 
-def seal_log(writer: metalog.LogWriter, date: datetime) -> bool:
+def flush_log(writer: metalog.LogWriter, date: datetime) -> bool:
     """Write out a pass over a folder; return whether the log is now durable.
 
     A log that cannot be written is reported but does not abort the run -- the
-    messages themselves are archived, and a failed seal simply does not advance
+    messages themselves are archived, and a failed flush simply does not advance
     what depends on it. In particular it gates deletion, in both directions mail
     comes from: a job that deletes after export must not remove a message from
     the server whose location was not recorded, and an import with `--move` must
@@ -63,9 +63,9 @@ def seal_log(writer: metalog.LogWriter, date: datetime) -> bool:
     where they are, to be fetched or read again. An empty pass records nothing
     and is durable by definition, so it returns True.
 
-    What a failed seal leaves standing is deliberate too. `LogWriter.seal` clears
+    What a failed flush leaves standing is deliberate too. `LogWriter.flush` clears
     what it wrote only after writing it, so a caller that keeps going accumulates
-    the failed batch into the next one, and a later seal that succeeds carries
+    the failed batch into the next one, and a later flush that succeeds carries
     all of it. Nothing has to be replayed by hand.
 
     Neither line names the directory it wrote into. There is one metadata log in
@@ -76,7 +76,7 @@ def seal_log(writer: metalog.LogWriter, date: datetime) -> bool:
     """
     recorded, places = len(writer), writer.places
     try:
-        paths = writer.seal(date)
+        paths = writer.flush(date)
     except OSError as exc:
         log.error("the metadata log was not written: %s", exc)
         return False
@@ -92,13 +92,13 @@ def seal_log(writer: metalog.LogWriter, date: datetime) -> bool:
 class PassLog:
     """The metadata log of one pass over a folder, written down while it runs.
 
-    It seals every `SEAL_BATCH` entries and once more when the `with` block is
+    It flushes every `FLUSH_BATCH` entries and once more when the `with` block is
     left, whether at its end, by an exception or by Ctrl-C. A pass that breaks
     off keeps the locations of everything it stored, and a process killed
     outright loses at most one batch. The next run then finds the folder's
     messages in the log and can catch up instead of downloading it again.
 
-    `sealed` says whether the final seal reached the disk. It is set when the
+    `flushed` says whether the final flush reached the disk. It is set when the
     block is left, and the resume point and any deletion on the server wait for
     it. `recorded` counts the entries handed in.
     """
@@ -106,12 +106,12 @@ class PassLog:
     def __init__(self, log_root: pathlib.Path, heads_root: pathlib.Path, date: datetime):
         self._writer = metalog.LogWriter(log_root, heads_root)
         self._date = date
-        # Counted here rather than read off the writer: a failed seal leaves the
-        # writer full, and `len(writer) >= SEAL_BATCH` would then try to write
+        # Counted here rather than read off the writer: a failed flush leaves the
+        # writer full, and `len(writer) >= FLUSH_BATCH` would then try to write
         # again after every entry.
-        self._since_seal = 0
+        self._since_flush = 0
         self.recorded = 0
-        self.sealed = False
+        self.flushed = False
 
     def add(
         self,
@@ -122,13 +122,13 @@ class PassLog:
         """Record one message as seen in each of `folders`, see `LogWriter.add`."""
         self._writer.add(mailbox, folders, store_id)
         self.recorded += 1
-        self._since_seal += 1
-        if self._since_seal >= SEAL_BATCH:
-            self._seal()
+        self._since_flush += 1
+        if self._since_flush >= FLUSH_BATCH:
+            self._flush()
 
-    def _seal(self) -> bool:
-        self._since_seal = 0
-        return seal_log(self._writer, self._date)
+    def _flush(self) -> bool:
+        self._since_flush = 0
+        return flush_log(self._writer, self._date)
 
     def __enter__(self) -> PassLog:
         return self
@@ -139,4 +139,4 @@ class PassLog:
         exc: BaseException | None,
         tb: types.TracebackType | None,
     ) -> None:
-        self.sealed = self._seal()
+        self.flushed = self._flush()

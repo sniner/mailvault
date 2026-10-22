@@ -440,7 +440,7 @@ class TestTakingMailOffTheServer:
         """`delete_after_export`, end to end, which is the riskiest thing it does.
 
         The order is the whole point: the messages must be in the archive and
-        named by a sealed log before any of them leaves the server.
+        named by a written log before any of them leaves the server.
         """
         user = "deleting"
         _fill(dovecot, user, "INBOX", corpus.PLAIN)

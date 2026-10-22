@@ -163,7 +163,7 @@ def _export_metalog(
             writer.add(mailbox, here, store_id)
 
     result.places = writer.places
-    return writer.seal(date)
+    return writer.flush(date)
 
 
 def _adopt_database_snapshots(

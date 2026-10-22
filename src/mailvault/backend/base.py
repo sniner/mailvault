@@ -93,10 +93,10 @@ class BackupResult:
 
     `deletable` lists the backend message ids that were stored successfully and
     may be removed from the server -- but only once the metadata log for this
-    folder is sealed, so a message is never deleted from its source before the
+    folder is written, so a message is never deleted from its source before the
     record of where it was seen is durable. It is populated only when the job
     deletes after export; the backup runner drives the deletion through `purge`,
-    after the seal. A skipped or failed message is never listed, so it is never
+    after the flush. A skipped or failed message is never listed, so it is never
     deleted unarchived.
     """
 
@@ -225,7 +225,7 @@ class MailboxClient(Protocol):
         was actually archived, or None when the pass earned none.
 
         Deletes nothing; the ids of stored messages go into
-        `BackupResult.deletable` for the caller to `purge` after the log is sealed.
+        `BackupResult.deletable` for the caller to `purge` after the log is written.
         """
         ...
 
@@ -233,7 +233,7 @@ class MailboxClient(Protocol):
         """Delete the given messages from the server.
 
         Called by the backup runner only after the folder's metadata log has been
-        sealed, so a message leaves its source only once the record of where it
+        written, so a message leaves its source only once the record of where it
         was seen is durable. A no-op for an empty `msg_ids`.
         """
         ...

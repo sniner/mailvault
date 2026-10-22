@@ -33,7 +33,7 @@ import pathlib
 from datetime import UTC, datetime
 
 from mailvault import utils
-from mailvault.jobs.common import SEAL_BATCH, check_place_name, seal_log
+from mailvault.jobs.common import FLUSH_BATCH, check_place_name, flush_log
 from mailvault.store import cas, heads, metalog
 
 log = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ WALK_PROGRESS_EVERY = 20_000
 class AdoptResult:
     """What was taken in, or what would have been.
 
-    `found` and `recorded` are two numbers on purpose. A seal that fails leaves
+    `found` and `recorded` are two numbers on purpose. A flush that fails leaves
     the mail exactly where it was and records nothing, and a report that showed
     one number could not say so.
     """
@@ -109,7 +109,7 @@ def adopt(store_path: pathlib.Path, name: str, dry_run: bool = False) -> AdoptRe
     log.info("step 2 of 2: looking through the archive")
     writer = metalog.LogWriter(log_root, store_path / heads.DEFAULT_HEADS_DIR)
     seen = 0
-    since_seal = 0
+    since_flush = 0
     for path in store.walk():
         seen += 1
         if seen % WALK_PROGRESS_EVERY == 0:
@@ -121,25 +121,25 @@ def adopt(store_path: pathlib.Path, name: str, dry_run: bool = False) -> AdoptRe
         if dry_run:
             continue
         writer.add(None, [name], store_id)
-        since_seal += 1
-        if since_seal >= SEAL_BATCH:
-            # Counted rather than asking the writer how much it holds: a seal
+        since_flush += 1
+        if since_flush >= FLUSH_BATCH:
+            # Counted rather than asking the writer how much it holds: a flush
             # that fails leaves everything in it, and "is it full" would then be
             # true for every message after it -- one failed write per message
             # instead of one per batch.
             result.recorded += _write_down(writer)
-            since_seal = 0
+            since_flush = 0
     if not dry_run:
         result.recorded += _write_down(writer)
     return result
 
 
 def _write_down(writer: metalog.LogWriter) -> int:
-    """Seal what has been collected, returning how much became durable.
+    """Write out what has been collected, returning how much became durable.
 
     Zero when the log could not be written. What was collected stays in the
     writer and goes out with the next batch, so a failure costs the run and never
-    the record; `seal_log` has already said what went wrong.
+    the record; `flush_log` has already said what went wrong.
     """
     observed = len(writer)
-    return observed if seal_log(writer, datetime.now(UTC)) else 0
+    return observed if flush_log(writer, datetime.now(UTC)) else 0

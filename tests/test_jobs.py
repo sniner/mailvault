@@ -544,7 +544,7 @@ class TestCatchUp:
             body = DUMMY_EML.replace(b"<test@example.com>", f"<{store_id}@x>".encode())
             _status, sid, _path = store.add(body)
             writer.add("test-job", ["INBOX"], sid)
-        writer.seal(datetime(2026, 2, 1, tzinfo=UTC))
+        writer.flush(datetime(2026, 2, 1, tzinfo=UTC))
 
     @staticmethod
     def _client(on_server: list[str]):
@@ -645,14 +645,14 @@ class TestCatchUp:
         def refuse(self, date):
             raise OSError("no space left on device")
 
-        monkeypatch.setattr(metalog.LogWriter, "seal", refuse)
+        monkeypatch.setattr(metalog.LogWriter, "flush", refuse)
         with caplog.at_level(logging.WARNING):
             self._run(_make_job(folders=["INBOX"]), client, tmp_path)
 
-        assert "metadata log not sealed" in caplog.text
+        assert "metadata log not written" in caplog.text
         assert _head(tmp_path).resume is None
 
-    def test_a_sealed_log_starts_the_point(self, tmp_path):
+    def test_a_written_log_starts_the_point(self, tmp_path):
         """The other side of it: a clean catch-up does earn a resume point."""
         self._archive_with(tmp_path, "a")
         client = self._client(["a"])
@@ -927,7 +927,7 @@ class TestAFirstPassCutShort:
 
     def test_a_long_pass_is_written_down_as_it_goes(self, tmp_path, monkeypatch):
         """What a kill that skips every `finally` leaves: all but the last batch."""
-        monkeypatch.setattr(common, "SEAL_BATCH", 10)
+        monkeypatch.setattr(common, "FLUSH_BATCH", 10)
         on_disk_before_the_end: list[int] = []
 
         def folder_backup(folder_name, store, resume=None, retry=(), callback=None):
@@ -1194,12 +1194,12 @@ class TestStoreMessage:
 
 
 class TestDeleteAfterExport:
-    """Deletion is gated on a durable log: purge runs only after a good seal."""
+    """Deletion is gated on a durable log: purge runs only after a good flush."""
 
     @staticmethod
     def _backup_with_deletable(*store_ids: str, deletable: list, earned: dict | None = None):
         """A folder_backup stand-in that records the messages and reports which
-        server ids may be deleted once the log is sealed."""
+        server ids may be deleted once the log is written."""
 
         def run(folder_name, store, resume=None, retry=(), callback=None):
             for sid in store_ids:
@@ -1227,7 +1227,7 @@ class TestDeleteAfterExport:
             mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
             return jobs.backup(job, tmp_path)
 
-    def test_purges_after_a_successful_seal(self, tmp_path):
+    def test_purges_after_a_successful_flush(self, tmp_path):
         job = _make_job(folders=["INBOX"], delete_after_export=True)
         mock_client = _make_mock_client()
         mock_client.folder_backup.side_effect = self._backup_with_deletable(
@@ -1250,7 +1250,7 @@ class TestDeleteAfterExport:
         mock_client.purge.assert_called_once_with("INBOX", [1, 2])
         assert log_present_at_purge == [True]
 
-    def test_does_not_purge_when_the_seal_fails(self, tmp_path, monkeypatch):
+    def test_does_not_purge_when_the_flush_fails(self, tmp_path, monkeypatch):
         job = _make_job(folders=["INBOX"], delete_after_export=True)
         mock_client = _make_mock_client()
         mock_client.folder_backup.side_effect = self._backup_with_deletable(
@@ -1261,7 +1261,7 @@ class TestDeleteAfterExport:
         def boom(self, date):
             raise OSError("no space left on device")
 
-        monkeypatch.setattr(metalog.LogWriter, "seal", boom)
+        monkeypatch.setattr(metalog.LogWriter, "flush", boom)
 
         self._run(job, mock_client, tmp_path)
 
@@ -1651,7 +1651,7 @@ class TestLiftingAnOldArchive:
         writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         for store_id in ids:
             writer.add("test-job", ["INBOX"], store_id)
-        writer.seal(ARCHIVED_AT)
+        writer.flush(ARCHIVED_AT)
 
         jobs.migrate_archive(tmp_path)
 
@@ -1923,7 +1923,7 @@ class TestRebuildWithLog:
         writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         for mailbox, folders in places:
             writer.add(mailbox, folders, store_id)
-        writer.seal(datetime(2026, 8, 1, tzinfo=UTC))
+        writer.flush(datetime(2026, 8, 1, tzinfo=UTC))
         return store_id
 
     def test_a_message_with_no_readable_date_is_counted_once_at_the_end(self, tmp_path):
@@ -2025,7 +2025,7 @@ class TestRebuildWithLog:
         marker.write(tmp_path)
         writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         writer.add("job", ["INBOX"], "deadbeef")
-        writer.seal(datetime(2026, 8, 1, tzinfo=UTC))
+        writer.flush(datetime(2026, 8, 1, tzinfo=UTC))
 
         result = jobs.create_db(tmp_path, tmp_path / "out.db")
 
@@ -2122,7 +2122,7 @@ class TestRebuildWithLog:
         _status, store_id, _path = store.add(DUMMY_EML)
         writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         writer.add(None, ["Orphans"], store_id)
-        writer.seal(datetime(2026, 8, 1, tzinfo=UTC))
+        writer.flush(datetime(2026, 8, 1, tzinfo=UTC))
 
         result = jobs.create_db(tmp_path, tmp_path / "out.db")
 
@@ -2136,7 +2136,7 @@ class TestRebuildWithLog:
         _status, store_id, _path = store.add(DUMMY_EML)
         writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         writer.add("job", ["INBOX", "\\All", "\\Starred"], store_id)
-        writer.seal(datetime(2026, 8, 1, tzinfo=UTC))
+        writer.flush(datetime(2026, 8, 1, tzinfo=UTC))
 
         with patch.object(
             cas.ContentAddressedStorage,
@@ -2177,7 +2177,7 @@ def _archive_message(store_path, job_name: str, folder: str, msg: bytes) -> None
         store_path / metalog.DEFAULT_LOG_DIR, store_path / heads.DEFAULT_HEADS_DIR
     )
     writer.add(job_name, [folder], store_id)
-    writer.seal(datetime.now(UTC))
+    writer.flush(datetime.now(UTC))
 
 
 def _verify_client(index: list[base.MessageRef], bodies: dict[str, bytes]):
@@ -2313,7 +2313,7 @@ class TestVerify:
         real_add = cas.ContentAddressedStorage.add
 
         def spy_add(store_self, msg):
-            # Only the message. `metalog` seals its log files into a store of the
+            # Only the message. `metalog` writes its log files into a store of the
             # same kind, and that add comes after everything by design.
             if msg == lost:
                 asked_when_written.append(len(client.mock_calls))
@@ -3324,7 +3324,7 @@ class TestTheArchiveIsNamedOnce:
     """No log line of a run repeats the path of the archive it is working on.
 
     The rule is old (`ca95ece`, `0230a82`) and was enforced line by line, which is
-    why a new one slipped back in: `seal_log` printed the absolute path of
+    why a new one slipped back in: `flush_log` printed the absolute path of
     `meta/` on every folder that recorded anything. Over a share that prefix is
     routinely longer than the sentence behind it, and it says nothing the line
     above it did not already say.

@@ -70,7 +70,7 @@ def _archive(tmp_path: pathlib.Path, *messages: EmailMessage) -> list[str]:
         _status, store_id, _path = store.add(msg.as_bytes())
         writer.add("example.com", ["INBOX"], store_id)
         ids.append(store_id)
-    writer.seal(datetime(2026, 8, 1, tzinfo=UTC))
+    writer.flush(datetime(2026, 8, 1, tzinfo=UTC))
     jobs.create_db(tmp_path, tmp_path / "index.db", force=True)
     return ids
 
@@ -174,7 +174,7 @@ class TestTools:
         )
         _status, late_id, _path = store.add(b"From: late@example.com\r\n\r\nlate")
         writer.add("example.com", ["INBOX"], late_id)
-        writer.seal(datetime(2026, 8, 2, tzinfo=UTC))
+        writer.flush(datetime(2026, 8, 2, tzinfo=UTC))
         server = mcpserver.build_server(tmp_path)
 
         result = _structured(server, "search", {})

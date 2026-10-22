@@ -689,7 +689,7 @@ class MSGraphClient:
 
         Nothing is deleted here: the ids of successfully stored messages are
         collected in `BackupResult.deletable`, and the caller purges them only
-        after the metadata log is sealed.
+        after the metadata log is written.
         """
         point = _delta_point(resume)
         if resume is not None and point is None:
@@ -789,7 +789,7 @@ class MSGraphClient:
                 )
 
             # Not deleted here: a message is removed from the mailbox only after
-            # the folder's log is sealed (see `purge`), so its location is durable
+            # the folder's log is written (see `purge`), so its location is durable
             # before it leaves its source.
             if self.delete_after_export:
                 result.deletable.append(msg_id)
@@ -856,7 +856,7 @@ class MSGraphClient:
         """Delete the given messages from the mailbox, softly or for good.
 
         Called by the backup runner only after the folder's metadata log has been
-        sealed, so a message leaves its source once the record of where it was
+        written, so a message leaves its source once the record of where it was
         seen is durable. A failed deletion is logged and does not abort the rest;
         the message stays and is re-fetched (and deduplicated) next run -- which
         is also what happens if `permanent_delete` is not available, so the

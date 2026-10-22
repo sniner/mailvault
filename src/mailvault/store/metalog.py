@@ -221,7 +221,7 @@ def _serialize(
 ) -> bytes:
     """Serialize one place's observations into the on-disk JSONL form.
 
-    Shared by `LogWriter.seal` and `compact` so the two produce byte-identical
+    Shared by `LogWriter.flush` and `compact` so the two produce byte-identical
     files for the same content -- which is what makes compaction idempotent.
     """
     header = {
@@ -286,14 +286,14 @@ def _move_head(heads_root: pathlib.Path, head: heads.Head | None, hashval: str) 
 
 
 class LogWriter:
-    """Collects observations and seals them into one file per (mailbox, folder).
+    """Collects observations and writes them out as one file per (mailbox, folder).
 
-    Nothing is written until `seal`, so an interrupted pass leaves no partial
+    Nothing is written until `flush`, so an interrupted pass leaves no partial
     file behind and the log never contains a half-observed place. Entries are
     held as bare store ids, so even a whole-archive export costs roughly what the
     files it produces will cost.
 
-    `heads_root` is where each place's chain head is kept, so that sealing can
+    `heads_root` is where each place's chain head is kept, so that flushing can
     link the new file to the one it follows and move the head on. It is a
     separate argument rather than derived from `root`, because the two are
     independent facts about an archive and guessing one from the other is how a
@@ -336,7 +336,7 @@ class LogWriter:
         for name in names or [None]:
             self._places.setdefault((mailbox, name), []).append(store_id)
 
-    def seal(self, date: datetime) -> list[pathlib.Path]:
+    def flush(self, date: datetime) -> list[pathlib.Path]:
         """Write one file per pending place and return their paths.
 
         Returns an empty list when nothing was observed: an incremental run over
