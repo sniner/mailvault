@@ -13,7 +13,7 @@ import pytest
 from mailvault.cli.archive import report_check
 from mailvault.jobs.check import check, quarantine_entry
 from mailvault.jobs.common import JobError
-from mailvault.store import cas, heads, metalog
+from mailvault.store import cas, heads, metalog, seals
 from tests.tamper import tamper
 
 WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
@@ -125,6 +125,33 @@ class TestWhatItFinds:
 
         assert result.damaged_logs == [logfile]
         assert not result.sound
+
+    def test_a_seal_that_no_longer_matches_its_own_name(self, tmp_path, capsys):
+        """Found here too, not only when somebody checks exactly that seal."""
+        _archive(tmp_path)
+        meta = tmp_path / metalog.DEFAULT_LOG_DIR
+        names = [path.name.removesuffix(".jsonl") for path in metalog.log_files(meta)]
+        seals.write(meta, names, WHEN)
+        (path,) = seals.seal_files(meta)
+        tamper(path, path.read_bytes().replace(b"2026", b"2025"))
+
+        result = check(tmp_path)
+
+        assert result.damaged_seals == [path]
+        assert not result.sound
+        report_check(tmp_path, result)
+        assert "1 seal damaged" in capsys.readouterr().out
+
+    def test_an_intact_seal_is_no_finding(self, tmp_path):
+        _archive(tmp_path)
+        meta = tmp_path / metalog.DEFAULT_LOG_DIR
+        names = [path.name.removesuffix(".jsonl") for path in metalog.log_files(meta)]
+        seals.write(meta, names, WHEN)
+
+        result = check(tmp_path)
+
+        assert result.sound
+        assert not result.damaged_seals
 
     def test_a_file_in_a_shard_that_is_not_an_entry(self, tmp_path):
         store, ids = _archive(tmp_path)

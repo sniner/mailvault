@@ -592,6 +592,12 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
         "damaged -- the content does not match its checksum",
     )
     report_items(
+        [utils.under(source, path) for path in result.damaged_seals],
+        "seal",
+        "damaged, the content does not match its checksum; restore it from a backup"
+        " of the archive",
+    )
+    report_items(
         result.broken_chains,
         "log file",
         "named by the chain and gone -- nothing records what was written there",

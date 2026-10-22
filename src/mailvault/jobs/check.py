@@ -12,7 +12,7 @@ So this reads the archive and holds it against what it claims:
 
 - every file lying in a shard is an entry, not something that wandered in
 - every message the metadata log references is there
-- every log file still matches its own name
+- every log file and every seal still matches its own name
 - and every message still hashes to the name it is filed under
 
 The last one is the integrity check, and it is on by default because it turned
@@ -45,7 +45,7 @@ import re
 
 from mailvault import utils
 from mailvault.jobs.common import JobError
-from mailvault.store import cas, heads, metalog
+from mailvault.store import cas, heads, metalog, seals
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +96,7 @@ class CheckResult:
     orphans: list[pathlib.Path] = dataclasses.field(default_factory=list)
     foreign: list[pathlib.Path] = dataclasses.field(default_factory=list)
     damaged_logs: list[pathlib.Path] = dataclasses.field(default_factory=list)
+    damaged_seals: list[pathlib.Path] = dataclasses.field(default_factory=list)
     corrupt: list[pathlib.Path] = dataclasses.field(default_factory=list)
     unreadable: list[pathlib.Path] = dataclasses.field(default_factory=list)
     quarantined: list[pathlib.Path] = dataclasses.field(default_factory=list)
@@ -119,6 +120,7 @@ class CheckResult:
         return (
             len(self.missing)
             + len(self.damaged_logs)
+            + len(self.damaged_seals)
             + len(self.corrupt)
             + len(self.unreadable)
             + len(self.broken_chains)
@@ -309,6 +311,18 @@ def _walk_chains(
     ]
 
 
+def _check_seals(meta: pathlib.Path, result: CheckResult) -> None:
+    """Hold every seal against its name.
+
+    Otherwise a damaged seal would only show when somebody checks exactly that id,
+    and by then the backup that still has it may be gone. A seal written by a
+    newer version matches its name and is not a finding here.
+    """
+    for found in seals.all_seals(meta):
+        if found.unusable is seals.Unusable.DAMAGED:
+            result.damaged_seals.append(found.path)
+
+
 def _check_contents(
     store: cas.ContentAddressedStorage,
     entries: dict[str, pathlib.Path],
@@ -420,6 +434,7 @@ def check(
     chain: dict[str, metalog.LogFile] = {}
     unread: dict[str, metalog.Unreadable] = {}
     seen_at = _read_log(store_path / metalog.DEFAULT_LOG_DIR, result, chain, unread)
+    _check_seals(store_path / metalog.DEFAULT_LOG_DIR, result)
     _walk_chains(store_path / heads.DEFAULT_HEADS_DIR, chain, result, unread)
     log.info(
         "step 2 of %s: %s account for %s in %s",
