@@ -15,13 +15,14 @@ import pathlib
 from mailvault import jobs, utils
 from mailvault.cli.common import (
     DEFAULT_CONFIG_NAME,
+    REPORT_LIMIT,
     archive_path,
     report_items,
     require_archive,
     shorten,
     use_archive_hash,
 )
-from mailvault.store import cas, heads, marker, metalog
+from mailvault.store import cas, heads, marker, metalog, seals
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +168,113 @@ def report_compact(result: metalog.CompactResult) -> int:
         # was interrupted, and that is worth knowing about.
         leftovers = utils.counted(result.transient_removed, "leftover")
         print(f"{leftovers} of an interrupted write removed")
+    return 0
+
+
+def report_seal(archive: pathlib.Path, result: jobs.SealResult) -> int:
+    """Print the seal id, and nothing else on stdout.
+
+    The id is the answer, and a script takes it with `id=$(mailvault archive
+    seal)`. Everything around it, the counts and the line about `compact`, goes
+    to the log, and so does a refusal. A dry run has no id to give, so what it
+    would do is its answer.
+    """
+    if result.refused:
+        _report_seal_refusal(archive, result)
+        return 1
+    if not result.log_files:
+        log.error("the archive records no mail yet, there is nothing to seal")
+        return 1
+    covering = (
+        f"{utils.counted(result.log_files, 'log file')} covering"
+        f" {utils.counted(result.messages, 'message')}"
+        f" in {utils.counted(result.places, 'place')}"
+    )
+    if result.reused and result.seal is not None:
+        log.info("nothing recorded since the seal of %s, which stays valid", result.seal.when)
+    elif result.dry_run:
+        print(f"would seal {covering}; nothing was written")
+        if result.first:
+            print(
+                "  this would be the first seal of this archive: from then on"
+                " `archive compact` refuses to run, so compact first if you want"
+                " the log consolidated"
+            )
+        return 0
+    else:
+        log.info("sealed %s", covering)
+        if result.first:
+            log.info("first seal of this archive: from now on `archive compact` refuses to run")
+    if result.seal is None:
+        return 1
+    print(result.seal.seal_id)
+    log.info("keep this id outside the archive")
+    return 0
+
+
+def _report_seal_refusal(archive: pathlib.Path, result: jobs.SealResult) -> None:
+    """Name every file that stops the seal, and the ways out for each kind."""
+    _refuse(
+        [
+            f"{utils.under(archive, path)} is damaged, a seal over it could never be checked"
+            for path in result.damaged_logs
+        ],
+        "restore it from a backup of the archive and seal again; without a backup,"
+        " delete all seals, run `archive compact`, then seal again",
+    )
+    _refuse(
+        [
+            f"{utils.under(archive, path)} is gone, and the seal of {holders[-1].when}"
+            f" records it"
+            for path, holders in result.gone_logs.items()
+        ],
+        "a new seal would hide the loss: restore it from a backup of the archive and"
+        " seal again; without a backup, delete the seals that record it first (their"
+        " ids then fail their check)",
+    )
+    _refuse(
+        [f"{utils.under(archive, path)} is a damaged seal" for path in result.damaged_seals],
+        "restore it from a backup of the archive, or delete it",
+    )
+    _refuse(
+        [
+            f"{utils.under(archive, path)} was written by a newer mailvault"
+            for path in result.newer_seals
+        ],
+        "upgrade mailvault to seal this archive",
+    )
+
+
+def _refuse(lines: list[str], move: str) -> None:
+    """Log the first few files a refusal is about, then what to do about them."""
+    if not lines:
+        return
+    for line in lines[:REPORT_LIMIT]:
+        log.error("%s", line)
+    if len(lines) > REPORT_LIMIT:
+        log.error("... and %s more", f"{len(lines) - REPORT_LIMIT:,}")
+    log.error("%s", move)
+
+
+# How wide the date column of `archive seal --list` is: 2026-10-22 02:15:07 UTC.
+_SEAL_DATE_WIDTH = 23
+
+
+def report_seals(found: list[seals.SealFile]) -> int:
+    """List the seals, oldest first: the date, then the full id.
+
+    A seal that cannot be read is listed with the reason instead of a date,
+    because its date is part of what cannot be trusted.
+    """
+    if not found:
+        log.info("this archive holds no seals")
+        return 0
+    for item in found:
+        if item.seal is not None:
+            print(f"{item.seal.when}  {item.seal_id}")
+        else:
+            reason = item.unusable.value if item.unusable is not None else "unreadable"
+            print(f"{'':{_SEAL_DATE_WIDTH}}  {item.seal_id}  ({reason})")
     return 0
 
 
@@ -592,6 +700,10 @@ def run(args: argparse.Namespace) -> int:
                 archive / heads.DEFAULT_HEADS_DIR,
             )
         )
+    elif cmd == "seal":
+        if args.list:
+            return report_seals(seals.all_seals(archive / metalog.DEFAULT_LOG_DIR))
+        return report_seal(archive, jobs.seal_archive(archive, dry_run=args.dry_run))
     elif cmd == "check":
         return report_check(
             archive,

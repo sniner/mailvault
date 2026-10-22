@@ -383,8 +383,10 @@ def build_parser() -> argparse.ArgumentParser:
             "Merge the many small metadata-log files an archive accumulates -- one"
             " per folder per backup, with entries repeated wherever a folder was"
             " read in full -- into one file per mailbox/folder holding each"
-            " observation once. Lossless and safe to run at any time; the originals"
-            " are removed only after the consolidated files are written and verified."
+            " observation once. Lossless; the originals are removed only after the"
+            " consolidated files are written and verified. Refused once the archive"
+            " holds a seal, because a seal records these files as they are; see"
+            " `archive seal`."
         ),
     )
 
@@ -410,6 +412,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--quarantine",
         action="store_true",
         help="Set damaged messages aside, so they count as missing and can be fetched again",
+    )
+
+    a_seal = asub.add_parser(
+        "seal",
+        help="Record the current state of the archive and print an id that proves it later",
+        description=(
+            "Record which metadata-log files the archive holds right now, and print"
+            " an id for that record. Keep the id somewhere outside the archive. As"
+            " long as the archive still holds everything it held at that moment,"
+            " unchanged, the id checks out; a change made since shows up, even one"
+            " that leaves the archive consistent. Running it again when nothing was"
+            " recorded since prints the same id. Refused while a log file is"
+            " damaged or missing. Once an archive holds a seal, `archive compact`"
+            " refuses to run, so compact first if you want the log consolidated."
+        ),
+    )
+    seal_mode = a_seal.add_mutually_exclusive_group()
+    seal_mode.add_argument(
+        "--list",
+        action="store_true",
+        help="List the seals in the archive, oldest first",
+    )
+    seal_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Say what would be sealed: nothing is written",
     )
 
     build_db_parser(sub)

@@ -79,6 +79,11 @@ class SealFile:
     seal: Seal | None
     unusable: Unusable | None
 
+    @property
+    def seal_id(self) -> str:
+        """The id the file claims, which for an unusable seal is all there is."""
+        return self.path.name.removesuffix(SUFFIX)
+
 
 class Sealed(Exception):
     """Raised instead of removing or renaming what a seal records.
