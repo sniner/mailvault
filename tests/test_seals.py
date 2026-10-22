@@ -141,7 +141,7 @@ class TestRefuseIfSealed:
     def test_a_log_without_a_seal_passes(self, tmp_path):
         _log(tmp_path, "aa")
 
-        seals.refuse_if_sealed(_meta(tmp_path))
+        seals.refuse_if_sealed(_meta(tmp_path), "compacting")
 
     def test_a_seal_stops_it_and_names_the_newest(self, tmp_path):
         meta = _meta(tmp_path)
@@ -150,10 +150,22 @@ class TestRefuseIfSealed:
         newest = seals.write(meta, logs, WHEN)
 
         with pytest.raises(seals.Sealed) as raised:
-            seals.refuse_if_sealed(meta)
+            seals.refuse_if_sealed(meta, "compacting")
 
         assert raised.value.count == 2
         assert raised.value.newest == newest
+
+    def test_the_refusal_says_what_and_how_to_go_ahead(self, tmp_path):
+        meta = _meta(tmp_path)
+        seals.write(meta, [_log(tmp_path, "aa")], WHEN)
+
+        with pytest.raises(seals.Sealed) as raised:
+            seals.refuse_if_sealed(meta, "compacting the metadata log")
+
+        message = str(raised.value)
+        assert "sealed (1 seal, the newest of 2026-10-22 02:15:07 UTC)" in message
+        assert "compacting the metadata log would change what the seals record" in message
+        assert "delete the .seal files in meta/ first" in message
 
     def test_a_damaged_seal_stops_it_too(self, tmp_path):
         meta = _meta(tmp_path)
@@ -161,7 +173,7 @@ class TestRefuseIfSealed:
         tamper(_path(meta, seal), b"not a seal any more")
 
         with pytest.raises(seals.Sealed) as raised:
-            seals.refuse_if_sealed(meta)
+            seals.refuse_if_sealed(meta, "compacting")
 
         assert raised.value.count == 1
         assert raised.value.newest is None

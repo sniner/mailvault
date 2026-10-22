@@ -30,6 +30,7 @@ import logging
 import pathlib
 from datetime import datetime
 
+from mailvault import utils
 from mailvault.store import cas
 
 log = logging.getLogger(__name__)
@@ -80,10 +81,20 @@ class SealFile:
 
 
 class Sealed(Exception):
-    """Raised instead of removing or renaming what a seal records."""
+    """Raised instead of removing or renaming what a seal records.
 
-    def __init__(self, count: int, newest: Seal | None):
-        super().__init__(f"the archive holds {count} seal(s)")
+    Its message is the refusal the user reads, whichever command ran into it,
+    the way a format error's is: this module is what knows why.
+    """
+
+    def __init__(self, action: str, where: str, count: int, newest: Seal | None):
+        newest_part = f", the newest of {newest.when}" if newest is not None else ""
+        super().__init__(
+            f"this archive is sealed ({utils.counted(count, 'seal')}{newest_part}):"
+            f" {action} would change what the seals record, and their ids could no"
+            f" longer be checked. To go ahead anyway, delete the .seal files in {where}"
+            f" first; every seal id given out so far then fails its check"
+        )
         self.count = count
         self.newest = newest
 
@@ -146,8 +157,8 @@ def all_seals(meta_root: pathlib.Path) -> list[SealFile]:
     return [f for _seal, f in usable] + [f for f in found if f.seal is None]
 
 
-def refuse_if_sealed(meta_root: pathlib.Path) -> None:
-    """Raise Sealed when `meta_root` holds a seal.
+def refuse_if_sealed(meta_root: pathlib.Path, action: str) -> None:
+    """Raise Sealed when `meta_root` holds a seal; `action` names what was refused.
 
     A damaged seal counts as well. Somebody may hold its id, and what it recorded
     is exactly what must not change underneath it.
@@ -156,7 +167,8 @@ def refuse_if_sealed(meta_root: pathlib.Path) -> None:
     if not found:
         return
     usable = [f.seal for f in found if f.seal is not None]
-    raise Sealed(len(found), usable[-1] if usable else None)
+    newest = usable[-1] if usable else None
+    raise Sealed(action, f"{meta_root.name}/", len(found), newest)
 
 
 def _serialize(logs: frozenset[str], date: datetime) -> bytes:

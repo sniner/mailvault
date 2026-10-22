@@ -82,7 +82,7 @@ from datetime import datetime
 from typing import Any
 
 from mailvault import utils
-from mailvault.store import cas, heads
+from mailvault.store import cas, heads, seals
 
 log = logging.getLogger(__name__)
 
@@ -621,6 +621,10 @@ def summarize(root: pathlib.Path) -> LogSummary:
     return LogSummary(places=places, messages=len(set().union(*ids.values())) if ids else 0)
 
 
+# What a seal refuses when `compact` runs into one.
+_COMPACTING = "compacting the metadata log"
+
+
 @dataclasses.dataclass
 class CompactResult:
     """Outcome of consolidating the log."""
@@ -655,7 +659,14 @@ def compact(root: pathlib.Path, heads_root: pathlib.Path) -> CompactResult:
     originals are dropped, so an interrupt in between leaves duplicates and a
     chain that reaches the new file -- never a head naming something that was
     never written.
+
+    Raises `seals.Sealed` on an archive that holds a seal: the originals are what
+    a seal records, and removing them would leave its id nothing to check. The
+    question is asked again right before the originals go, because a seal can be
+    made while this runs. A refusal at that point leaves the state of an
+    interrupted run, which the ordering above already makes safe.
     """
+    seals.refuse_if_sealed(root, _COMPACTING)
     result = CompactResult()
     originals = log_files(root)
     result.files_before = len(originals)
@@ -706,6 +717,8 @@ def compact(root: pathlib.Path, heads_root: pathlib.Path) -> CompactResult:
     # worth avoiding here.
     for (mailbox, folder), hashval in roots:
         _move_head(heads_root, _head_of(heads_root, mailbox, folder), hashval)
+
+    seals.refuse_if_sealed(root, _COMPACTING)
 
     # Drop the originals we consolidated, but never one byte-identical to a file
     # just written (an already-compact place produces the same hash).

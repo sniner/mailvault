@@ -14,7 +14,7 @@ import pathlib
 
 from mailvault import conf, jobs, utils
 from mailvault.backend import base
-from mailvault.store import cas, marker
+from mailvault.store import cas, marker, seals
 
 log = logging.getLogger(__name__)
 
@@ -24,7 +24,13 @@ log = logging.getLogger(__name__)
 # debug in them, so they are reported as one line and the traceback is left to
 # the errors nobody anticipated -- where the call stack is the only clue. The
 # traceback is still there under `--verbose` for the rare case it is wanted.
-EXPECTED_ERRORS = (conf.ConfigError, jobs.JobError, base.MailboxError, marker.FormatError)
+EXPECTED_ERRORS = (
+    conf.ConfigError,
+    jobs.JobError,
+    base.MailboxError,
+    marker.FormatError,
+    seals.Sealed,
+)
 
 # The configuration an archive carries. Named after the tool rather than after
 # its purpose -- `config.toml` would be the better name inside an archive, where

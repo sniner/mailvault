@@ -8,7 +8,9 @@ import os
 import time
 from datetime import UTC, datetime
 
-from mailvault.store import cas, heads, metalog
+import pytest
+
+from mailvault.store import cas, heads, metalog, seals
 from tests.tamper import tamper
 
 WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
@@ -680,3 +682,63 @@ class TestCompactAndTheChain:
 
         assert _read_head(_heads(root), "job", "INBOX").log == before
         assert len(metalog.log_files(root)) == 1
+
+
+def _log_names(root) -> list[str]:
+    return [path.name.removesuffix(".jsonl") for path in metalog.log_files(root)]
+
+
+class TestCompactOnASealedArchive:
+    """A seal records log files by name, so folding them away leaves it nothing."""
+
+    def test_is_refused_and_changes_nothing(self, tmp_path):
+        root = tmp_path / "meta"
+        TestTheChain._flush(root, ["aa"])
+        TestTheChain._flush(root, ["bb"])
+        seals.write(root, _log_names(root), WHEN)
+        before = metalog.log_files(root)
+        head = _read_head(_heads(root), "job", "INBOX").log
+
+        with pytest.raises(seals.Sealed):
+            metalog.compact(root, _heads(root))
+
+        assert metalog.log_files(root) == before
+        assert _read_head(_heads(root), "job", "INBOX").log == head
+
+    def test_runs_again_once_the_seals_are_deleted(self, tmp_path):
+        root = tmp_path / "meta"
+        TestTheChain._flush(root, ["aa"])
+        TestTheChain._flush(root, ["bb"])
+        seals.write(root, _log_names(root), WHEN)
+        for path in seals.seal_files(root):
+            path.unlink()
+
+        result = metalog.compact(root, _heads(root))
+
+        assert result.files_after == 1
+
+    def test_a_seal_made_while_it_runs_stops_it_before_the_originals_go(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """What is left is the state of an interrupted run: nothing lost, all read."""
+        root = tmp_path / "meta"
+        TestTheChain._flush(root, ["aa"])
+        TestTheChain._flush(root, ["bb"])
+        originals = metalog.log_files(root)
+        sealed = _log_names(root)
+        move_head = metalog._move_head
+
+        def move_head_and_seal(heads_root, head, hashval):
+            move_head(heads_root, head, hashval)
+            seals.write(root, sealed, WHEN)
+
+        monkeypatch.setattr(metalog, "_move_head", move_head_and_seal)
+
+        with pytest.raises(seals.Sealed):
+            metalog.compact(root, _heads(root))
+
+        assert all(path.exists() for path in originals)
+        assert len(metalog.log_files(root)) == 3
+        assert {s for f in metalog.read_all(root) for s in f.store_ids} == {"aa", "bb"}

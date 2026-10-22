@@ -35,7 +35,7 @@ from mailvault.cli.mailbox import run as run_mailbox
 from mailvault.cli.message import run as run_get
 from mailvault.cli.query import run as run_db
 from mailvault.jobs.retrieval import entry_path
-from mailvault.store import cas, heads, marker, metalog
+from mailvault.store import cas, heads, marker, metalog, seals
 from tests.tamper import tamper
 
 WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
@@ -1473,6 +1473,20 @@ class TestExitCodes:
         )
 
         assert exit_code == 1
+
+    def test_a_sealed_archive_is_a_message_and_not_a_traceback(self):
+        assert isinstance(seals.Sealed("compacting", "meta/", 1, None), EXPECTED_ERRORS)
+
+    def test_compacting_a_sealed_archive_is_refused(self, tmp_path):
+        _archive_with_a_log(tmp_path)
+        meta = tmp_path / metalog.DEFAULT_LOG_DIR
+        names = [path.name.removesuffix(".jsonl") for path in metalog.log_files(meta)]
+        seals.write(meta, names, datetime(2026, 10, 22, tzinfo=UTC))
+
+        with pytest.raises(seals.Sealed):
+            run_archive(
+                argparse.Namespace(archive_command="compact", archive=tmp_path, config=None)
+            )
 
     def test_a_compaction_that_worked_exits_zero(self, tmp_path):
         marker.write(tmp_path)
