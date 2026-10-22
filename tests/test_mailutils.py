@@ -3,10 +3,12 @@ import email
 import email.message
 import email.policy
 import logging
+import random
 
 import pytest
 
 from mailvault import mailutils
+from mailvault.mailutils import journal
 
 
 def test_decode_email_header(dummy_eml_bytes):
@@ -307,30 +309,74 @@ def test_the_standard_library_rewrites_a_message_it_writes_back():
     assert mailutils.unwrap_exchange_journal_item(report) == message
 
 
-def test_an_undeliverable_bounce_gives_the_journal_message():
-    """The bounce carries a malformed delivery status first, the journal message second."""
-    message = b"Message-ID: <a@example.com>\r\nSubject: s\xe4\r\n\r\nbody"
-    bounce = (
+def _undeliverable(report: bytes) -> bytes:
+    """A bounce as Exchange Online returns a journal report it could not deliver.
+
+    A delivery report with three parts: the text for people, the delivery
+    status, and the journal report as it was sent, mail and all.
+    """
+    return (
+        b"Received: from mail.example.org\r\n"
         b"Subject: Undeliverable: Quarterly report\r\n"
-        b'Content-Type: multipart/report; report-type=delivery-status; boundary="R"\r\n'
+        b"Auto-Submitted: auto-replied\r\n"
+        b'Content-Type: multipart/report; report-type="delivery-status"; boundary="R"\r\n'
         b"\r\n"
         b"--R\r\n"
+        b'Content-Type: multipart/alternative; boundary="A"\r\n'
+        b"\r\n"
+        b"--A\r\n"
         b"Content-Type: text/plain\r\n"
         b"\r\n"
-        b"Delivery has failed.\r\n"
-        b"--R\r\n"
-        b"Content-Type: message/rfc822\r\n"
+        b"Your message could not be delivered.\r\n"
+        b"--A\r\n"
+        b"Content-Type: text/html\r\n"
         b"\r\n"
+        b"<p>Your message could not be delivered.</p>\r\n"
+        b"--A--\r\n"
+        b"--R\r\n"
         b"Content-Type: message/delivery-status\r\n"
         b"\r\n"
-        b"Reporting-MTA: dns; mail.example.com\r\n"
+        b"Reporting-MTA: dns; mail.example.org\r\n"
+        b"\r\n"
+        b"Final-Recipient: rfc822; journal@example.org\r\n"
+        b"Action: failed\r\n"
         b"--R\r\n"
         b"Content-Type: message/rfc822\r\n"
-        b"\r\n" + message + b"\r\n"
+        b"\r\n" + report + b"\r\n"
         b"--R--\r\n"
     )
 
-    assert mailutils.unwrap_exchange_journal_item(bounce) == message
+
+def test_an_undeliverable_bounce_gives_the_mail_inside_the_journal_report():
+    """The bounce returns the whole journal report; the mail is one level further down."""
+    message = b"Received: from a.example.com\r\nMessage-ID: <a@example.com>\r\n\r\nbody\r\n"
+
+    assert (
+        mailutils.unwrap_exchange_journal_item(_undeliverable(_journal_report(message)))
+        == message
+    )
+
+
+def test_a_bounced_journal_report_without_a_mail_is_no_journal_item():
+    report = _journal_report(b"").replace(b"\r\n\r\n--_journal_--", b"\r\n--_journal_--")
+
+    assert mailutils.unwrap_exchange_journal_item(_undeliverable(report)) is None
+
+
+def test_a_journalled_mail_that_forwards_a_mail_is_not_taken_for_a_bounce():
+    """Only a journal report is unwrapped twice, whatever a mail's first header is."""
+    message = (
+        b'Content-Type: multipart/mixed; boundary="F"\r\n'
+        b"Message-ID: <outer@example.com>\r\n"
+        b"\r\n"
+        b"--F\r\n"
+        b"Content-Type: message/rfc822\r\n"
+        b"\r\n"
+        b"Message-ID: <inner@example.com>\r\n\r\nforwarded\r\n"
+        b"--F--\r\n"
+    )
+
+    assert mailutils.unwrap_exchange_journal_item(_journal_report(message)) == message
 
 
 def test_an_attached_message_sent_in_base64_is_decoded():
@@ -353,6 +399,175 @@ def test_a_journal_item_without_its_close_delimiter_still_gives_the_message():
     report = _journal_report(message).removesuffix(b"\r\n--_journal_--\r\n")
 
     assert mailutils.unwrap_exchange_journal_item(report) == message
+
+
+def test_a_line_that_begins_like_the_boundary_is_no_delimiter():
+    """Only the boundary and, at most, whitespace may stand on a delimiter line."""
+    message = (
+        b"Message-ID: <a@example.com>\r\n\r\n"
+        b"--_journal_x\r\n"
+        b"--_journal_ not a delimiter\r\n"
+        b"--_journal_--x\r\n"
+        b"end\r\n"
+    )
+
+    assert mailutils.unwrap_exchange_journal_item(_journal_report(message)) == message
+
+
+def test_a_preamble_and_an_epilogue_are_not_parts():
+    message = b"Message-ID: <a@example.com>\r\n\r\nbody\r\n"
+    report = (
+        b'Content-Type: multipart/mixed; boundary="B"\r\n'
+        b"\r\n"
+        b"This is a multi-part message in MIME format.\r\n"
+        b"--B\r\n"
+        b"Content-Type: message/rfc822\r\n"
+        b"\r\n" + message + b"\r\n"
+        b"--B--\r\n"
+        b"epilogue\r\n"
+    )
+
+    assert mailutils.unwrap_exchange_journal_item(report) == message
+
+
+def test_a_delimiter_may_end_in_whitespace():
+    message = b"Message-ID: <a@example.com>\r\n\r\nbody\r\n"
+    report = (
+        b'Content-Type: multipart/mixed; boundary="B"\r\n'
+        b"\r\n"
+        b"--B \t\r\n"
+        b"Content-Type: message/rfc822\r\n"
+        b"\r\n" + message + b"\r\n"
+        b"--B-- \r\n"
+    )
+
+    assert mailutils.unwrap_exchange_journal_item(report) == message
+
+
+def test_a_boundary_with_regex_metacharacters_is_taken_literally():
+    message = b"Message-ID: <a@example.com>\r\n\r\nbody\r\n"
+    report = (
+        b'Content-Type: multipart/mixed; boundary="=_a.b+c(d)?"\r\n'
+        b"\r\n"
+        b"--=_a.b+c(d)?\r\n"
+        b"Content-Type: message/rfc822\r\n"
+        b"\r\n" + message + b"\r\n"
+        b"--=_a.b+c(d)?--\r\n"
+    )
+
+    assert mailutils.unwrap_exchange_journal_item(report) == message
+
+
+def test_a_boundary_declared_in_a_charset_marks_no_part():
+    """RFC 2046 allows a boundary ASCII only; one that is not is no journal item."""
+    report = (
+        b"Content-Type: multipart/mixed; boundary*=utf-8''%C3%BC\r\n"
+        b"\r\n"
+        b"--\xc3\xbc\r\n"
+        b"Content-Type: message/rfc822\r\n"
+        b"\r\n"
+        b"Message-ID: <a@example.com>\r\n\r\nbody\r\n"
+        b"--\xc3\xbc--\r\n"
+    )
+
+    assert mailutils.unwrap_exchange_journal_item(report) is None
+
+
+def test_a_message_whose_first_header_is_content_type_is_the_message():
+    """A lone attachment is never the delivery status of a bounce, whatever it starts with."""
+    message = b"Content-Type: text/plain\r\nMessage-ID: <a@example.com>\r\n\r\nbody\r\n"
+
+    assert mailutils.unwrap_exchange_journal_item(_journal_report(message)) == message
+
+
+def test_an_empty_attached_message_is_no_journal_item():
+    assert mailutils.unwrap_exchange_journal_item(_journal_report(b"")) is None
+
+
+def test_the_bounce_warning_names_the_message(caplog):
+    message = b"Message-ID: <a@example.com>\r\n\r\nbody\r\n"
+    bounce = _undeliverable(_journal_report(message))
+
+    with caplog.at_level(logging.WARNING, logger="mailvault.mailutils.journal"):
+        result = mailutils.unwrap_exchange_journal_item(bounce, log_ctx="job::INBOX[7]")
+
+    assert result == message
+    assert caplog.messages == [
+        "job::INBOX[7]: journal message taken from an 'Undeliverable' bounce"
+    ]
+
+
+_BCHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEF'()+_,-./:=?"
+
+
+def _random_mime_tree(rnd: random.Random, depth: int = 0) -> email.message.EmailMessage:
+    """A message with random nesting: leaves, multipart/mixed, multipart/digest, message/rfc822.
+
+    Leaf bodies hold lines that look like delimiters, and every multipart gets a
+    boundary of its own. Every message carries a Message-ID, which is how the
+    parts found are told apart.
+    """
+    kind = rnd.choice(["leaf", "leaf", "mixed", "digest", "rfc822"]) if depth < 3 else "leaf"
+    msg = email.message.EmailMessage()
+    msg["Message-ID"] = f"<{kind}-{rnd.randrange(10**9)}@example.com>"
+    if kind == "leaf":
+        lines = ["body\n", "--\n", "--B\n", "\n", "--_x_--\n", "line " * 20 + "\n"]
+        body = "".join(rnd.choice(lines) for _ in range(rnd.randint(0, 5)))
+        msg.set_content(body, cte=rnd.choice(["7bit", "8bit", "base64", "quoted-printable"]))
+        return msg
+    msg.make_mixed()
+    msg.set_boundary("".join(rnd.choice(_BCHARS) for _ in range(rnd.randint(8, 30))))
+    if kind == "rfc822":
+        msg.add_attachment(_random_mime_tree(rnd, depth + 1))
+        return msg
+    if kind == "digest":
+        msg.replace_header("Content-Type", f'multipart/digest; boundary="{msg.get_boundary()}"')
+    for _ in range(rnd.randint(1, 3)):
+        child = _random_mime_tree(rnd, depth + 1)
+        if kind == "digest":
+            # A digest part without a Content-Type, as RFC 2046 allows.
+            part = email.message.EmailMessage()
+            part.set_default_type("message/rfc822")
+            part.set_payload([child])
+            msg.attach(part)
+        else:
+            msg.attach(child)
+    return msg
+
+
+def _message_ids_of_attached(raw: bytes) -> list[str]:
+    return [
+        email.message_from_bytes(found, policy=email.policy.default)["Message-ID"]
+        for found in journal._attached_messages(raw)
+    ]
+
+
+def _message_ids_walked(raw: bytes) -> list[str]:
+    parsed = email.message_from_bytes(raw, policy=email.policy.default)
+    ids: list[str] = []
+    for part in parsed.walk():
+        if part.get_content_type() == "message/rfc822":
+            inner = part.get_payload(0)
+            assert isinstance(inner, email.message.Message)
+            ids.append(inner["Message-ID"])
+    return ids
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_the_parts_found_are_the_ones_the_standard_library_parser_finds(seed):
+    """Random MIME trees, written out by the standard library and cut up here.
+
+    The content of a part is compared elsewhere, byte for byte; this test pins
+    the structure: which message/rfc822 parts are found, and in what order.
+    """
+    rnd = random.Random(seed)
+    for _ in range(40):
+        tree = _random_mime_tree(rnd)
+        for policy in (email.policy.SMTP, email.policy.default):
+            raw = tree.as_bytes(policy=policy)
+            if rnd.random() < 0.2:
+                raw = raw.replace(b"\r\n", b"\n")
+            assert _message_ids_of_attached(raw) == _message_ids_walked(raw)
 
 
 # ---------------------------------------------------------------------------

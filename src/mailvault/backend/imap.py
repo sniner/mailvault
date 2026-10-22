@@ -672,14 +672,13 @@ class ImapClient:
             folder_name, watermark, retry=retry, result=result
         ):
             msg = fetched.body
+            log_ctx = f"{self.job_name}::{folder_name}[{msg_id}]"
             if self.exchange_journal:
-                msg = mailutils.unwrap_exchange_journal_item(msg)
+                msg = mailutils.unwrap_exchange_journal_item(msg, log_ctx=log_ctx)
                 if msg is None:
                     log.warning(
-                        "%s::%s[%s]: not a journal item, %s",
-                        self.job_name,
-                        folder_name,
-                        msg_id,
+                        "%s: not a journal item, %s",
+                        log_ctx,
                         "moving to the error folder" if self.error_folder else "kept on server",
                     )
                     non_journal.append(msg_id)
@@ -688,7 +687,7 @@ class ImapClient:
                 store,
                 msg,
                 result=result,
-                log_ctx=f"{self.job_name}::{folder_name}[{msg_id}]",
+                log_ctx=log_ctx,
                 callback=callback,
                 metadata_fn=lambda sid, places=fetched.places: self._collect_metadata(
                     folder_name=folder_name,

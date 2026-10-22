@@ -750,7 +750,7 @@ class MSGraphClient:
                 continue
 
             if self.exchange_journal:
-                unwrapped = mailutils.unwrap_exchange_journal_item(msg)
+                unwrapped = mailutils.unwrap_exchange_journal_item(msg, log_ctx=log_ctx)
                 if unwrapped is None:
                     log.warning(
                         "%s: not a journal item, %s",

@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`exchange_journal` no longer fails a whole folder on a journal envelope with a non-ASCII MIME
+  boundary.** Such an item is now reported as not a journal item, like any other envelope that
+  cannot be unwrapped, and the folder's backup goes on
+- **`exchange_journal` archives a journalled mail whose first header is `Content-Type`.** It was
+  mistaken for an "Undeliverable" bounce and reported as not a journal item. A bounce is now
+  recognised by the journal report it returns, not by how the mail begins
+- **`exchange_journal` no longer archives an empty message** from a journal envelope whose
+  attachment is empty; the item is reported as not a journal item
+- **The warning that a mail was taken out of an "Undeliverable" bounce** now names the mailbox,
+  folder and message like every other line of the backup
+
 ## 0.21.1 (2026-10-21)
 
 ### Fixed
