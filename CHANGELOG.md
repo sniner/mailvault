@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`archive seal` records the state of the archive and prints an id for it.** Kept outside the
+  archive, the id shows later whether the archive still holds everything it held then, unchanged,
+  including a change that leaves the archive in order, such as a message removed together with
+  every record of it; `archive check` cannot see that. Run again when nothing was recorded since,
+  it prints the same id, so it can run after every backup. It refuses while a metadata-log file is
+  damaged or missing, and names the file and the way out. `--dry-run` says what would be sealed.
+  See [Sealing an archive](docs/sealing.md)
+- **`archive seal --check ID` checks the archive against a seal** and names the time of the seal
+  in its verdict. It reads every message the seal covers, needs the whole id, and works on any
+  copy of the archive, a restored backup without its configuration included
+- **`archive seal --list` lists the seals of the archive,** oldest first, each with its full id
+- **`archive check` also reports a damaged seal**
+
+### Changed
+
+- **`archive compact` refuses to run on an archive that holds a seal,** because compacting would
+  replace the files the seal records. Compact before the first seal
+- **The warnings "metadata log not sealed, …" now read "metadata log not written, …"**
+
 ## 0.21.3 (2026-10-22)
 
 ### Fixed

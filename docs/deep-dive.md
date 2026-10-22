@@ -589,8 +589,12 @@ sound -- every message was read and matches its checksum
 ```
 
 It walks the archive first: every file lying in a shard is an entry, every
-message the metadata log references is there, every log file still matches its
-own name. That costs a pass over the directory tree.
+message the metadata log references is there, every log file and every seal
+still matches its own name. That costs a pass over the directory tree.
+
+What it cannot see is a change that leaves the archive consistent: a message
+removed together with every record of it leaves nothing behind that points at
+it. That is what a seal is for, see [Sealing an archive](sealing.md).
 
 The integrity check reads every message and hashes it, which is the only way to
 find one whose bytes have changed under it. It sounds like the expensive half and
@@ -656,6 +660,11 @@ interrupted write left behind there, and says so when it finds anything:
 Only files old enough that no running backup can still be writing them, and only
 in `meta/` -- the messages are left alone, because looking through them means
 walking every directory in the archive for a few kilobytes.
+
+On an archive that holds a seal, `compact` refuses to run: a seal records the log
+files as they are, and folding them would leave its id nothing to check. Compact
+before the first seal; see [What changes for the
+archive](sealing.md#what-changes-for-the-archive).
 
 
 ## The query database in detail
@@ -786,7 +795,8 @@ The archive around them:
 │   └── 00/ … ff/
 ├── meta/                where each message was seen
 │   └── a1/
-│       └── a1b2c3….jsonl
+│       ├── a1b2c3….jsonl
+│       └── a1f07e….seal     a seal, if the archive was sealed
 └── heads/               where the next run picks up, one file per place
     └── gmail_com-INBOX.3f9a1c2b
 ```
@@ -826,6 +836,12 @@ $ sha256sum meta/a1/a1b2c3….jsonl     # matches the filename, or the file is d
 ```
 
 They are written once and never modified.
+
+Seals lie here as well, as `<id>.seal`, and are named the same way: the name is
+the checksum of the content, and the content lists the log files the seal
+records. Everything that reads the log looks for `*.jsonl` and passes them by,
+older versions of mailvault included. What they are for, and how to check one
+by hand, is [Sealing an archive](sealing.md).
 
 ### `heads/` — where the next run picks up
 

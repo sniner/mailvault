@@ -437,11 +437,44 @@ $ mailvault archive compact
 41,388 duplicate observations dropped
 ```
 
+Once the archive holds a [seal](#proving-that-nothing-was-changed), `compact`
+refuses to run, so compact before the first one.
+
 **Migrate** an archive written by an older version, once, after upgrading:
 
 ```console
 $ mailvault archive migrate
 ```
+
+
+## Proving that nothing was changed
+
+Where mail has to be kept unchanged for years, as business correspondence often
+must, it helps to be able to show later that the archive still holds what it
+held: no message removed, none altered. `archive seal` records the state of the
+archive and prints an id for it:
+
+```console
+$ mailvault archive seal
+1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
+```
+
+Keep the id outside the archive: printed and filed, or in a mail to your
+accountant. At any time later, check the archive against it:
+
+```console
+$ mailvault archive seal --check 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
+the seal of 2026-10-22 02:15:07 UTC holds: everything the archive held then (60 log files, 130,887 messages) is present and unchanged
+```
+
+Unlike `archive check`, this also finds a change that leaves the archive in
+order, such as a message removed together with every record of it. Sealing
+after every backup is fine: when nothing new came in, it prints the same id
+again. `archive seal --list` shows every seal made so far.
+
+What a seal proves and what it does not, where to keep the id, what to do when a
+seal does not hold, and how to have the id timestamped: [Sealing an
+archive](https://github.com/sniner/mailvault/blob/main/docs/sealing.md).
 
 
 ## Further reading
@@ -453,6 +486,11 @@ each want in `mailvault.toml`, and what each of them does that the others do not
 [Use cases](https://github.com/sniner/mailvault/blob/main/docs/usecases.md) is
 the other practical one: whole recipes for situations that take more than one
 option -- rolling old mail off a mailbox that is filling up, to begin with.
+
+[Sealing an archive](https://github.com/sniner/mailvault/blob/main/docs/sealing.md)
+is for whoever has to show that the archive was not changed, the accounts or the
+legal department as much as the administrator: what a seal proves and what not,
+where to keep the id, checking it, and timestamping it.
 
 [The MCP server](https://github.com/sniner/mailvault/blob/main/docs/mcp.md) is
 the page for connecting an AI client: which line goes into which client's
