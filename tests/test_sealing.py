@@ -6,13 +6,16 @@ import argparse
 import json
 import logging
 import pathlib
+import shutil
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from mailvault import cli
 from mailvault.cli.archive import run as run_archive
-from mailvault.jobs.sealing import seal_archive
+from mailvault.jobs.check import check, quarantine_entry
+from mailvault.jobs.common import JobError
+from mailvault.jobs.sealing import check_seal, seal_archive, seal_hash
 from mailvault.store import cas, heads, marker, metalog, seals
 from tests.tamper import tamper
 
@@ -155,6 +158,7 @@ def _run(archive: pathlib.Path, **options) -> int:
         archive_command="seal",
         archive=archive,
         config=None,
+        check=None,
         list=False,
         dry_run=False,
     )
@@ -239,6 +243,226 @@ class TestTheCommand:
             f"{'':23}  {broken.seal_id}  (damaged)",
         ]
 
-    def test_the_modes_do_not_combine(self):
+    @pytest.mark.parametrize(
+        "options",
+        [
+            ["--list", "--dry-run"],
+            ["--check", "ab", "--list"],
+            ["--check", "ab", "--dry-run"],
+        ],
+    )
+    def test_the_modes_do_not_combine(self, options):
         with pytest.raises(SystemExit):
-            cli.build_parser().parse_args(["archive", "seal", "--list", "--dry-run"])
+            cli.build_parser().parse_args(["archive", "seal", *options])
+
+
+def _sealed(archive: pathlib.Path, *bodies: str) -> tuple[seals.Seal, list[str]]:
+    """An archive with these messages in one place, sealed."""
+    ids = _store(archive, *bodies)
+    seal = seal_archive(archive, now=WHEN).seal
+    assert seal is not None
+    return seal, ids
+
+
+def _message(archive: pathlib.Path, store_id: str) -> pathlib.Path:
+    path = cas.mail_store(archive).locate(store_id, exists=True)
+    assert path is not None
+    return path
+
+
+class TestCheckingASeal:
+    def test_an_untouched_archive_holds(self, tmp_path):
+        seal, _ids = _sealed(tmp_path, "a", "b")
+
+        result = check_seal(tmp_path, seal.seal_id)
+
+        assert result.holds
+        assert (result.log_files, result.messages) == (1, 2)
+        assert (result.since_logs, result.since_messages) == (0, 0)
+
+    def test_a_consistent_removal_is_found_where_archive_check_finds_nothing(self, tmp_path):
+        """The case seals exist for: a message gone, and the log rewritten to match.
+
+        The log file that named it is deleted together with the head, and a new
+        one without it is written in its place. Nothing in the archive points at
+        what is missing, so `archive check` has nothing to report.
+        """
+        seal, (kept, removed) = _sealed(tmp_path, "a", "b")
+        (sealed_log,) = metalog.log_files(_meta(tmp_path))
+        sealed_log.unlink()
+        for head in (tmp_path / heads.DEFAULT_HEADS_DIR).iterdir():
+            head.unlink()
+        _message(tmp_path, removed).unlink()
+        writer = metalog.LogWriter(_meta(tmp_path), tmp_path / heads.DEFAULT_HEADS_DIR)
+        writer.add("job", ["INBOX"], kept)
+        writer.flush(WHEN)
+
+        assert check(tmp_path).sound
+
+        result = check_seal(tmp_path, seal.seal_id)
+        assert not result.holds
+        assert result.gone_logs == [sealed_log]
+
+    def test_a_place_deleted_whole_is_found(self, tmp_path):
+        """Its log file, its head and its mail go together, and nothing is left to miss."""
+        _store(tmp_path, "a")
+        _status, other_id, other_message = cas.mail_store(tmp_path).add(
+            b"Message-Id: <b@example.com>\r\n\r\nb\r\n"
+        )
+        writer = metalog.LogWriter(_meta(tmp_path), tmp_path / heads.DEFAULT_HEADS_DIR)
+        writer.add("other", ["Sent"], other_id)
+        (other_log,) = writer.flush(WHEN)
+        seal = seal_archive(tmp_path, now=WHEN).seal
+        assert seal is not None
+        other_log.unlink()
+        other_message.unlink()
+        for head in (tmp_path / heads.DEFAULT_HEADS_DIR).glob("other*"):
+            head.unlink()
+
+        assert check(tmp_path).sound
+
+        result = check_seal(tmp_path, seal.seal_id)
+        assert not result.holds
+        assert result.gone_logs == [other_log]
+
+    def test_a_message_whose_content_was_replaced_is_damaged(self, tmp_path):
+        seal, (store_id,) = _sealed(tmp_path, "a")
+        tamper(_message(tmp_path, store_id), b"something else entirely")
+
+        result = check_seal(tmp_path, seal.seal_id)
+
+        assert not result.holds
+        assert result.damaged_messages == {store_id: "job::INBOX"}
+
+    def test_a_message_that_is_gone_is_named_with_its_place(self, tmp_path):
+        seal, (store_id,) = _sealed(tmp_path, "a")
+        _message(tmp_path, store_id).unlink()
+
+        result = check_seal(tmp_path, seal.seal_id)
+
+        assert result.gone_messages == {store_id: "job::INBOX"}
+
+    def test_a_seal_that_is_gone_or_changed_cannot_be_checked(self, tmp_path):
+        seal, _ids = _sealed(tmp_path, "a")
+        path = _seal_path(tmp_path, seal)
+
+        tamper(path, path.read_bytes().replace(b"2026", b"2025"))
+        assert check_seal(tmp_path, seal.seal_id).unusable is seals.Unusable.DAMAGED
+
+        path.unlink()
+        result = check_seal(tmp_path, seal.seal_id)
+        assert result.unusable is seals.Unusable.GONE
+        assert not result.holds
+
+    def test_mail_recorded_since_is_counted_and_not_sealed(self, tmp_path):
+        seal, _ids = _sealed(tmp_path, "a")
+        _store(tmp_path, "a", "b")
+
+        result = check_seal(tmp_path, seal.seal_id)
+
+        assert result.holds
+        assert (result.since_logs, result.since_messages) == (1, 1)
+
+    def test_compressing_the_archive_changes_nothing(self, tmp_path):
+        seal, _ids = _sealed(tmp_path, "a", "b")
+
+        cas.mail_store(tmp_path).compress_all()
+
+        assert check_seal(tmp_path, seal.seal_id).holds
+
+    def test_a_copy_of_the_archive_holds(self, tmp_path):
+        seal, _ids = _sealed(tmp_path / "archive", "a")
+
+        shutil.copytree(tmp_path / "archive", tmp_path / "copy")
+
+        assert check_seal(tmp_path / "copy", seal.seal_id).holds
+
+    def test_quarantine_breaks_it_and_fetching_the_message_again_restores_it(self, tmp_path):
+        """The seal fixes content, not files: the same bytes have the same name."""
+        seal, (store_id,) = _sealed(tmp_path, "a")
+        path = _message(tmp_path, store_id)
+        original = path.read_bytes()
+        tamper(path, b"bit rot")
+        quarantine_entry(path)
+        assert check_seal(tmp_path, seal.seal_id).gone_messages == {store_id: "job::INBOX"}
+
+        cas.mail_store(tmp_path).add(original)
+
+        assert check_seal(tmp_path, seal.seal_id).holds
+
+
+class TestTheHashOfASealId:
+    def test_comes_from_the_length_of_the_id(self, tmp_path):
+        cas.use_hash("sha256")
+        seal, _ids = _sealed(tmp_path, "a")
+
+        assert seal_hash(tmp_path, seal.seal_id) == "sha256"
+
+    def test_a_prefix_is_refused(self, tmp_path):
+        cas.use_hash("sha256")
+        seal, _ids = _sealed(tmp_path, "a")
+
+        with pytest.raises(JobError, match="only in full: 64 hex characters in this archive"):
+            seal_hash(tmp_path, seal.seal_id[:12])
+
+    def test_an_id_in_the_other_hash_is_not_a_seal_of_this_archive(self, tmp_path):
+        cas.use_hash("sha256")
+        _sealed(tmp_path, "a")
+
+        with pytest.raises(JobError, match="not a seal of this archive"):
+            seal_hash(tmp_path, "ab" * 48)
+
+
+class TestTheCheckCommand:
+    def test_a_copy_without_any_configuration_is_checked_in_the_seal_hash(
+        self,
+        tmp_path,
+        capsys,
+    ):
+        """No configuration means sha384 to every other command; the id says sha256."""
+        cas.use_hash("sha256")
+        seal, _ids = _sealed(tmp_path / "archive", "a")
+        shutil.copytree(tmp_path / "archive", tmp_path / "copy")
+        marker.write(tmp_path / "copy")
+        cas.use_hash(cas.LEGACY_HASH)
+
+        assert _run(tmp_path / "copy", check=seal.seal_id) == 0
+
+        assert capsys.readouterr().out.splitlines()[-1] == (
+            "the seal of 2026-10-22 02:15:07 UTC holds: everything the archive held"
+            " then (1 log file, 1 message) is present and unchanged"
+        )
+
+    def test_a_seal_that_does_not_hold_names_its_time_and_exits_non_zero(
+        self,
+        tmp_path,
+        capsys,
+    ):
+        marker.write(tmp_path)
+        seal, (store_id,) = _sealed(tmp_path, "a")
+        _message(tmp_path, store_id).unlink()
+
+        assert _run(tmp_path, check=seal.seal_id) == 1
+
+        out = capsys.readouterr().out
+        assert f"1 sealed message gone\n  {store_id}  job::INBOX" in out
+        assert out.splitlines()[-1] == (
+            "the seal of 2026-10-22 02:15:07 UTC does not hold: 1 finding above"
+        )
+
+    def test_a_seal_the_archive_does_not_hold(self, tmp_path, capsys):
+        marker.write(tmp_path)
+        _store(tmp_path, "a")
+        missing = cas.digest(b"no such seal")
+
+        assert _run(tmp_path, check=missing) == 1
+        assert f"the archive holds no seal {missing}" in capsys.readouterr().out
+
+    def test_sealing_says_how_to_check_the_id(self, tmp_path, caplog):
+        marker.write(tmp_path)
+        _store(tmp_path, "a")
+
+        with caplog.at_level(logging.INFO):
+            _run(tmp_path)
+
+        assert "`archive seal --check ID` checks it" in caplog.text

@@ -29,7 +29,10 @@ import pathlib
 from datetime import UTC, datetime
 
 from mailvault import utils
-from mailvault.store import metalog, seals
+from mailvault.jobs.check import CONTENTS_PROGRESS_EVERY
+from mailvault.jobs.common import JobError
+from mailvault.jobs.guard import named_hash
+from mailvault.store import cas, heads, metalog, seals
 
 log = logging.getLogger(__name__)
 
@@ -128,9 +131,7 @@ def _find_gone_logs(
     store = metalog.open_store(meta)
     for seal in existing:
         for name in sorted(seal.logs.difference(present)):
-            where = store.locate(name)
-            if where is not None:
-                result.gone_logs.setdefault(where, []).append(seal)
+            result.gone_logs.setdefault(_log_path(store, name), []).append(seal)
 
 
 def _count(paths: collections.abc.Iterable[pathlib.Path], result: SealResult) -> None:
@@ -145,3 +146,186 @@ def _count(paths: collections.abc.Iterable[pathlib.Path], result: SealResult) ->
         places.add(logfile.place)
     result.messages = len(messages)
     result.places = len(places)
+
+
+@dataclasses.dataclass
+class SealCheck:
+    """What checking a seal against the archive found.
+
+    `log_files` and `messages` are what the seal records, `since_*` what the
+    archive holds beyond it. The findings are kept apart by kind, because each
+    calls for a different move, and a message is named with the place the seal
+    recorded it in.
+    """
+
+    seal_id: str
+    seal: seals.Seal | None = None
+    unusable: seals.Unusable | None = None
+    log_files: int = 0
+    messages: int = 0
+    since_logs: int = 0
+    since_messages: int = 0
+    gone_logs: list[pathlib.Path] = dataclasses.field(default_factory=list)
+    damaged_logs: list[pathlib.Path] = dataclasses.field(default_factory=list)
+    newer_logs: list[pathlib.Path] = dataclasses.field(default_factory=list)
+    gone_messages: dict[str, str] = dataclasses.field(default_factory=dict)
+    damaged_messages: dict[str, str] = dataclasses.field(default_factory=dict)
+    unreadable_messages: dict[str, str] = dataclasses.field(default_factory=dict)
+
+    @property
+    def findings(self) -> int:
+        """How many things are not as the seal recorded them."""
+        return (
+            len(self.gone_logs)
+            + len(self.damaged_logs)
+            + len(self.newer_logs)
+            + len(self.gone_messages)
+            + len(self.damaged_messages)
+            + len(self.unreadable_messages)
+        )
+
+    @property
+    def holds(self) -> bool:
+        """True when the archive still holds everything the seal recorded, unchanged."""
+        return self.seal is not None and not self.findings
+
+
+def seal_hash(store_path: pathlib.Path, seal_id: str) -> str:
+    """The hash a seal id is named in, told by its length.
+
+    Not taken from the configuration: a copy of an archive restored without its
+    configuration has to be checkable, and the configuration may lie outside the
+    archive anyway. Raises JobError for anything but a whole id, and for an id in
+    another hash than the archive's messages, which cannot be a seal of it.
+    """
+    archive_hash = named_hash(store_path)
+    name = cas.hash_by_length(seal_id) if cas.is_hashval(seal_id) else None
+    if name is None:
+        raise JobError(
+            f"{seal_id}: a seal id is checked only in full: {_id_length(archive_hash)}."
+            f" The beginning of one proves nothing, a forged seal can be made to start"
+            f" the same way"
+        )
+    if archive_hash is not None and archive_hash != name:
+        raise JobError(
+            f"{seal_id}: not a seal of this archive. Its messages are named in"
+            f" {archive_hash}, and this id is a {name} hash"
+        )
+    return name
+
+
+def check_seal(store_path: pathlib.Path, seal_id: str) -> SealCheck:
+    """Check that the archive still holds everything the seal `seal_id` recorded.
+
+    Every log file the seal names must be there and match its name, and every
+    message those log files name is opened at the path its id gives and read in
+    full. `mail/` is not listed: that finds files nobody expects, which is
+    `archive check`'s business, and a seal claims nothing about them.
+
+    The run's hash has to be the seal's; see `seal_hash`.
+    """
+    meta = store_path / metalog.DEFAULT_LOG_DIR
+    result = SealCheck(seal_id=seal_id)
+    result.seal, result.unusable = seals.find(meta, seal_id)
+    if result.seal is None:
+        return result
+    sealed = _sealed_messages(meta, result.seal, result)
+    log.info(
+        "seal of %s: %s, %s",
+        result.seal.when,
+        utils.counted(result.log_files, "log file"),
+        utils.counted(result.messages, "message"),
+    )
+    _check_messages(cas.mail_store(store_path), sealed, result)
+    _count_since(meta, result.seal, sealed, result)
+    return result
+
+
+def _id_length(hash_name: str | None) -> str:
+    """How long a whole id is, in this archive or, where that is not known, in any."""
+    names = [hash_name] if hash_name is not None else list(cas.HASHES)
+    lengths = " or ".join(str(len(cas.HASHES[name]().hexdigest())) for name in names)
+    return f"{lengths} hex characters" + (" in this archive" if hash_name else "")
+
+
+def _log_path(store: cas.ContentAddressedStorage, name: str) -> pathlib.Path:
+    """Where the log file `name` lies, or would lie."""
+    # Without `exists`, locate always names a path; the fallback is for the type.
+    return store.locate(name) or store.root_dir / name
+
+
+def _sealed_messages(
+    meta: pathlib.Path,
+    seal: seals.Seal,
+    result: SealCheck,
+) -> dict[str, str]:
+    """Every message the sealed log files name, with the place first recorded for it.
+
+    A log file that is gone, damaged or unreadable here is a finding, and what it
+    names is not read: its content is not the content that was sealed.
+    """
+    store = metalog.open_store(meta)
+    sealed: dict[str, str] = {}
+    for name in sorted(seal.logs):
+        path = store.locate(name, exists=True)
+        if path is None:
+            result.gone_logs.append(_log_path(store, name))
+            continue
+        logfile, why = metalog.examine_log(path)
+        if logfile is None and why is metalog.Unreadable.NEWER:
+            result.newer_logs.append(path)
+        elif logfile is None or not logfile.intact:
+            result.damaged_logs.append(path)
+        else:
+            where = heads.place_name(logfile.mailbox, logfile.folder)
+            for store_id in logfile.store_ids:
+                sealed.setdefault(store_id, where)
+    result.log_files = len(seal.logs)
+    result.messages = len(sealed)
+    return sealed
+
+
+def _check_messages(
+    store: cas.ContentAddressedStorage,
+    sealed: dict[str, str],
+    result: SealCheck,
+) -> None:
+    """Read every sealed message in full and hold it against its id.
+
+    In order of id, which is the order the store files them in, so the reads
+    move through the shards instead of jumping between them.
+    """
+    total = len(sealed)
+    log.info("reading %s, each one in full", utils.counted(total, "sealed message"))
+    for read, (store_id, where) in enumerate(sorted(sealed.items()), start=1):
+        if read % CONTENTS_PROGRESS_EVERY == 0:
+            log.info("%s of %s checked", f"{read:,}", f"{total:,}")
+        try:
+            intact = store.verify_entry(store_id)
+        except FileNotFoundError:
+            result.gone_messages[store_id] = where
+            continue
+        except OSError as exc:
+            log.error("%s: unreadable: %s", store_id, exc)
+            result.unreadable_messages[store_id] = where
+            continue
+        if not intact:
+            result.damaged_messages[store_id] = where
+
+
+def _count_since(
+    meta: pathlib.Path,
+    seal: seals.Seal,
+    sealed: dict[str, str],
+    result: SealCheck,
+) -> None:
+    """Count the log files the seal does not name, and the messages only they name."""
+    added: set[str] = set()
+    for path in metalog.log_files(meta):
+        if path.name.removesuffix(".jsonl") in seal.logs:
+            continue
+        result.since_logs += 1
+        logfile = metalog.read_log(path)
+        if logfile is not None:
+            added.update(store_id for store_id in logfile.store_ids if store_id not in sealed)
+    result.since_messages = len(added)

@@ -142,6 +142,9 @@ class LogFile:
     # "first of its place" from "written before the chain existed" -- which is
     # why `check` reports what no chain reaches instead of assuming.
     prev: str | None = None
+    # Whether the content still matches the name. The read hashes the file
+    # anyway, and a caller that has to know should not have to read it twice.
+    intact: bool = True
 
     @property
     def place(self) -> Place:
@@ -513,7 +516,8 @@ def examine_log(path: pathlib.Path) -> tuple[LogFile | None, Unreadable | None]:
     # a subset of the truth -- which is what every log file is anyway. Throwing
     # away 80,000 readable lines because the last one was cut short would be the
     # worse answer. The warning is what lets someone repair the archive.
-    if cas.digest(raw) != path.name.removesuffix(".jsonl"):
+    intact = cas.digest(raw) == path.name.removesuffix(".jsonl")
+    if not intact:
         log.warning("%s: damaged -- content does not match its name", where(path))
 
     try:
@@ -545,6 +549,7 @@ def examine_log(path: pathlib.Path) -> tuple[LogFile | None, Unreadable | None]:
         date=date if isinstance(date, str) else None,
         store_ids=store_ids,
         prev=prev if isinstance(prev, str) and cas.is_hashval(prev) else None,
+        intact=intact,
     ), None
 
 

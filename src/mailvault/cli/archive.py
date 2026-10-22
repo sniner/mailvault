@@ -208,7 +208,7 @@ def report_seal(archive: pathlib.Path, result: jobs.SealResult) -> int:
     if result.seal is None:
         return 1
     print(result.seal.seal_id)
-    log.info("keep this id outside the archive")
+    log.info("keep this id outside the archive; `archive seal --check ID` checks it")
     return 0
 
 
@@ -254,6 +254,75 @@ def _refuse(lines: list[str], move: str) -> None:
     if len(lines) > REPORT_LIMIT:
         log.error("... and %s more", f"{len(lines) - REPORT_LIMIT:,}")
     log.error("%s", move)
+
+
+def report_seal_check(archive: pathlib.Path, result: jobs.SealCheck) -> int:
+    """Say whether the seal holds, naming the time it was made in the verdict.
+
+    The verdict is the line that gets quoted or kept, so it stands on its own:
+    what a holding seal proves is that the archive still holds what it held at
+    that time, and without the time that sentence says nothing.
+    """
+    seal = result.seal
+    if seal is None:
+        print(_unusable_seal(result.seal_id, result.unusable))
+        return 1
+    report_items(
+        [utils.under(archive, path) for path in result.gone_logs],
+        "sealed log file",
+        "gone",
+    )
+    report_items(
+        [utils.under(archive, path) for path in result.damaged_logs],
+        "sealed log file",
+        "damaged, the content does not match its checksum",
+    )
+    report_items(
+        [utils.under(archive, path) for path in result.newer_logs],
+        "sealed log file",
+        "written by a newer mailvault; upgrade mailvault to check what it records",
+    )
+    report_items(
+        [f"{store_id}  {where}" for store_id, where in result.gone_messages.items()],
+        "sealed message",
+        "gone",
+    )
+    report_items(
+        [f"{store_id}  {where}" for store_id, where in result.damaged_messages.items()],
+        "sealed message",
+        "damaged, the content does not match its checksum",
+    )
+    report_items(
+        [f"{store_id}  {where}" for store_id, where in result.unreadable_messages.items()],
+        "sealed message",
+        "could not be read",
+    )
+    if result.since_logs:
+        print(
+            f"recorded since: {utils.counted(result.since_logs, 'log file')},"
+            f" {utils.counted(result.since_messages, 'message')}"
+        )
+    if not result.holds:
+        print(
+            f"the seal of {seal.when} does not hold:"
+            f" {utils.counted(result.findings, 'finding')} above"
+        )
+        return 1
+    print(
+        f"the seal of {seal.when} holds: everything the archive held then"
+        f" ({utils.counted(result.log_files, 'log file')},"
+        f" {utils.counted(result.messages, 'message')}) is present and unchanged"
+    )
+    return 0
+
+
+def _unusable_seal(seal_id: str, why: seals.Unusable | None) -> str:
+    """The verdict on a seal that cannot be checked at all."""
+    if why is seals.Unusable.NEWER:
+        return f"the seal {seal_id} was written by a newer mailvault; upgrade to check it"
+    if why is seals.Unusable.DAMAGED:
+        return f"the seal {seal_id} is damaged, so it cannot be checked"
+    return f"the archive holds no seal {seal_id}, so it cannot be checked"
 
 
 # How wide the date column of `archive seal --list` is: 2026-10-22 02:15:07 UTC.
@@ -653,7 +722,11 @@ def run(args: argparse.Namespace) -> int:
     archive = archive_path(args)
     if cmd not in WITHOUT_AN_ARCHIVE:
         require_archive(archive)
-    if cmd != "init":
+    if cmd == "seal" and args.check:
+        # A seal id says its hash by its length, and a copy of an archive has to
+        # be checkable without the configuration it was made with.
+        cas.use_hash(jobs.seal_hash(archive, args.check))
+    elif cmd != "init":
         use_archive_hash(args, archive)
 
     if cmd == "init":
@@ -701,6 +774,8 @@ def run(args: argparse.Namespace) -> int:
             )
         )
     elif cmd == "seal":
+        if args.check:
+            return report_seal_check(archive, jobs.check_seal(archive, args.check))
         if args.list:
             return report_seals(seals.all_seals(archive / metalog.DEFAULT_LOG_DIR))
         return report_seal(archive, jobs.seal_archive(archive, dry_run=args.dry_run))

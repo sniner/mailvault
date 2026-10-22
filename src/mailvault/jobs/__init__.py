@@ -35,7 +35,7 @@ from mailvault.jobs.importing import (
 from mailvault.jobs.init import InitResult, init_archive
 from mailvault.jobs.migration import MigrationResult, migrate_archive
 from mailvault.jobs.reconcile import ArchivedPlaces
-from mailvault.jobs.sealing import SealResult, seal_archive
+from mailvault.jobs.sealing import SealCheck, SealResult, check_seal, seal_archive, seal_hash
 from mailvault.jobs.verification import VerifyResult, verify
 
 __all__ = [
@@ -54,6 +54,7 @@ __all__ = [
     "Provenance",
     "RebuildResult",
     "RefreshResult",
+    "SealCheck",
     "SealResult",
     "ReplayResult",
     "SearchHit",
@@ -64,6 +65,7 @@ __all__ = [
     "check",
     "check_hash",
     "check_place_name",
+    "check_seal",
     "create_db",
     "drop_db",
     "folder_list",
@@ -72,6 +74,7 @@ __all__ = [
     "migrate_archive",
     "refresh_db",
     "seal_archive",
+    "seal_hash",
     "search",
     "verify",
 ]

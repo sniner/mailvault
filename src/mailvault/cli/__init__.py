@@ -430,6 +430,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     seal_mode = a_seal.add_mutually_exclusive_group()
     seal_mode.add_argument(
+        "--check",
+        metavar="ID",
+        help=(
+            "Check that the archive still holds everything the seal with this id"
+            " recorded, unchanged; reads every message it covers"
+        ),
+    )
+    seal_mode.add_argument(
         "--list",
         action="store_true",
         help="List the seals in the archive, oldest first",
