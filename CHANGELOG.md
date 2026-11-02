@@ -8,9 +8,15 @@
   this for a folder without a resume point, for example after an interrupted run, and `verify`
   does it every time. The messages it has to download were fetched one at a time, and the folder
   was selected again for each one. Against Gmail that took 0.56 s per message, now about 0.1 s
+- **Requires IMAPClient 4.1 or later.** Older versions do not apply the connection timeout to
+  TLS connections
 
 ### Fixed
 
+- **IMAP: a server that stops answering no longer stalls the run.** When the server has sent
+  nothing for five minutes, the connection counts as lost: the run ends with what it fetched so
+  far, and the next run continues from there. It used to wait indefinitely. Opening a connection
+  gives up after 30 seconds
 - **IMAP: a message missing from the server's answer is checked before it counts as deleted,
   also when a folder is compared with the archive.** 0.23.0 did this only for the normal backup
 

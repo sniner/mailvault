@@ -14,34 +14,12 @@ import imaplib
 import logging
 import re
 import ssl
-import sys
 import typing
 from datetime import datetime
 from typing import Any
 
 import imapclient
 import imapclient.imap_utf7
-
-if sys.version_info >= (3, 14):
-    # Monkeypatch for imapclient 3.1.0 on Python 3.14:
-    # IMAP4WithTimeout.open explicitly sets self.file which is now a property without a setter.
-    # Removing the open method makes it fallback to imaplib.IMAP4.open which works fine.
-    try:
-        import imapclient.imap4
-
-        if hasattr(imapclient.imap4.IMAP4WithTimeout, "open"):
-            del imapclient.imap4.IMAP4WithTimeout.open
-    except Exception as _patch_exc:
-        # The patch is tied to imapclient 3.1.0: a moved module or a renamed
-        # class makes it miss, and the consequence surfaces much later as a
-        # connection failure that sounds like a server problem. The logger is
-        # fetched by hand because `log` is not defined until below the imports.
-        logging.getLogger(__name__).debug(
-            "imapclient %s: the 3.14 open() patch did not apply (%s);"
-            " connecting may fail on this combination",
-            getattr(imapclient, "__version__", "of unknown version"),
-            _patch_exc,
-        )
 
 from mailvault import conf, mailutils, utils
 from mailvault.backend import base
@@ -58,6 +36,17 @@ INDEX_CHUNK_SIZE = 500
 # one selection, 0.21 s with one FETCH per message, 0.56 s when every message
 # also gets a SELECT and an UNSELECT of its own.
 FETCH_CHUNK_SIZE = 10
+
+# How long opening a connection may take, and how long the server may stay
+# silent while an answer is due. Without them a connection that goes quiet
+# blocks the run for good (issue #19). The read timeout applies to each read of
+# the socket, so it measures silence, not the length of a command: a large
+# message that arrives slowly never reaches it. After it has fired, every later
+# read of the connection fails at once ("cannot read from timed out object"),
+# so the rest of the run ends as it does when the connection drops, without a
+# further wait per command.
+CONNECT_TIMEOUT = 30.0
+READ_TIMEOUT = 300.0
 
 # The `kind` this backend stamps on the resume points it produces. A point
 # carrying any other kind belongs to a different backend and is read in full.
@@ -334,6 +323,13 @@ class ImapClient:
                 # skipped mail is that these ids are UIDs; that is not a default
                 # to inherit quietly.
                 use_uid=True,
+                # Annotated as `float | None`; the docstring and the code take a
+                # SocketTimeout as well, which is the only way to give the two
+                # timeouts different values.
+                timeout=imapclient.SocketTimeout(  # type: ignore[arg-type]
+                    connect=CONNECT_TIMEOUT,
+                    read=READ_TIMEOUT,
+                ),
             )
             # Off, and imapclient's default is on. On, it converts every
             # timestamp it parses to the local time of whatever machine is
@@ -351,14 +347,18 @@ class ImapClient:
 
         try:
             conn.login(job.username, job.password)
-        except imaplib.IMAP4.error as exc:
-            # imapclient's LoginError is one of these, and carries the server's
-            # own wording ("no such user", "authentication failed") -- which is
-            # the whole message worth reporting.
+        except (*_CONNECTION_ERRORS, imaplib.IMAP4.error) as exc:
             try:
                 conn.shutdown()
             except Exception as close_exc:
-                log.debug("%s: closing the refused connection failed: %s", job.name, close_exc)
+                log.debug("%s: closing the connection failed: %s", job.name, close_exc)
+            if isinstance(exc, _CONNECTION_ERRORS):
+                # A server that does not answer the login: the read timeout
+                # raises here.
+                raise MailboxError(f"cannot log in to {job.server}:{job.port}: {exc}") from exc
+            # imapclient's LoginError is an IMAP4.error, and carries the
+            # server's own wording ("no such user", "authentication failed") --
+            # which is the whole message worth reporting.
             raise MailboxError(f"login refused for '{job.username}': {exc}") from exc
         return cls(conn, job)
 

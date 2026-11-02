@@ -181,7 +181,9 @@ the difference is fetched.
 
 A pass over a folder writes down where its messages came from every 2,000
 messages and again when it ends, also when it ends early: by Ctrl-C, by SIGTERM
-(systemd, `timeout`, `kill`) or because the connection drops.
+(systemd, `timeout`, `kill`) or because the connection drops. An IMAP connection
+counts as dropped when the server has sent nothing for five minutes while an
+answer is due.
 
 When the connection to an IMAP server drops, the folder's resume point moves up
 to the last messages fetched, and the next run continues from there. In the

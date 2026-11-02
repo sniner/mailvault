@@ -22,7 +22,10 @@ classifiers = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "imapclient",
+    # 4.1 is the first to apply the connect timeout to TLS connections; 3.1
+    # ignored it there, and a server that never completed the handshake hung
+    # the run. 4.0 also works on Python 3.14 without a patch.
+    "imapclient>=4.1",
     # Python 3.14 ships zstd in the stdlib (PEP 784); the package is only needed
     # before that. mailvault.store.zstd picks whichever is available.
     "zstandard; python_version < '3.14'",

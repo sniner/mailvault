@@ -118,6 +118,19 @@ class TestConnect:
         assert mock_imap_cls.call_args.kwargs["use_uid"] is True
 
     @patch("mailvault.backend.imap.imapclient.IMAPClient")
+    def test_the_connection_gives_up_on_a_silent_server(self, mock_imap_cls):
+        """Without a timeout a connection that goes quiet blocks the run for good.
+
+        What the two values do over a real socket is in `test_imap_timeout`.
+        """
+        mock_imap_cls.return_value = _make_mock_conn()
+
+        imap.ImapClient.connect(_make_job())
+
+        timeout = mock_imap_cls.call_args.kwargs["timeout"]
+        assert (timeout.connect, timeout.read) == (30.0, 300.0)
+
+    @patch("mailvault.backend.imap.imapclient.IMAPClient")
     def test_the_connection_keeps_the_zone_the_wire_carried(self, mock_imap_cls):
         """imapclient normalises by default: every timestamp it parses is converted
         to the local time of the machine reading the mailbox and its zone dropped.
