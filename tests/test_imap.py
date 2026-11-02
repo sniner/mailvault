@@ -208,6 +208,63 @@ class TestConnect:
             imap.ImapClient.connect(_make_job())
 
 
+class TestALostConnection:
+    """The connection closes itself at the first error that means it is gone."""
+
+    def test_the_error_closes_the_connection_and_is_raised(self):
+        conn = _make_mock_conn()
+        conn.select_folder.side_effect = TimeoutError("timed out")
+        wrapped = imap._Connection(conn)
+
+        with pytest.raises(TimeoutError):
+            wrapped.select_folder("INBOX", readonly=True)
+
+        conn.shutdown.assert_called_once()
+
+    def test_every_later_command_fails_without_reaching_the_server(self):
+        conn = _make_mock_conn()
+        conn.select_folder.side_effect = TimeoutError("timed out")
+        wrapped = imap._Connection(conn)
+        with pytest.raises(TimeoutError):
+            wrapped.select_folder("INBOX", readonly=True)
+
+        with pytest.raises(imaplib.IMAP4.abort, match="earlier error: timed out"):
+            wrapped.unselect_folder()
+
+        conn.unselect_folder.assert_not_called()
+        conn.shutdown.assert_called_once()
+
+    def test_a_refused_command_leaves_it_open(self):
+        conn = _make_mock_conn()
+        conn.fetch.side_effect = imaplib.IMAP4.error("FETCH failed")
+        wrapped = imap._Connection(conn)
+
+        with pytest.raises(imaplib.IMAP4.error):
+            wrapped.fetch([1], ["BODY.PEEK[]"])
+        wrapped.noop()
+
+        conn.shutdown.assert_not_called()
+        conn.noop.assert_called_once()
+
+    def test_a_failed_close_is_not_raised(self):
+        """The connection is gone already; the error that said so is the one to raise."""
+        conn = _make_mock_conn()
+        conn.search.side_effect = imaplib.IMAP4.abort("socket error: EOF")
+        conn.shutdown.side_effect = OSError("bad file descriptor")
+        wrapped = imap._Connection(conn)
+
+        with pytest.raises(imaplib.IMAP4.abort, match="EOF"):
+            wrapped.search(["ALL"])
+
+    @patch("mailvault.backend.imap.imapclient.IMAPClient")
+    def test_connect_hands_out_the_closing_connection(self, mock_imap_cls):
+        mock_imap_cls.return_value = _make_mock_conn()
+
+        client = imap.ImapClient.connect(_make_job())
+
+        assert isinstance(client.conn, imap._Connection)
+
+
 # ---------------------------------------------------------------------------
 # folders()
 # ---------------------------------------------------------------------------

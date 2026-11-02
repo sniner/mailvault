@@ -41,10 +41,9 @@ FETCH_CHUNK_SIZE = 10
 # silent while an answer is due. Without them a connection that goes quiet
 # blocks the run for good (issue #19). The read timeout applies to each read of
 # the socket, so it measures silence, not the length of a command: a large
-# message that arrives slowly never reaches it. After it has fired, every later
-# read of the connection fails at once ("cannot read from timed out object"),
-# so the rest of the run ends as it does when the connection drops, without a
-# further wait per command.
+# message that arrives slowly never reaches it. Once it has fired, `_Connection`
+# closes the connection, so the rest of the run ends as it does when the
+# connection drops, without a further wait per command.
 CONNECT_TIMEOUT = 30.0
 READ_TIMEOUT = 300.0
 
@@ -97,6 +96,47 @@ def _dated(value: object) -> datetime | None:
     if not isinstance(value, datetime):
         return None
     return value if value.tzinfo is not None else None
+
+
+class _Connection:
+    """An imapclient connection that closes itself once it is lost.
+
+    Before Python 3.14, imaplib reads through `socket.makefile`, which refuses
+    every read after a timeout. 3.14 keeps a buffer of its own so that IDLE can
+    go on after one: the next command would wait another `READ_TIMEOUT`, and
+    could read the rest of the answer that timed out as its own. So at the
+    first error that means the connection is gone, it is closed, and every
+    later command fails at once without touching the socket, on every version.
+
+    Forwards everything else unchanged.
+    """
+
+    def __init__(self, conn: imapclient.IMAPClient):
+        self._conn = conn
+        self._lost: BaseException | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._conn, name)
+        if not callable(attr):
+            return attr
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            if self._lost is not None:
+                raise imaplib.IMAP4.abort(f"closed after an earlier error: {self._lost}")
+            try:
+                return attr(*args, **kwargs)
+            except _CONNECTION_ERRORS as exc:
+                self._close(exc)
+                raise
+
+        return call
+
+    def _close(self, cause: BaseException) -> None:
+        self._lost = cause
+        try:
+            self._conn.shutdown()
+        except OSError as exc:
+            log.debug("closing the lost connection failed: %s", exc)
 
 
 def _count_cut_off(
@@ -360,7 +400,8 @@ class ImapClient:
             # server's own wording ("no such user", "authentication failed") --
             # which is the whole message worth reporting.
             raise MailboxError(f"login refused for '{job.username}': {exc}") from exc
-        return cls(conn, job)
+        # It forwards every call, and is no IMAPClient only to the type checker.
+        return cls(typing.cast(imapclient.IMAPClient, _Connection(conn)), job)
 
     def close(self) -> None:
         """Log out and close the underlying connection."""

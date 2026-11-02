@@ -110,7 +110,12 @@ class TestAServerThatStopsAnswering:
         assert TIMEOUT * 0.9 <= took < TIMEOUT * 3
 
     def test_every_command_after_it_fails_at_once(self, server):
-        """Not one more timeout each: a run over many folders would wait for every one."""
+        """Not one more timeout each: a run over many folders would wait for every one.
+
+        Python 3.13 gets this from `socket.makefile`, which refuses every read
+        after a timeout. 3.14's imaplib reads on after one, and failed here
+        until the connection was closed on the first error.
+        """
         quiet = server(silent_on=frozenset({b"EXAMINE", b"SELECT"}))
         client = imap.ImapClient.connect(_job(quiet.port))
         _timed(lambda: list(client.fetch_messages([1], "INBOX")))
