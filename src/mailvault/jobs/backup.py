@@ -150,6 +150,11 @@ class BackupReport:
     `carried` names the folders whose resume point did move although messages
     failed, because the server refused each of them by itself. The next run
     fetches only those messages again, not the folder.
+
+    `not_fetched` counts the messages a pass did not get to because the
+    connection was lost, and `cut_off` names the folders whose resume point
+    moved up to where that happened. The next run continues there. A folder cut
+    off before its point could move is in `retried` instead.
     """
 
     folders: int = 0
@@ -159,13 +164,15 @@ class BackupReport:
     present: int = 0
     deleted: int = 0
     failed: int = 0
+    not_fetched: int = 0
     retried: list[str] = dataclasses.field(default_factory=list)
     carried: list[str] = dataclasses.field(default_factory=list)
+    cut_off: list[str] = dataclasses.field(default_factory=list)
 
     @property
     def complete(self) -> bool:
         """True when every folder was read to the end and everything seen was stored."""
-        return not self.failed and not self.retried
+        return not self.failed and not self.not_fetched and not self.retried
 
 
 def _backup_to_log(
@@ -319,6 +326,7 @@ def _backup_folder(
     report.stored += result.stored - result.present
     report.present += result.present
     report.failed += result.failed
+    report.not_fetched += result.cut_off
     recorded = pass_log.recorded > 0
     flushed = pass_log.flushed
     carried = _can_carry(result, result.resume)
@@ -338,7 +346,7 @@ def _backup_folder(
             "%s::%s: %s of %s failed, resume point not advanced",
             job.name,
             folder,
-            result.failed,
+            result.failed + result.cut_off,
             utils.counted(result.total, "message"),
         )
         report.retried.append(folder)
@@ -365,7 +373,16 @@ def _backup_folder(
         report.retried.append(folder)
         resume = None
     elif carried and resume is not None:
-        _report_carried(job.name, folder, result.failed, result.total, report)
+        if result.failed:
+            _report_carried(job.name, folder, result.failed, result.total, report)
+        if result.cut_off:
+            log.warning(
+                "%s::%s: the next run continues with the %s not fetched",
+                job.name,
+                folder,
+                utils.counted(result.cut_off, "message"),
+            )
+            report.cut_off.append(folder)
     # Written whatever the outcome: the folder *was* read, and that is all
     # `last_run` claims. Only `resume` is held back when the pass fell short.
     _record_pass(
@@ -384,11 +401,14 @@ def _can_carry(
     result: base.BackupResult | ReconcileResult,
     resume: dict[str, Any] | None,
 ) -> bool:
-    """Whether the failed messages of a pass can be fetched again by themselves.
+    """Whether a pass that fell short may take its new point anyway.
 
-    Only when the server refused each of them by itself, so that each is named,
-    and there is a new point for them to lie behind. Otherwise the point stays
-    where it was and the next pass reads them from there with everything else.
+    Only when the server refused each failed message by itself, so that each is
+    named and can be fetched again by itself, and there is a new point for them
+    to lie behind. What a lost connection left unfetched lies beyond that point
+    (`BackupResult.cut_off`), and the next pass asks for it anyway. Otherwise
+    the point stays where it was and the next pass reads them from there with
+    everything else.
     """
     return not result.complete and result.resumable and resume is not None
 

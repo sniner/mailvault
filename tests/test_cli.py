@@ -1856,6 +1856,17 @@ class TestBackupVerdict:
         assert "not finished" not in out
         assert code == 1
 
+    def test_a_folder_cut_off_by_a_lost_connection_is_named(self, capsys):
+        """Not fetched is not the same as could not be stored, and is not said so."""
+        code = report_backup("gmail.com", self._report(not_fetched=19328, cut_off=["All Mail"]))
+
+        out = capsys.readouterr().out
+        assert "19,328 messages not fetched, the connection to the server was lost" in out
+        assert "1 folder cut off -- the next run continues there" in out
+        assert "  All Mail" in out
+        assert "could not be stored" not in out
+        assert code == 1
+
     def test_a_folder_that_fell_short_is_named_with_what_happens_to_it(self, capsys):
         code = report_backup("proton.me", self._report(failed=12, retried=["INBOX"]))
 

@@ -181,18 +181,27 @@ the difference is fetched.
 
 A pass over a folder writes down where its messages came from every 2,000
 messages and again when it ends, also when it ends early: by Ctrl-C, by SIGTERM
-(systemd, `timeout`, `kill`) or because the connection drops. Such a folder gets
-no resume point, so the next run lists it, compares it against the archive and
-fetches only the rest. A first backup that does not fit into one run finishes
-over several this way, each continuing from what the previous one stored.
+(systemd, `timeout`, `kill`) or because the connection drops.
+
+When the connection to an IMAP server drops, the folder's resume point moves up
+to the last messages fetched, and the next run continues from there. In the
+other cases, Ctrl-C, SIGTERM or a dropped connection to Microsoft 365, the
+folder gets no resume point, so the next run lists it, compares it against the
+archive and fetches only the rest. Either way a first backup that does not fit
+into one run finishes over several, each continuing from what the previous one
+stored.
 
 Two kinds of job cannot be compared by listing: `delete_after_export` and
-`exchange_journal`. An interrupted pass over one of them is read in full again
-on the next run; the messages already in the archive are recognised and not
-stored twice. Every run starts again at the beginning of the folder, so the
-first backup of such a job completes only if one run gets through the whole
-folder. A folder too large for one run, because of a provider's daily download
-limit or a connection that does not last, never completes.
+`exchange_journal`. A pass over one of them that ends without a resume point is
+read in full again on the next run; the messages already in the archive are
+recognised and not stored twice. Every run starts again at the beginning of the
+folder, so the first backup of such a job completes only if one run gets through
+the whole folder. A folder too large for one run, because of a provider's daily
+download limit or a connection that does not last, never completes. For these
+two kinds a dropped IMAP connection can also end without a resume point. With
+`delete_after_export` that is the case whenever the messages fetched before it
+can no longer be deleted, because the resume point never moves past mail that
+is still on the server.
 
 ### Deleting from the server after export
 
@@ -308,8 +317,12 @@ odd request with a `504 Gateway Timeout`, so a folder can end a run with
 messages it did not deliver. Nothing needs to be noticed, and nothing needs to
 be done:
 
-- When the connection is lost, the folder's resume point is **not** advanced,
-  and the next run reads the folder again from where the last one resumed.
+- When the connection to an IMAP server is lost, the folder's resume point
+  advances up to the last messages fetched, and the next run continues from
+  there. The backup lists such a folder as "cut off -- the next run continues
+  there". When the connection to Microsoft 365 is lost, the resume point is
+  **not** advanced, and the next run reads the folder again from where the last
+  one resumed.
 - When the server refuses single messages and delivers the rest, the resume
   point does advance, and the refused messages are noted in the folder's file in
   `heads/`. The next run asks for these again first, one at a time, and forgets

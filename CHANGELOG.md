@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **An IMAP backup cut off by a lost connection continues where it stopped.** The folder's resume
+  point stayed where it was, so the next run listed the whole folder and compared it with the
+  archive before it fetched the rest. On a large folder such as Gmail's All Mail that takes a long
+  time on every run. The resume point now moves up to the last messages fetched, and the next run
+  fetches only what follows. The backup names such a folder as "cut off -- the next run continues
+  there" and counts the messages as not fetched rather than as "could not be stored"
+- **IMAP: a message missing from the server's answer is checked before it counts as deleted.** If
+  the folder still holds it, it is reported as not sent and fetched again on the next run. It used
+  to be taken as deleted and was not asked for again
+
 ## 0.22.0 (2026-10-22)
 
 ### Added

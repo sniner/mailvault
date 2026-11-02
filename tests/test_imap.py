@@ -60,6 +60,17 @@ def _make_mock_conn(capabilities=None, folders=None):
     return conn
 
 
+def _uid_point(uid: int, uidvalidity: int = 42) -> dict:
+    return {"kind": imap.UID_RESUME_KIND, "uidvalidity": uidvalidity, "uid": uid}
+
+
+def _answered_resume() -> imap._UidResume:
+    """A watermark with no point to start from, past the SELECT."""
+    resume = imap._UidResume(None)
+    resume.accept({b"EXISTS": 0, b"UIDVALIDITY": 42}, "job::INBOX")
+    return resume
+
+
 def _make_client(job=None, conn=None, **job_overrides):
     """Create a MailboxClient with mocked connection."""
     if job is None:
@@ -348,9 +359,47 @@ class TestWalkFolder:
 
         assert len(results) == 10
         assert conn.fetch.call_count == 2
-        assert result.failed == 25
-        # Never asked for, so not named: the next pass reads them from the old point.
+        # Never asked for, so not named: they lie beyond the point the pass
+        # earned, and the next pass asks for them from there.
+        assert result.cut_off == 25
+        assert result.failed == 0
         assert result.unfetched == []
+        assert len([r for r in caplog.records if r.levelno == logging.ERROR]) == 1
+
+    def test_a_lost_connection_tells_the_point_where_it_stopped(self):
+        conn = _make_mock_conn()
+        self._dies_after_one_chunk(conn, imaplib.IMAP4.abort("socket error: EOF"))
+        client = _make_client(conn=conn)
+        resume = _answered_resume()
+
+        for msg_id, _fetched in client._walk_folder(
+            "INBOX",
+            list(range(1, 36)),
+            result=base.BackupResult(),
+            resume=resume,
+        ):
+            resume.saw(msg_id)
+
+        assert resume.token() == _uid_point(10)
+
+    def test_a_lost_connection_while_retrying_names_what_is_left(self, caplog):
+        """Behind the point, so the next pass would never ask for them again."""
+        conn = _make_mock_conn()
+        self._dies_after_one_chunk(conn, imaplib.IMAP4.abort("socket error: EOF"))
+        client = _make_client(conn=conn)
+        result = base.BackupResult()
+
+        with caplog.at_level(logging.ERROR):
+            results = list(
+                client._walk_folder("INBOX", [20, 21, 22], result=result, retry=[3, 5, 7])
+            )
+
+        assert [msg_id for msg_id, _fetched in results] == [3]
+        assert conn.fetch.call_count == 2
+        assert result.unfetched == [5, 7]
+        assert result.failed == 2
+        assert result.cut_off == 3
+        assert "5 messages not fetched" in caplog.text
         assert len([r for r in caplog.records if r.levelno == logging.ERROR]) == 1
 
     def test_a_refused_chunk_costs_only_that_chunk(self):
@@ -397,6 +446,80 @@ class TestWalkFolder:
         assert results == []
         assert result.failed == 0
         assert "INBOX[5]: no longer in the folder" in caplog.text
+        assert conn.search.call_args[0][0] == ["UID", "5"]
+
+    def test_a_uid_the_answer_leaves_out_and_the_folder_holds_is_not_gone(self, caplog):
+        """Taken for gone, the resume point would pass a message never stored."""
+        conn = _make_mock_conn()
+        conn.fetch.return_value = {4: {b"BODY[]": DUMMY_EML}}
+        conn.search.return_value = [5]
+        client = _make_client(conn=conn)
+        result = base.BackupResult()
+
+        with caplog.at_level(logging.ERROR):
+            results = list(client._walk_folder("INBOX", [4, 5, 6], result=result))
+
+        assert [msg_id for msg_id, _fetched in results] == [4]
+        assert conn.search.call_args[0][0] == ["UID", "5,6"]
+        assert result.failed == 1
+        assert result.unfetched == [5]
+        assert "INBOX[5]: the server did not send the message" in caplog.text
+
+    def test_a_refused_search_keeps_the_left_out_uids(self, caplog):
+        conn = _make_mock_conn()
+        conn.fetch.return_value = {}
+        conn.search.side_effect = imaplib.IMAP4.error("NO search not allowed")
+        client = _make_client(conn=conn)
+        result = base.BackupResult()
+
+        with caplog.at_level(logging.WARNING):
+            list(client._walk_folder("INBOX", [5, 6], result=result))
+
+        assert result.failed == 2
+        assert result.unfetched == [5, 6]
+        assert "cannot tell whether 2 messages are still there" in caplog.text
+
+    def test_a_connection_lost_in_the_search_hands_on_nothing_of_the_chunk(self):
+        """The chunk is not answered, so the point must not pass it."""
+        conn = _make_mock_conn()
+        conn.fetch.return_value = {4: {b"BODY[]": DUMMY_EML}}
+        conn.search.side_effect = imaplib.IMAP4.abort("socket error: EOF")
+        client = _make_client(conn=conn)
+        result = base.BackupResult()
+        resume = _answered_resume()
+
+        results = list(client._walk_folder("INBOX", [4, 5], result=result, resume=resume))
+
+        assert results == []
+        assert result.cut_off == 2
+        assert resume.token() is None
+
+    def test_each_answered_chunk_is_noted(self):
+        conn = _make_mock_conn()
+        conn.fetch.side_effect = lambda ids, _fields: {i: {b"BODY[]": DUMMY_EML} for i in ids}
+        client = _make_client(conn=conn)
+        resume = _answered_resume()
+
+        for msg_id, _fetched in client._walk_folder(
+            "INBOX", [1, 2, 3], chunk_size=2, resume=resume
+        ):
+            resume.saw(msg_id)
+
+        assert resume.token() == _uid_point(3)
+
+    def test_a_refused_chunk_counts_as_answered(self):
+        """Its UIDs are named for the next pass, so the point may pass them."""
+        conn = _make_mock_conn()
+        conn.fetch.side_effect = imaplib.IMAP4.error("NO try later")
+        client = _make_client(conn=conn)
+        result = base.BackupResult()
+        resume = _answered_resume()
+
+        list(client._walk_folder("INBOX", [1, 2], result=result, resume=resume))
+        for msg_id in result.unfetched:
+            resume.saw(msg_id)
+
+        assert resume.token() == _uid_point(2)
 
 
 class TestPlacesComeWithTheMessage:
@@ -614,11 +737,31 @@ class TestUidResume:
         resume = imap._UidResume(None)
         resume.accept(self._select(), "job::INBOX")
 
+        resume.covered([7, 9, 12])
         resume.saw(7)
         resume.saw(12)
         resume.saw(9)
 
         assert resume.token() == self._point(uid=12)
+
+    def test_the_token_never_passes_the_last_chunk_answered(self):
+        """A UID beyond it was not asked for, whatever the answer filed it under."""
+        resume = imap._UidResume(None)
+        resume.accept(self._select(), "job::INBOX")
+
+        resume.covered([7, 9, 12])
+        resume.saw(12)
+        resume.saw(3000)
+
+        assert resume.token() == self._point(uid=12)
+
+    def test_without_an_answered_chunk_nothing_is_claimed(self):
+        resume = imap._UidResume(self._point(uid=4711))
+        resume.accept(self._select(), "job::INBOX")
+
+        resume.saw(5000)
+
+        assert resume.token() == self._point(uid=4711)
 
     def test_a_first_pass_that_archived_nothing_earns_no_token(self):
         """The Proton Bridge case, in UID terms: no mail, no claim."""
@@ -713,6 +856,18 @@ class TestIterFolder:
         list(client._iter_folder("INBOX", resume))
 
         assert conn.search.call_args[0][0] == ["NOT", "DELETED", "UID", "4712:*"]
+
+    def test_the_folder_is_walked_in_ascending_uid_order(self):
+        """The resume point counts on it, and RFC 3501 promises no order."""
+        conn = _make_mock_conn()
+        conn.select_folder.return_value = {b"EXISTS": 3, b"UIDVALIDITY": 42}
+        conn.search.return_value = [12, 3, 7]
+        conn.fetch.side_effect = lambda ids, _fields: {i: {b"BODY[]": DUMMY_EML} for i in ids}
+        client = _make_client(conn=conn)
+
+        list(client._iter_folder("INBOX", imap._UidResume(None)))
+
+        assert conn.fetch.call_args_list[0][0][0] == [3, 7, 12]
 
     def test_without_a_resume_point_the_whole_folder_is_searched(self):
         conn = _make_mock_conn()

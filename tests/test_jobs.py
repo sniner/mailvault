@@ -925,6 +925,47 @@ class TestAFirstPassCutShort:
         assert report.complete
         assert len(_recorded(tmp_path)) == FOLDER_SIZE
 
+    def test_a_dropped_connection_moves_the_point_up_to_where_it_stopped(self, tmp_path):
+        conn, _bodies = _imap_conn(failure=imaplib.IMAP4.abort("socket error: EOF"))
+
+        report = _back_up_over(conn, tmp_path)
+
+        assert _head(tmp_path).resume == {
+            "kind": imap.UID_RESUME_KIND,
+            "uidvalidity": 1,
+            "uid": 10,
+        }
+        assert _head(tmp_path).pending == []
+        assert report.cut_off == ["INBOX"]
+        assert report.not_fetched == 25
+        assert report.failed == 0
+        assert report.retried == []
+        assert not report.complete
+
+    def test_the_next_run_continues_without_listing_the_folder(self, tmp_path):
+        """Listing it means a FETCH ENVELOPE of every message, the catch-up's way in."""
+        conn, _bodies = _imap_conn(failure=imaplib.IMAP4.abort("socket error: EOF"))
+        _back_up_over(conn, tmp_path)
+
+        conn, bodies = _imap_conn()
+        _back_up_over(conn, tmp_path)
+
+        assert sorted(bodies) == list(range(11, FOLDER_SIZE + 1))
+        assert all(call[0][1] != ["ENVELOPE"] for call in conn.fetch.call_args_list)
+
+    def test_a_connection_lost_before_anything_was_stored_holds_the_folder_back(
+        self,
+        tmp_path,
+    ):
+        conn, _bodies = _imap_conn(failure=imaplib.IMAP4.abort("socket error: EOF"), after=0)
+
+        report = _back_up_over(conn, tmp_path)
+
+        assert _head(tmp_path).resume is None
+        assert report.retried == ["INBOX"]
+        assert report.cut_off == []
+        assert report.not_fetched == FOLDER_SIZE
+
     def test_a_long_pass_is_written_down_as_it_goes(self, tmp_path, monkeypatch):
         """What a kill that skips every `finally` leaves: all but the last batch."""
         monkeypatch.setattr(common, "FLUSH_BATCH", 10)

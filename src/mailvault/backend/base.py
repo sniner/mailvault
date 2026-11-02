@@ -72,9 +72,14 @@ class BackupResult:
     every failure is one of them (`resumable`), the caller may take the new
     resume point after all, provided it keeps these ids and passes them back as
     `retry` on the next pass. A message the server refuses on every attempt
-    would otherwise hold its folder back for good. A lost connection
-    adds nothing here: the messages it cut off were never asked for, and the
-    next pass reads them from the old point.
+    would otherwise hold its folder back for good.
+
+    `cut_off` counts the messages a pass did not get to because the connection
+    to the server was lost, and only those that lie beyond `resume`: the next
+    pass asks for everything beyond it anyway, so they are neither named nor
+    counted in `failed`, and the caller may take the point. A backend that
+    cannot put the point in front of them counts them in `failed` instead,
+    which holds the point back.
 
     `resume` is where the next pass over this folder may carry on, in whatever
     shape the backend that produced it uses. It is built from what this pass
@@ -108,11 +113,12 @@ class BackupResult:
     resume_lost: bool = False
     deletable: list[Any] = dataclasses.field(default_factory=list)
     unfetched: list[Any] = dataclasses.field(default_factory=list)
+    cut_off: int = 0
 
     @property
     def complete(self) -> bool:
         """True if every message seen on the server was accounted for."""
-        return self.failed == 0
+        return self.failed == 0 and self.cut_off == 0
 
     @property
     def resumable(self) -> bool:

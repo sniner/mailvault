@@ -291,15 +291,27 @@ class TestAFirstBackupThatBreaksOff:
         first = jobs.backup(job, archive)
         monkeypatch.undo()
 
-        assert first.retried == ["INBOX"]
-        assert first.failed == 15
+        assert first.cut_off == ["INBOX"]
+        assert first.not_fetched == 15
+        assert first.failed == 0
+        assert first.retried == []
         assert _places(archive / metalog.DEFAULT_LOG_DIR) == {(user, "INBOX"): 10}
         guard.check_jobs(archive, [job])
 
+        asked_for: list[object] = []
+
+        def fetch_and_note(self, messages, data, modifiers=None):
+            asked_for.append(data)
+            return real_fetch(self, messages, data, modifiers)
+
+        monkeypatch.setattr(imapclient.IMAPClient, "fetch", fetch_and_note)
         second = jobs.backup(job, archive)
+        monkeypatch.undo()
 
         assert second.complete
         assert second.stored == 15, "only what the first run did not get"
+        # Carried on from the resume point: no listing of the folder by Message-ID.
+        assert ["ENVELOPE"] not in asked_for
         assert _places(archive / metalog.DEFAULT_LOG_DIR) == {(user, "INBOX"): 25}
         assert jobs.check(archive).sound
 

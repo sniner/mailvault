@@ -202,9 +202,8 @@ $ mailvault backup --compress             # store the messages compressed
 $ mailvault backup --full                 # re-read every folder, ignoring resume points
 ```
 
-A failed download needs no attention: that folder does not advance its resume
-point, the next ordinary run fetches it again, and nothing is deleted from the
-server that did not make it into the archive.
+A failed download needs no attention: the next ordinary run fetches it again,
+and nothing is deleted from the server that did not make it into the archive.
 
 The same goes for a run that is interrupted, by Ctrl-C, by a `kill` or because
 the connection drops. What it has stored stays in the archive, and the next run

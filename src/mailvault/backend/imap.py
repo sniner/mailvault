@@ -104,6 +104,24 @@ def _dated(value: object) -> datetime | None:
     return value if value.tzinfo is not None else None
 
 
+def _count_cut_off(
+    result: BackupResult,
+    left: list[int],
+    behind: collections.abc.Set[int],
+) -> None:
+    """Count the messages a lost connection left unfetched.
+
+    The ones in `behind` were to be retried from behind the resume point. The
+    next pass asks only for what lies beyond the point, so they are named again
+    in `unfetched`, or they would never be asked for again. The rest lie beyond
+    the point and the next pass asks for them anyway.
+    """
+    named = [uid for uid in left if uid in behind]
+    result.failed += len(named)
+    result.unfetched.extend(named)
+    result.cut_off += len(left) - len(named)
+
+
 class _UidResume:
     """Where an incremental pass over one IMAP folder carries on.
 
@@ -124,6 +142,8 @@ class _UidResume:
         self._previous = _uid_point(previous)
         self.uidvalidity: int | None = None
         self.highest: int | None = None
+        # The highest UID of a chunk the server answered, see `covered`.
+        self._covered: int | None = None
         # A point was handed in and could not be read: that is reported, not
         # worked around. Being given none in the first place is not a loss.
         self.lost = self._given and self._previous is None
@@ -169,6 +189,18 @@ class _UidResume:
         if self.highest is None or uid > self.highest:
             self.highest = uid
 
+    def covered(self, uids: collections.abc.Sequence[int]) -> None:
+        """Note a chunk the server answered, each of its UIDs now dealt with.
+
+        Dealt with means stored, in `BackupResult.unfetched`, or no longer in
+        the folder. The walk asks in ascending order, one chunk at a time, so
+        every UID it asked for up to the highest one noted here is dealt with,
+        and none above it has been asked for yet.
+        """
+        top = max(uids)
+        if self._covered is None or top > self._covered:
+            self._covered = top
+
     def token(self) -> dict[str, Any] | None:
         """The point this pass earned, never below the one it started from.
 
@@ -176,13 +208,25 @@ class _UidResume:
         sees nothing else would otherwise hand back the highest of those and
         have the next pass download everything above it again.
 
+        Never beyond the last chunk the server answered either. Above it nothing
+        was asked for: after a lost connection that is the rest of the folder,
+        which the next pass then asks for from here. A UID noted beyond it
+        cannot be one this pass asked for. imapclient files an unsolicited
+        FETCH response, which need not carry a UID, under its sequence number,
+        and taking that number as a UID would skip every message in between.
+
         None when there was no point to start from and nothing was archived.
         """
         if self.uidvalidity is None:
             return None
         # `accept` has cleared a point whose UIDVALIDITY did not match.
         start = self._previous[1] if self._previous is not None else None
-        uids = [uid for uid in (self.highest, start) if uid is not None]
+        highest = (
+            None
+            if self.highest is None or self._covered is None
+            else min(self.highest, self._covered)
+        )
+        uids = [uid for uid in (highest, start) if uid is not None]
         if not uids:
             return None
         return {
@@ -377,56 +421,43 @@ class ImapClient:
         message_ids: list[int],
         chunk_size: int = 10,
         result: BackupResult | None = None,
+        retry: collections.abc.Sequence[int] = (),
+        resume: _UidResume | None = None,
     ) -> collections.abc.Generator[tuple[int, base.Fetched], None, None]:
-        done = 0
-        for msg_ids in utils.batched(message_ids, chunk_size):
+        """Fetch messages of the selected folder and yield them one by one.
+
+        The UIDs in `retry` lie behind the resume point and come first, one per
+        FETCH: a FETCH the server refuses fails its whole chunk, so one bad
+        message retried in a chunk would hold back the others with it for good.
+        `message_ids` follow in chunks of `chunk_size` and must be in ascending
+        order, because `resume` is told after each chunk that every UID up to
+        the end of it is dealt with.
+        """
+        chunks = [[uid] for uid in retry] + list(utils.batched(message_ids, chunk_size))
+        for position, msg_ids in enumerate(chunks):
             msg_ids_str = ", ".join([str(i) for i in msg_ids])
             log.debug("%s::%s: fetching %s", self.job_name, folder_name, msg_ids_str)
             try:
+                # Everything this chunk asks of the server happens here, before
+                # the first message is yielded: a chunk that fails is then one of
+                # which nothing was handed on.
                 answer = self.conn.fetch(msg_ids, self._fetch_items)
-                for msg_id, msg_data in answer.items():
-                    body = msg_data.get(WHOLE_MESSAGE_KEY)
-                    if not isinstance(body, bytes):
-                        # A FETCH the server answered without the message in it.
-                        # It is not a failure of the connection -- the rest of
-                        # the chunk arrives -- so this one message is counted
-                        # lost and named, rather than ending the folder.
-                        log.error(
-                            "%s::%s[%s]: the server sent no message body",
-                            self.job_name,
-                            folder_name,
-                            msg_id,
-                        )
-                        if result is not None:
-                            result.failed += 1
-                            result.unfetched.append(msg_id)
-                        continue
-                    yield msg_id, base.Fetched(body, self._places_from(msg_data, folder_name))
-                # A UID the answer leaves out was expunged since it was listed,
-                # or since it failed on an earlier run. Nothing to fetch.
-                for msg_id in msg_ids:
-                    if msg_id not in answer:
-                        log.info(
-                            "%s::%s[%s]: no longer in the folder",
-                            self.job_name,
-                            folder_name,
-                            msg_id,
-                        )
+                missing = [msg_id for msg_id in msg_ids if msg_id not in answer]
+                still_here = self._still_in_folder(folder_name, missing) if missing else set()
             except _CONNECTION_ERRORS as exc:
                 # Every later chunk would fail the same way, each with an error
-                # line of its own. The messages not fetched count as failed, so
-                # the resume point stays where it was.
-                lost = len(message_ids) - done
+                # line of its own.
+                left = [uid for chunk in chunks[position:] for uid in chunk]
                 utils.log_failure(
                     log,
                     exc,
                     "%s::%s: connection to the server lost, %s not fetched",
                     self.job_name,
                     folder_name,
-                    utils.counted(lost, "message"),
+                    utils.counted(len(left), "message"),
                 )
                 if result is not None:
-                    result.failed += lost
+                    _count_cut_off(result, left, set(retry))
                 return
             except imaplib.IMAP4.error as exc:
                 utils.log_failure(
@@ -438,11 +469,89 @@ class ImapClient:
                     msg_ids_str,
                 )
                 if result is not None:
-                    # fetch() returns the whole chunk at once, so nothing of it
-                    # was yielded before the failure.
                     result.failed += len(msg_ids)
                     result.unfetched.extend(msg_ids)
-            done += len(msg_ids)
+            else:
+                yield from self._hand_on(folder_name, answer, result)
+                self._settle_missing(folder_name, missing, still_here, result)
+            if resume is not None:
+                resume.covered(msg_ids)
+
+    def _hand_on(
+        self,
+        folder_name: str,
+        answer: dict[int, dict[bytes, Any]],
+        result: BackupResult | None,
+    ) -> collections.abc.Generator[tuple[int, base.Fetched], None, None]:
+        """Yield each message of one FETCH answer that came with its body."""
+        for msg_id, msg_data in answer.items():
+            body = msg_data.get(WHOLE_MESSAGE_KEY)
+            if not isinstance(body, bytes):
+                # A FETCH the server answered without the message in it. It is
+                # not a failure of the connection -- the rest of the chunk
+                # arrives -- so this one message is counted lost and named,
+                # rather than ending the folder.
+                log.error(
+                    "%s::%s[%s]: the server sent no message body",
+                    self.job_name,
+                    folder_name,
+                    msg_id,
+                )
+                if result is not None:
+                    result.failed += 1
+                    result.unfetched.append(msg_id)
+                continue
+            yield msg_id, base.Fetched(body, self._places_from(msg_data, folder_name))
+
+    def _still_in_folder(self, folder_name: str, uids: list[int]) -> set[int]:
+        """Which of `uids` the selected folder still holds, asked by UID SEARCH.
+
+        A NO or BAD answer counts every one of them as still there: that is the
+        answer that keeps them, while "gone" lets the resume point pass them.
+        """
+        try:
+            return set(self._search(["UID", ",".join(str(uid) for uid in uids)]))
+        except imaplib.IMAP4.abort:
+            raise
+        except imaplib.IMAP4.error as exc:
+            log.warning(
+                "%s::%s: cannot tell whether %s still there: %s",
+                self.job_name,
+                folder_name,
+                utils.counted(len(uids), "message is", "messages are"),
+                exc,
+            )
+            return set(uids)
+
+    def _settle_missing(
+        self,
+        folder_name: str,
+        missing: list[int],
+        still_here: set[int],
+        result: BackupResult | None,
+    ) -> None:
+        """Account for the UIDs a FETCH answer left out.
+
+        One the folder no longer holds was expunged since it was listed, or
+        since it failed on an earlier run, and there is nothing to fetch. One it
+        still holds was not handed over, and is counted like a message sent
+        without its body: the resume point passes it only as a UID to retry.
+        """
+        for msg_id in missing:
+            if msg_id not in still_here:
+                log.info(
+                    "%s::%s[%s]: no longer in the folder", self.job_name, folder_name, msg_id
+                )
+                continue
+            log.error(
+                "%s::%s[%s]: the server did not send the message",
+                self.job_name,
+                folder_name,
+                msg_id,
+            )
+            if result is not None:
+                result.failed += 1
+                result.unfetched.append(msg_id)
 
     def _release(self, folder_name: str) -> None:
         """UNSELECT the folder, tolerating a connection that is already gone.
@@ -542,9 +651,7 @@ class ImapClient:
         after export, and a torn run can never remove mail whose location was
         never written down. The folder is always unselected on exit.
 
-        The UIDs in `retry` come first, fetched one at a time. A FETCH that the
-        server refuses fails its whole chunk, so one bad message retried in a
-        chunk would hold back the others with it for good.
+        The UIDs in `retry` come first, see `_walk_folder`.
         """
         folder_info = self.conn.select_folder(folder_name, readonly=True)
         try:
@@ -559,7 +666,13 @@ class ImapClient:
                 return
             retrying = [uid for uid in map(_as_int, retry) if uid is not None]
             skip = set(retrying)
-            message_ids = [uid for uid in self._search_folder(above_uid) if uid not in skip]
+            # Sorted because the resume point relies on the walk being in
+            # ascending order (see `_UidResume.covered`). imapclient hands the
+            # SEARCH answer on in the order the server sent it, and RFC 3501
+            # promises no order.
+            message_ids = sorted(
+                uid for uid in self._search_folder(above_uid) if uid not in skip
+            )
             items_found = len(message_ids)
             if result is not None:
                 result.total = items_found + len(retrying)
@@ -580,10 +693,14 @@ class ImapClient:
                     folder_name,
                     utils.counted(len(retrying), "message"),
                 )
-                yield from self._walk_folder(folder_name, retrying, chunk_size=1, result=result)
-            for processed, (msg_id, fetched) in enumerate(
-                self._walk_folder(folder_name, message_ids, result=result), 1
-            ):
+            walk = self._walk_folder(
+                folder_name,
+                message_ids,
+                result=result,
+                retry=retrying,
+                resume=resume,
+            )
+            for processed, (msg_id, fetched) in enumerate(walk, 1):
                 yield msg_id, fetched
                 if processed % 100 == 0:
                     log.info(
@@ -591,7 +708,7 @@ class ImapClient:
                         self.job_name,
                         folder_name,
                         processed,
-                        items_found,
+                        items_found + len(retrying),
                     )
         except Exception as exc:
             log.error("%s::%s: %s", self.job_name, folder_name, exc)
