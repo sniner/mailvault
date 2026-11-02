@@ -106,10 +106,17 @@ def _make_job(**overrides: Any) -> conf.JobConfig:
 
 
 def _make_mock_client():
-    """Create a mock MailboxClient."""
+    """Create a mock MailboxClient.
+
+    Its `fetch_messages` asks `fetch_message` for one message after another, as
+    the Graph backend does, so a test sets up and counts single downloads.
+    """
     client = MagicMock()
     client.job_name = "test-job"
     client.folders.return_value = iter(["INBOX"])
+    client.fetch_messages.side_effect = lambda msg_ids, folder: base.fetch_each(
+        client.fetch_message, msg_ids, folder
+    )
     return client
 
 
@@ -907,6 +914,22 @@ class TestAFirstPassCutShort:
             _back_up_over(conn, tmp_path)
 
         assert len(_recorded(tmp_path)) == 10
+
+    def test_the_catch_up_after_ctrl_c_fetches_ten_at_a_time(self, tmp_path):
+        """Issue #19: on Gmail, a selection per message took 0.56 s against 0.12."""
+        conn, _bodies = _imap_conn(failure=KeyboardInterrupt())
+        with pytest.raises(KeyboardInterrupt):
+            _back_up_over(conn, tmp_path)
+
+        conn, bodies = _imap_conn()
+        report = _back_up_over(conn, tmp_path)
+
+        assert sorted(bodies) == list(range(11, FOLDER_SIZE + 1))
+        body_fetches = [
+            c.args[0] for c in conn.fetch.call_args_list if c.args[1] != ["ENVELOPE"]
+        ]
+        assert [len(uids) for uids in body_fetches] == [10, 10, 5]
+        assert report.complete
 
     def test_the_guard_lets_the_next_run_in(self, tmp_path):
         conn, _bodies = _imap_conn(failure=imaplib.IMAP4.abort("socket error: EOF"))

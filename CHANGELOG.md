@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **IMAP: comparing a folder with the archive fetches ten messages per request.** A backup does
+  this for a folder without a resume point, for example after an interrupted run, and `verify`
+  does it every time. The messages it has to download were fetched one at a time, and the folder
+  was selected again for each one. Against Gmail that took 0.56 s per message, now about 0.1 s
+
+### Fixed
+
+- **IMAP: a message missing from the server's answer is checked before it counts as deleted,
+  also when a folder is compared with the archive.** 0.23.0 did this only for the normal backup
+
 ## 0.23.0 (2026-11-02)
 
 ### Fixed

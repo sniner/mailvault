@@ -57,9 +57,9 @@ log = logging.getLogger(__name__)
 # is mounted on.
 ARCHIVE_PROGRESS_EVERY = 10_000
 SERVER_PROGRESS_EVERY = 5_000
-# Downloading is the slowest of the three by an order of magnitude -- a round
-# trip per message, measured at 131 ms over a real mailbox -- so it says where it
-# is far more often than the passes that only read.
+# Downloading is the slowest of the three by an order of magnitude -- 0.12 s per
+# message measured against Gmail, and a request per message on Graph -- so it
+# says where it is far more often than the passes that only read.
 FETCH_PROGRESS_EVERY = 250
 
 
@@ -385,48 +385,56 @@ class _Comparison:
         fail the same way, each with an error line of its own.
         """
         found: list[tuple[str, str]] = []
-        for position, (ref, key) in enumerate(wanted, start=1):
-            if position % FETCH_PROGRESS_EVERY == 0:
-                log.info(
-                    "%s: %s of %s fetched",
-                    self._ctx,
-                    f"{position:,}",
-                    f"{len(wanted):,}",
-                )
-            try:
-                store_id = self._compare_one(ref)
-            except base.ConnectionLost as exc:
-                not_fetched = len(wanted) - position + 1
-                utils.log_failure(
-                    log,
-                    exc,
-                    "%s: %s not fetched",
-                    self._ctx,
-                    utils.counted(not_fetched, "message"),
-                )
-                self._result.unchecked += not_fetched
-                self._result.failed += not_fetched
-                return None
-            if store_id is not None:
-                found.append((key, store_id))
+        listed = {ref.msg_id: (ref, key) for ref, key in wanted}
+        handled = 0
+        try:
+            outcomes = self._mb.fetch_messages(
+                [ref.msg_id for ref, _key in wanted], self._folder
+            )
+            for msg_id, outcome in outcomes:
+                handled += 1
+                ref, key = listed[msg_id]
+                store_id = self._compare_one(ref, outcome)
+                if store_id is not None:
+                    found.append((key, store_id))
+                if handled % FETCH_PROGRESS_EVERY == 0:
+                    log.info(
+                        "%s: %s of %s fetched",
+                        self._ctx,
+                        f"{handled:,}",
+                        f"{len(wanted):,}",
+                    )
+        except base.ConnectionLost as exc:
+            not_fetched = len(wanted) - handled
+            utils.log_failure(
+                log,
+                exc,
+                "%s: %s not fetched",
+                self._ctx,
+                utils.counted(not_fetched, "message"),
+            )
+            self._result.unchecked += not_fetched
+            self._result.failed += not_fetched
+            return None
         return found
 
-    def _compare_one(self, ref: base.MessageRef) -> str | None:
-        """Download one message; return its store id if it is archived here."""
+    def _compare_one(
+        self,
+        ref: base.MessageRef,
+        outcome: base.Fetched | Exception,
+    ) -> str | None:
+        """Settle one downloaded message; return its store id if it is archived here."""
         label = ref.message_id or ref.msg_id
-        try:
-            fetched = self._mb.fetch_message(ref.msg_id, self._folder)
-        except base.MessageGone:
+        if isinstance(outcome, base.MessageGone):
             log.info("%s: %s is no longer in the folder", self._ctx, label)
             return None
-        except base.ConnectionLost:
-            raise
-        except Exception as exc:
-            log.error("%s: download failed for %s: %s", self._ctx, label, exc)
+        if isinstance(outcome, Exception):
+            log.error("%s: download failed for %s: %s", self._ctx, label, outcome)
             self._result.unchecked += 1
             self._result.failed += 1
             self._result.unfetched.append(ref.msg_id)
             return None
+        fetched = outcome
         self._result.compared += 1
         store_id = self._store.hashval(fetched.body)
         if store_id in self._present:

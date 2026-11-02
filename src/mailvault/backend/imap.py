@@ -53,6 +53,12 @@ log = logging.getLogger(__name__)
 # Index page size for message_index(); only envelope metadata is fetched, no bodies.
 INDEX_CHUNK_SIZE = 500
 
+# Messages per FETCH when bodies are fetched. Measured against Gmail's All Mail
+# (2026-11-02, 20 messages each): 0.12 s per message in FETCHes of ten inside
+# one selection, 0.21 s with one FETCH per message, 0.56 s when every message
+# also gets a SELECT and an UNSELECT of its own.
+FETCH_CHUNK_SIZE = 10
+
 # The `kind` this backend stamps on the resume points it produces. A point
 # carrying any other kind belongs to a different backend and is read in full.
 UID_RESUME_KIND = "imap-uid"
@@ -419,7 +425,7 @@ class ImapClient:
         self,
         folder_name: str,
         message_ids: list[int],
-        chunk_size: int = 10,
+        chunk_size: int = FETCH_CHUNK_SIZE,
         result: BackupResult | None = None,
         retry: collections.abc.Sequence[int] = (),
         resume: _UidResume | None = None,
@@ -917,29 +923,82 @@ class ImapClient:
         finally:
             self._release(folder_name)
 
-    def fetch_message(self, msg_id: int, folder_name: str) -> base.Fetched:
-        """Fetch a single message by UID from the given folder, places included.
+    def fetch_messages(
+        self,
+        msg_ids: collections.abc.Sequence[int],
+        folder_name: str,
+    ) -> collections.abc.Generator[tuple[int, base.Fetched | Exception], None, None]:
+        """Fetch the given UIDs of one folder, places included, in one selection.
 
-        The repair path's read. It asks for exactly what `_walk_folder` asks for,
-        in one FETCH inside one selection -- where it used to fetch the body,
-        give the folder back, and select the same folder again to ask where the
-        message was.
+        The repair path's read. It asks for what `_walk_folder` asks for, in
+        FETCHes of `FETCH_CHUNK_SIZE` inside one selection. It used to select
+        the folder, fetch one message and unselect it again for every UID, which
+        on Gmail took more than four times as long per message.
 
-        Raises `base.ConnectionLost` when the connection is gone,
-        `base.MessageGone` when the folder no longer holds the UID, and
-        `MailboxError` when only this message could not be fetched.
+        See `base.MailboxClient.fetch_messages` for what is yielded and raised.
         """
         try:
             self.conn.select_folder(folder_name, readonly=True)
-            try:
-                msg_data = self.conn.fetch([msg_id], self._fetch_items).get(msg_id)
-            finally:
-                self._release(folder_name)
         except _CONNECTION_ERRORS as exc:
             raise base.ConnectionLost(f"connection to the server lost: {exc}") from exc
-        if msg_data is None:
-            raise base.MessageGone(f"{folder_name}[{msg_id}]: no longer in the folder")
-        body = msg_data.get(WHOLE_MESSAGE_KEY)
-        if not isinstance(body, bytes):
-            raise MailboxError(f"{folder_name}[{msg_id}]: the server sent no message body")
-        return base.Fetched(body, self._places_from(msg_data, folder_name))
+        except imaplib.IMAP4.error as exc:
+            # Counted per message, as a refused FETCH is: each of them is then
+            # asked for again on the next run.
+            refused = MailboxError(f"{folder_name}: cannot be selected: {exc}")
+            for msg_id in msg_ids:
+                yield msg_id, refused
+            return
+        try:
+            for chunk in utils.batched(msg_ids, FETCH_CHUNK_SIZE):
+                yield from self._fetch_chunk(folder_name, list(chunk))
+        finally:
+            self._release(folder_name)
+
+    def _fetch_chunk(
+        self,
+        folder_name: str,
+        uids: list[int],
+    ) -> collections.abc.Generator[tuple[int, base.Fetched | Exception], None, None]:
+        """One FETCH of the selected folder, with an outcome for each of `uids`."""
+        try:
+            answer = self.conn.fetch(uids, self._fetch_items)
+            missing = [uid for uid in uids if uid not in answer]
+            still_here = self._still_in_folder(folder_name, missing) if missing else set()
+        except _CONNECTION_ERRORS as exc:
+            raise base.ConnectionLost(f"connection to the server lost: {exc}") from exc
+        except imaplib.IMAP4.error as exc:
+            if len(uids) > 1:
+                # A refused FETCH fails every message in it. Asked for one at a
+                # time, only the message the server will not send fails.
+                for uid in uids:
+                    yield from self._fetch_chunk(folder_name, [uid])
+                return
+            yield uids[0], MailboxError(f"{folder_name}[{uids[0]}]: fetch refused: {exc}")
+            return
+        # Read by the UIDs asked for, not by the keys of the answer: imapclient
+        # files an unsolicited FETCH response, which carries no UID, under its
+        # sequence number, and that number need not be a UID of this request.
+        for uid in uids:
+            msg_data = answer.get(uid)
+            if msg_data is None:
+                if uid in still_here:
+                    yield (
+                        uid,
+                        MailboxError(
+                            f"{folder_name}[{uid}]: the server did not send the message"
+                        ),
+                    )
+                else:
+                    yield (
+                        uid,
+                        base.MessageGone(f"{folder_name}[{uid}]: no longer in the folder"),
+                    )
+                continue
+            body = msg_data.get(WHOLE_MESSAGE_KEY)
+            if not isinstance(body, bytes):
+                yield (
+                    uid,
+                    MailboxError(f"{folder_name}[{uid}]: the server sent no message body"),
+                )
+                continue
+            yield uid, base.Fetched(body, self._places_from(msg_data, folder_name))

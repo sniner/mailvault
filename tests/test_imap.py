@@ -646,17 +646,15 @@ class TestPlacesComeWithTheMessage:
         assert client._places_from(parsed[msg_id], "Newsletters") == ["Newsletters"]
 
     def test_the_repair_gets_body_and_places_out_of_one_fetch(self):
-        """One message at a time, and still one round trip: the repair used to
-        select the folder, fetch the body, release it, and then select the same
-        folder again to ask where the message was."""
+        """The repair used to select the folder, fetch the body, release it, and
+        then select the same folder again to ask where the message was."""
         conn = _make_mock_conn(capabilities=[b"IMAP4rev1", b"X-GM-EXT-1"])
         conn.fetch.return_value = {7: {b"BODY[]": DUMMY_EML, b"X-GM-LABELS": (b"Work",)}}
         client = _make_client(conn=conn)
 
-        fetched = client.fetch_message(7, "INBOX")
+        ((_uid, fetched),) = client.fetch_messages([7], "INBOX")
 
-        assert fetched.body == DUMMY_EML
-        assert fetched.places == ["Work", "INBOX"]
+        assert fetched == base.Fetched(DUMMY_EML, ["Work", "INBOX"])
         assert conn.fetch.call_count == 1
         conn.select_folder.assert_called_once_with("INBOX", readonly=True)
         conn.unselect_folder.assert_called_once()
@@ -1058,14 +1056,6 @@ class TestFolderBackup:
 
         assert result.resume_lost
         conn.fetch.assert_not_called()
-
-    def test_a_uid_no_longer_in_the_folder_is_gone(self):
-        conn = _make_mock_conn()
-        conn.fetch.return_value = {}
-        client = _make_client(conn=conn)
-
-        with pytest.raises(base.MessageGone):
-            client.fetch_message(7, "INBOX")
 
     def test_callback_receives_metadata(self, tmp_path):
         conn = _make_mock_conn()
@@ -1687,31 +1677,146 @@ class TestMessageIndex:
         conn.unselect_folder.assert_called_once()
 
 
-class TestFetchMessage:
-    def test_returns_raw_message(self):
+def _answer_for(uids, items):
+    """A FETCH answer that has every message asked for."""
+    return {uid: {b"BODY[]": _numbered_body(uid)} for uid in uids}
+
+
+def _numbered_body(uid: int) -> bytes:
+    return DUMMY_EML.replace(b"<test@example.com>", f"<{uid}@x>".encode())
+
+
+class TestFetchMessages:
+    def test_returns_the_message_and_its_folder(self):
         conn = _make_mock_conn()
         conn.fetch.return_value = {7: {b"BODY[]": DUMMY_EML}}
         client = _make_client(conn=conn)
 
-        assert client.fetch_message(7, "INBOX") == base.Fetched(DUMMY_EML, ["INBOX"])
-        conn.select_folder.assert_called_with("INBOX", readonly=True)
+        assert list(client.fetch_messages([7], "INBOX")) == [
+            (7, base.Fetched(DUMMY_EML, ["INBOX"]))
+        ]
+        conn.select_folder.assert_called_once_with("INBOX", readonly=True)
         conn.unselect_folder.assert_called_once()
 
-    def test_unknown_uid_raises(self):
+    def test_the_folder_is_selected_once_and_read_ten_at_a_time(self):
+        """Against Gmail, a selection of its own per message cost 0.56 s against 0.12."""
         conn = _make_mock_conn()
-        conn.fetch.return_value = {}
+        conn.fetch.side_effect = _answer_for
         client = _make_client(conn=conn)
 
-        with pytest.raises(imap.MailboxError):
-            client.fetch_message(7, "INBOX")
+        fetched = list(client.fetch_messages(list(range(1, 26)), "INBOX"))
 
-    @pytest.mark.parametrize("command", ["select_folder", "fetch"])
-    def test_a_lost_connection_is_reported_as_such(self, command):
-        """So that a caller fetching one message after another can stop at the first."""
+        assert [uid for uid, _outcome in fetched] == list(range(1, 26))
+        assert all(isinstance(outcome, base.Fetched) for _uid, outcome in fetched)
+        assert [len(c.args[0]) for c in conn.fetch.call_args_list] == [10, 10, 5]
+        conn.select_folder.assert_called_once()
+        conn.unselect_folder.assert_called_once()
+
+    def test_a_uid_no_longer_in_the_folder_is_gone(self):
         conn = _make_mock_conn()
+        conn.fetch.return_value = {}
+        conn.search.return_value = []
+        client = _make_client(conn=conn)
+
+        ((uid, outcome),) = client.fetch_messages([7], "INBOX")
+
+        assert uid == 7
+        assert isinstance(outcome, base.MessageGone)
+        assert conn.search.call_args.args[0] == ["UID", "7"]
+
+    def test_a_uid_left_out_but_still_held_is_a_failure(self):
+        """Taken for gone, it would never be asked for again."""
+        conn = _make_mock_conn()
+        conn.fetch.return_value = {}
+        conn.search.return_value = [7]
+        client = _make_client(conn=conn)
+
+        ((_uid, outcome),) = client.fetch_messages([7], "INBOX")
+
+        assert isinstance(outcome, imap.MailboxError)
+        assert not isinstance(outcome, base.MessageGone)
+        assert "did not send the message" in str(outcome)
+
+    def test_an_answer_without_the_body_is_a_failure(self):
+        conn = _make_mock_conn()
+        conn.fetch.return_value = {7: {b"FLAGS": ()}}
+        client = _make_client(conn=conn)
+
+        ((_uid, outcome),) = client.fetch_messages([7], "INBOX")
+
+        assert isinstance(outcome, imap.MailboxError)
+        assert "no message body" in str(outcome)
+
+    def test_an_unsolicited_response_is_not_an_outcome(self):
+        """imapclient files one under its sequence number, which was not asked for."""
+        conn = _make_mock_conn()
+        conn.fetch.return_value = {7: {b"BODY[]": DUMMY_EML}, 1: {b"FLAGS": (b"\\Seen",)}}
+        client = _make_client(conn=conn)
+
+        assert [uid for uid, _outcome in client.fetch_messages([7], "INBOX")] == [7]
+
+    def test_a_refused_fetch_is_asked_again_one_message_at_a_time(self):
+        """So that only the message the server will not send fails."""
+        conn = _make_mock_conn()
+
+        def fetch(uids, items):
+            if len(uids) > 1 or uids == [3]:
+                raise imaplib.IMAP4.error("FETCH failed")
+            return _answer_for(uids, items)
+
+        conn.fetch.side_effect = fetch
+        client = _make_client(conn=conn)
+
+        outcomes = dict(client.fetch_messages([1, 2, 3, 4], "INBOX"))
+
+        assert isinstance(outcomes[3], imap.MailboxError)
+        assert all(isinstance(outcomes[uid], base.Fetched) for uid in (1, 2, 4))
+        conn.select_folder.assert_called_once()
+
+    def test_a_refused_selection_fails_every_message(self):
+        conn = _make_mock_conn()
+        conn.select_folder.side_effect = imaplib.IMAP4.error("NO [NONEXISTENT] Unknown Mailbox")
+        client = _make_client(conn=conn)
+
+        outcomes = list(client.fetch_messages([1, 2], "Gone"))
+
+        assert [uid for uid, _outcome in outcomes] == [1, 2]
+        assert all(isinstance(outcome, imap.MailboxError) for _uid, outcome in outcomes)
+        conn.fetch.assert_not_called()
+
+    @pytest.mark.parametrize("command", ["select_folder", "fetch", "search"])
+    def test_a_lost_connection_is_reported_as_such(self, command):
+        """So that a caller working through a list of messages can stop there."""
+        conn = _make_mock_conn()
+        conn.fetch.return_value = {}
         getattr(conn, command).side_effect = imaplib.IMAP4.abort("socket error: EOF")
         conn.unselect_folder.side_effect = imaplib.IMAP4.abort("socket error: EOF")
         client = _make_client(conn=conn)
 
         with pytest.raises(base.ConnectionLost, match="socket error: EOF"):
-            client.fetch_message(7, "INBOX")
+            list(client.fetch_messages([7], "INBOX"))
+
+    def test_what_came_before_a_lost_connection_is_handed_on(self):
+        conn = _make_mock_conn()
+        conn.fetch.side_effect = [_answer_for(range(1, 11), []), OSError("connection reset")]
+        client = _make_client(conn=conn)
+        handed_on = []
+
+        with pytest.raises(base.ConnectionLost):
+            for uid, _outcome in client.fetch_messages(list(range(1, 16)), "INBOX"):
+                handed_on.append(uid)
+
+        assert handed_on == list(range(1, 11))
+        conn.unselect_folder.assert_called_once()
+
+    def test_the_folder_is_released_when_the_caller_stops(self):
+        conn = _make_mock_conn()
+        conn.fetch.side_effect = _answer_for
+        client = _make_client(conn=conn)
+
+        outcomes = client.fetch_messages(list(range(1, 26)), "INBOX")
+        next(outcomes)
+        outcomes.close()
+
+        conn.unselect_folder.assert_called_once()
+        assert conn.fetch.call_count == 1

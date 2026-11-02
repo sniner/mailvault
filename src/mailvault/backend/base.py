@@ -32,9 +32,9 @@ class MailboxError(Exception):
 class ConnectionLost(MailboxError):
     """The connection to the server is gone, so every further request fails too.
 
-    Raised by `fetch_message` instead of an ordinary per-message failure, so that
-    a caller fetching a list of messages one by one stops at the first of them.
-    Otherwise every remaining message fails in turn, with one error line each.
+    Raised by `fetch_messages` instead of an ordinary per-message failure, so that
+    a caller working through a list of messages stops there. Otherwise every
+    remaining message fails in turn, with one error line each.
     """
 
 
@@ -273,18 +273,44 @@ class MailboxClient(Protocol):
         """
         ...
 
-    def fetch_message(self, msg_id: Any, folder_name: str) -> Fetched:
-        """One message and its places, out of a single read.
+    def fetch_messages(
+        self,
+        msg_ids: collections.abc.Sequence[Any],
+        folder_name: str,
+    ) -> collections.abc.Generator[tuple[Any, Fetched | Exception], None, None]:
+        """Fetch the given messages of one folder, each with its places.
 
-        The repair path's way in: it works a message at a time, where the backup
-        walks a folder in chunks. Both come back with `Fetched`, and neither has
-        to ask a second time where the message belongs.
+        The repair path's way in, for the messages a listing named. Yields every
+        id in `msg_ids` once, with its `Fetched` or with the exception that says
+        why there is none: `MessageGone` when the server no longer has the
+        message, anything else when only this message failed. The order may
+        differ from `msg_ids`.
 
-        Raises `MessageGone` when the server no longer has the message.
+        Raises `ConnectionLost` when the connection is gone. The ids not yielded
+        by then were not fetched.
         """
         ...
 
     def close(self) -> None: ...
+
+
+def fetch_each(
+    fetch: collections.abc.Callable[[Any, str], Fetched],
+    msg_ids: collections.abc.Iterable[Any],
+    folder_name: str,
+) -> collections.abc.Generator[tuple[Any, Fetched | Exception], None, None]:
+    """`MailboxClient.fetch_messages` for a source that sends one message per request."""
+    for msg_id in msg_ids:
+        try:
+            fetched = fetch(msg_id, folder_name)
+        except ConnectionLost:
+            raise
+        except Exception as exc:
+            # Whatever went wrong with this one message is reported for it, and
+            # the others are still asked for.
+            yield msg_id, exc
+            continue
+        yield msg_id, fetched
 
 
 def store_message(
