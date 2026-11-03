@@ -67,6 +67,14 @@ Every other command asks first whether it is looking at an archive, and stops if
 it is not. An archive written before 0.10 needs `mailvault archive migrate` once
 -- the commands say so when it is due, and nothing is deleted.
 
+Keep the archive out of folders that iCloud Drive, OneDrive or Dropbox keep in
+sync. On a Mac this includes `Desktop` and `Documents` when "Desktop & Documents
+Folders" is turned on in the iCloud Drive settings. These services can remove
+the local copy of a file and download it again when it is read. A backup that
+compares a folder with the archive, and every `verify`, reads one file per
+archived message, and with tens of thousands of messages that can take hours
+instead of seconds.
+
 
 ## What goes into `mailvault.toml`
 
