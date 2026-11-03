@@ -1746,6 +1746,38 @@ class TestMessageIndex:
             list(client.message_index("INBOX"))
         conn.unselect_folder.assert_called_once()
 
+    def test_the_count_is_written_with_separators(self, caplog):
+        conn = _make_mock_conn()
+        conn.search.return_value = list(range(1, 1_001))
+        client = _make_client(conn=conn)
+
+        with caplog.at_level(logging.INFO):
+            list(client.message_index("INBOX"))
+
+        assert "INBOX: indexing 1,000 messages" in caplog.text
+
+
+class TestResumePoint:
+    def test_it_is_the_highest_uid(self):
+        conn = _make_mock_conn()
+        conn.select_folder.return_value = {b"EXISTS": 3, b"UIDVALIDITY": 42}
+        conn.search.return_value = [3, 9, 5]
+
+        assert _make_client(conn=conn).resume_point("INBOX") == _uid_point(9)
+        conn.unselect_folder.assert_called_once()
+
+    def test_a_lost_connection_is_reported_as_itself(self):
+        """Not as the error of the UNSELECT on the way out, which only refers to it."""
+        conn = _make_mock_conn()
+        conn.select_folder.return_value = {b"EXISTS": 3, b"UIDVALIDITY": 42}
+        conn.search.side_effect = TimeoutError("timed out")
+        conn.unselect_folder.side_effect = imaplib.IMAP4.abort(
+            "closed after an earlier error: timed out"
+        )
+
+        with pytest.raises(TimeoutError):
+            _make_client(conn=conn).resume_point("INBOX")
+
 
 def _answer_for(uids, items):
     """A FETCH answer that has every message asked for."""

@@ -932,7 +932,7 @@ class ImapClient:
                 "uid": max(uids),
             }
         finally:
-            self.conn.unselect_folder()
+            self._release(folder_name)
 
     def message_index(
         self,
@@ -943,10 +943,10 @@ class ImapClient:
         try:
             message_ids = self._search_folder()
             log.info(
-                "%s::%s: indexing %s messages",
+                "%s::%s: indexing %s",
                 self.job_name,
                 folder_name,
-                len(message_ids),
+                utils.counted(len(message_ids), "message"),
             )
             for chunk in utils.batched(message_ids, INDEX_CHUNK_SIZE):
                 try:
