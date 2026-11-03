@@ -11,6 +11,7 @@ repair cycle, which every unit test has only ever seen one piece of.
 
 from __future__ import annotations
 
+import dataclasses
 import pathlib
 import socket
 
@@ -19,7 +20,7 @@ import pytest
 
 from mailvault import jobs
 from mailvault.backend import imap
-from mailvault.jobs import guard
+from mailvault.jobs import guard, reconcile
 from mailvault.store import cas, heads, marker, metalog
 from tests.integration import corpus
 
@@ -313,6 +314,44 @@ class TestAFirstBackupThatBreaksOff:
         # Carried on from the resume point: no listing of the folder by Message-ID.
         assert ["ENVELOPE"] not in asked_for
         assert _places(archive / metalog.DEFAULT_LOG_DIR) == {(user, "INBOX"): 25}
+        assert jobs.check(archive).sound
+
+
+class TestALongReadOfTheArchive:
+    def test_the_connection_is_used_between_two_reads(self, dovecot, tmp_path, monkeypatch):
+        """Issue #19: the catch-up read the archive for 95 minutes and lost the server."""
+        user = "keepalive"
+        _fill(dovecot, user, "INBOX", corpus.numbered(10))
+        archive = _archive(tmp_path)
+        job = dovecot.job(user, ["INBOX"])
+        jobs.backup(job, archive)
+
+        # No resume point, as after an interrupted first backup, and one message
+        # the archive does not hold: the next backup compares the folder.
+        heads_root = archive / heads.DEFAULT_HEADS_DIR
+        head = heads.read(heads_root, job.name, "INBOX")
+        assert head is not None
+        heads.write(heads_root, dataclasses.replace(head, resume=None))
+        _fill(dovecot, user, "INBOX", [corpus.IN_TWO_PLACES])
+
+        monkeypatch.setattr(reconcile, "KEEP_ALIVE_EVERY", 0)
+        real_noop = imapclient.IMAPClient.noop
+        answered = 0
+
+        def noop_and_count(self):
+            nonlocal answered
+            answer = real_noop(self)
+            answered += 1
+            return answer
+
+        monkeypatch.setattr(imapclient.IMAPClient, "noop", noop_and_count)
+        report = jobs.backup(job, archive)
+
+        assert answered == 10, "one NOOP before each of the ten archived messages"
+        assert report.complete
+        assert report.stored == 1
+        head = heads.read(heads_root, job.name, "INBOX")
+        assert head is not None and head.resume is not None
         assert jobs.check(archive).sound
 
 
