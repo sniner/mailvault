@@ -554,9 +554,10 @@ class MSGraphClient:
         self,
         msg_ids: collections.abc.Sequence[str],
         folder_name: str,
+        retry: collections.abc.Sequence[str] = (),
     ) -> collections.abc.Generator[tuple[str, base.Fetched | Exception], None, None]:
         """Fetch the given messages one per request, which is all Graph offers."""
-        yield from base.fetch_each(self.fetch_message, msg_ids, folder_name)
+        yield from base.fetch_each(self.fetch_message, [*msg_ids, *retry], folder_name)
 
     def _graph_delete(self, msg_id: str) -> None:
         """Delete one message, softly or for good depending on the job.

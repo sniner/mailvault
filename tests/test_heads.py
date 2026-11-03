@@ -296,13 +296,14 @@ class TestADamagedHead:
         assert got.resume == UID
         assert got.pending == []
 
-    def test_failed_messages_without_a_resume_point_are_dropped(self, tmp_path):
+    def test_failed_messages_without_a_resume_point_are_kept(self, tmp_path):
+        """The next pass compares the folder with the archive and asks for them last."""
         self._write_raw(
             tmp_path,
             json.dumps({"version": 1, "job": "j", "folder": "f", "pending": [3]}),
         )
 
-        assert _read(tmp_path, "j", "f").pending == []
+        assert _read(tmp_path, "j", "f").pending == [3]
 
     def test_an_unparsable_timestamp_is_not_a_date(self, tmp_path, caplog):
         heads.write(tmp_path, heads.Head(job="j", folder="f", last_run="letzten Dienstag"))

@@ -47,6 +47,16 @@ FETCH_CHUNK_SIZE = 10
 CONNECT_TIMEOUT = 30.0
 READ_TIMEOUT = 300.0
 
+# How many FETCHes of message bodies one pass over a folder may set aside
+# because the server did not answer them within `READ_TIMEOUT`. A server that
+# hangs on one particular message instead of refusing it would otherwise end
+# every run at that message. So after such a timeout the client reconnects,
+# names the UIDs of that FETCH for the next run, and goes on with the rest. The
+# FETCH right after a reconnect has to be answered: if that one times out too,
+# the server has stopped answering altogether, and the pass ends as on a lost
+# connection. Each set-aside costs a full `READ_TIMEOUT`, hence the limit.
+MAX_STALLS = 3
+
 # The `kind` this backend stamps on the resume points it produces. A point
 # carrying any other kind belongs to a different backend and is read in full.
 UID_RESUME_KIND = "imap-uid"
@@ -160,6 +170,41 @@ def _count_cut_off(
     result.failed += len(named)
     result.unfetched.extend(named)
     result.cut_off += len(left) - len(named)
+
+
+def _name_unfetched(result: BackupResult | None, uids: collections.abc.Sequence[int]) -> None:
+    """Count `uids` as failed and name them, to be fetched again next run."""
+    if result is not None:
+        result.failed += len(uids)
+        result.unfetched.extend(uids)
+
+
+def _read_timed_out(exc: BaseException) -> bool:
+    """True when the server sent nothing for `READ_TIMEOUT` after a request.
+
+    Python raises a TimeoutError without an errno for that, over TLS as well.
+    The TCP stack's ETIMEDOUT ("Operation timed out") is a TimeoutError too,
+    but with an errno: the data sent was never acknowledged. That connection
+    is lost, and the messages asked for are not to blame.
+    """
+    return isinstance(exc, TimeoutError) and exc.errno is None
+
+
+class _Stalls:
+    """The FETCHes one pass has set aside so far, see `MAX_STALLS`."""
+
+    def __init__(self) -> None:
+        self.count = 0
+        # The last FETCH was set aside and no FETCH has been answered since.
+        self.unanswered = False
+
+    def set_aside(self) -> None:
+        self.count += 1
+        self.unanswered = True
+
+    def answered(self) -> None:
+        """Note a FETCH the server answered, with the messages or with a refusal."""
+        self.unanswered = False
 
 
 class _UidResume:
@@ -291,6 +336,88 @@ def _uid_point(resume: dict[str, Any] | None) -> tuple[int, int] | None:
     return validity, uid
 
 
+def _open(job: conf.JobConfig) -> imapclient.IMAPClient:
+    """The logged-in connection `ImapClient.connect` describes."""
+    # An empty password is never a credential worth trying, and it is what
+    # a failed `password_cmd` leaves behind (its error is logged when the
+    # configuration is read). Sending it produces whatever the server makes
+    # of a login with nothing in it -- iCloud answers with its LOGIN syntax,
+    # which says nothing about the cause. So the cause is named here instead.
+    if not job.password:
+        raise MailboxError(
+            f"no password for '{job.username}': set 'password' or 'password_cmd' in the job"
+        )
+
+    if job.tls:
+        tls_context = ssl.create_default_context()
+        if not job.tls_check_hostname:
+            log.warning("%s: TLS hostname check disabled", job.name)
+            tls_context.check_hostname = False
+        if not job.tls_verify_cert:
+            log.warning("%s: TLS certificate verification disabled", job.name)
+            tls_context.verify_mode = ssl.CERT_NONE
+    else:
+        log.warning("%s: TLS disabled, connection is unencrypted", job.name)
+        tls_context = None
+
+    try:
+        conn = imapclient.IMAPClient(
+            host=job.server,
+            port=job.port,
+            ssl=job.tls,
+            ssl_context=tls_context,
+            # Said out loud although it is imapclient's default, because
+            # everything this backend remembers between runs rests on it.
+            # Without it SEARCH and FETCH speak sequence numbers, which are
+            # positions in the folder and shift as soon as a message is
+            # deleted -- so a resume point written as a UID would name a
+            # different message on the next run, and the messages it skipped
+            # would sit below it for good. UIDVALIDITY would go on matching
+            # and say nothing was wrong. The one guard against silently
+            # skipped mail is that these ids are UIDs; that is not a default
+            # to inherit quietly.
+            use_uid=True,
+            # Annotated as `float | None`; the docstring and the code take a
+            # SocketTimeout as well, which is the only way to give the two
+            # timeouts different values.
+            timeout=imapclient.SocketTimeout(  # type: ignore[arg-type]
+                connect=CONNECT_TIMEOUT,
+                read=READ_TIMEOUT,
+            ),
+        )
+        # Off, and imapclient's default is on. On, it converts every
+        # timestamp it parses to the local time of whatever machine is
+        # running the backup and then drops the zone -- so the same message
+        # answers differently read from a laptop and from the NAS, and what
+        # comes out cannot be subtracted from an aware `now()` at all. Off,
+        # the datetime carries the offset the wire carried. See
+        # `base.MessageRef.date` for what the archive is owed.
+        conn.normalise_times = False
+    except (OSError, imaplib.IMAP4.error) as exc:
+        # OSError covers the lot below the protocol: DNS, refused
+        # connections, timeouts, and ssl.SSLError for a certificate the
+        # server could not prove.
+        raise MailboxError(f"cannot connect to {job.server}:{job.port}: {exc}") from exc
+
+    try:
+        conn.login(job.username, job.password)
+    except (*_CONNECTION_ERRORS, imaplib.IMAP4.error) as exc:
+        try:
+            conn.shutdown()
+        except Exception as close_exc:
+            log.debug("%s: closing the connection failed: %s", job.name, close_exc)
+        if isinstance(exc, _CONNECTION_ERRORS):
+            # A server that does not answer the login: the read timeout
+            # raises here.
+            raise MailboxError(f"cannot log in to {job.server}:{job.port}: {exc}") from exc
+        # imapclient's LoginError is an IMAP4.error, and carries the
+        # server's own wording ("no such user", "authentication failed") --
+        # which is the whole message worth reporting.
+        raise MailboxError(f"login refused for '{job.username}': {exc}") from exc
+    # It forwards every call, and is no IMAPClient only to the type checker.
+    return typing.cast(imapclient.IMAPClient, _Connection(conn))
+
+
 class ImapClient:
     """The IMAP implementation of `MailboxClient`, wrapping an `imapclient` connection.
 
@@ -329,84 +456,7 @@ class ImapClient:
         server said what was wrong -- and the caller reports them as one line
         rather than a traceback through `imapclient`.
         """
-        # An empty password is never a credential worth trying, and it is what
-        # a failed `password_cmd` leaves behind (its error is logged when the
-        # configuration is read). Sending it produces whatever the server makes
-        # of a login with nothing in it -- iCloud answers with its LOGIN syntax,
-        # which says nothing about the cause. So the cause is named here instead.
-        if not job.password:
-            raise MailboxError(
-                f"no password for '{job.username}': set 'password' or 'password_cmd' in the job"
-            )
-
-        if job.tls:
-            tls_context = ssl.create_default_context()
-            if not job.tls_check_hostname:
-                log.warning("%s: TLS hostname check disabled", job.name)
-                tls_context.check_hostname = False
-            if not job.tls_verify_cert:
-                log.warning("%s: TLS certificate verification disabled", job.name)
-                tls_context.verify_mode = ssl.CERT_NONE
-        else:
-            log.warning("%s: TLS disabled, connection is unencrypted", job.name)
-            tls_context = None
-
-        try:
-            conn = imapclient.IMAPClient(
-                host=job.server,
-                port=job.port,
-                ssl=job.tls,
-                ssl_context=tls_context,
-                # Said out loud although it is imapclient's default, because
-                # everything this backend remembers between runs rests on it.
-                # Without it SEARCH and FETCH speak sequence numbers, which are
-                # positions in the folder and shift as soon as a message is
-                # deleted -- so a resume point written as a UID would name a
-                # different message on the next run, and the messages it skipped
-                # would sit below it for good. UIDVALIDITY would go on matching
-                # and say nothing was wrong. The one guard against silently
-                # skipped mail is that these ids are UIDs; that is not a default
-                # to inherit quietly.
-                use_uid=True,
-                # Annotated as `float | None`; the docstring and the code take a
-                # SocketTimeout as well, which is the only way to give the two
-                # timeouts different values.
-                timeout=imapclient.SocketTimeout(  # type: ignore[arg-type]
-                    connect=CONNECT_TIMEOUT,
-                    read=READ_TIMEOUT,
-                ),
-            )
-            # Off, and imapclient's default is on. On, it converts every
-            # timestamp it parses to the local time of whatever machine is
-            # running the backup and then drops the zone -- so the same message
-            # answers differently read from a laptop and from the NAS, and what
-            # comes out cannot be subtracted from an aware `now()` at all. Off,
-            # the datetime carries the offset the wire carried. See
-            # `base.MessageRef.date` for what the archive is owed.
-            conn.normalise_times = False
-        except (OSError, imaplib.IMAP4.error) as exc:
-            # OSError covers the lot below the protocol: DNS, refused
-            # connections, timeouts, and ssl.SSLError for a certificate the
-            # server could not prove.
-            raise MailboxError(f"cannot connect to {job.server}:{job.port}: {exc}") from exc
-
-        try:
-            conn.login(job.username, job.password)
-        except (*_CONNECTION_ERRORS, imaplib.IMAP4.error) as exc:
-            try:
-                conn.shutdown()
-            except Exception as close_exc:
-                log.debug("%s: closing the connection failed: %s", job.name, close_exc)
-            if isinstance(exc, _CONNECTION_ERRORS):
-                # A server that does not answer the login: the read timeout
-                # raises here.
-                raise MailboxError(f"cannot log in to {job.server}:{job.port}: {exc}") from exc
-            # imapclient's LoginError is an IMAP4.error, and carries the
-            # server's own wording ("no such user", "authentication failed") --
-            # which is the whole message worth reporting.
-            raise MailboxError(f"login refused for '{job.username}': {exc}") from exc
-        # It forwards every call, and is no IMAPClient only to the type checker.
-        return cls(typing.cast(imapclient.IMAPClient, _Connection(conn)), job)
+        return cls(_open(job), job)
 
     @property
     def connection_lost(self) -> bool:
@@ -430,6 +480,52 @@ class ImapClient:
             self.conn.logout()
         except Exception as exc:
             log.debug("%s: logout failed: %s", self.job_name, exc)
+
+    def _reopen(
+        self,
+        folder_name: str,
+        uids: collections.abc.Sequence[int],
+        exc: BaseException,
+        stalls: _Stalls,
+        uidvalidity: int | None,
+    ) -> bool:
+        """Reconnect after a FETCH of `uids` that failed with `exc`, see `MAX_STALLS`.
+
+        True when the pass may go on without `uids`, on a new connection with
+        the folder selected again. False when it has to end as on a lost
+        connection: `exc` is no read timeout, the FETCH before was set aside
+        as well, the limit is reached, or the folder cannot be selected again
+        under the same `uidvalidity`, without which the UIDs still to be
+        fetched would name other messages.
+        """
+        ctx = f"{self.job_name}::{folder_name}"
+        if not _read_timed_out(exc) or stalls.unanswered:
+            return False
+        if stalls.count >= MAX_STALLS:
+            log.warning(
+                "%s: the server left %s unanswered, not reconnecting again",
+                ctx,
+                utils.counted(stalls.count + 1, "request"),
+            )
+            return False
+        log.warning(
+            "%s[%s]: no answer from the server within %s seconds, fetched again next"
+            " run; reconnecting",
+            ctx,
+            ", ".join(str(uid) for uid in uids),
+            f"{READ_TIMEOUT:g}",
+        )
+        try:
+            self.conn = _open(self.job)
+            folder_info = self.conn.select_folder(folder_name, readonly=True)
+        except (MailboxError, *_CONNECTION_ERRORS, imaplib.IMAP4.error) as reopen_exc:
+            utils.log_failure(log, reopen_exc, "%s: reconnecting failed", ctx)
+            return False
+        if uidvalidity is not None and _as_int(folder_info.get(b"UIDVALIDITY")) != uidvalidity:
+            log.warning("%s: UIDVALIDITY changed while reconnecting", ctx)
+            return False
+        stalls.set_aside()
+        return True
 
     @staticmethod
     def _isfoldertype(folder: tuple, *flags: str) -> str | None:
@@ -494,56 +590,83 @@ class ImapClient:
     ) -> collections.abc.Generator[tuple[int, base.Fetched], None, None]:
         """Fetch messages of the selected folder and yield them one by one.
 
-        The UIDs in `retry` lie behind the resume point and come first, one per
-        FETCH: a FETCH the server refuses fails its whole chunk, so one bad
-        message retried in a chunk would hold back the others with it for good.
-        `message_ids` follow in chunks of `chunk_size` and must be in ascending
+        `message_ids` come in chunks of `chunk_size` and must be in ascending
         order, because `resume` is told after each chunk that every UID up to
-        the end of it is dealt with.
+        the end of it is dealt with. The UIDs in `retry` lie behind the resume
+        point and follow, one per FETCH: a FETCH the server refuses fails its
+        whole chunk, so one bad message retried in a chunk would hold back the
+        others with it for good. They come last so that messages which fail on
+        every run cannot use up `MAX_STALLS` before the new mail is fetched.
+
+        The UIDs of a FETCH set aside after a timeout go to the end of
+        `result.unfetched`, behind the ones this pass did not get to. The next
+        pass retries in that order, so a few messages that hang every time
+        cannot keep the others behind them from ever being asked for.
         """
-        chunks = [[uid] for uid in retry] + list(utils.batched(message_ids, chunk_size))
-        for position, msg_ids in enumerate(chunks):
-            msg_ids_str = ", ".join([str(i) for i in msg_ids])
-            log.debug("%s::%s: fetching %s", self.job_name, folder_name, msg_ids_str)
-            try:
-                # Everything this chunk asks of the server happens here, before
-                # the first message is yielded: a chunk that fails is then one of
-                # which nothing was handed on.
-                answer = self.conn.fetch(msg_ids, self._fetch_items)
-                missing = [msg_id for msg_id in msg_ids if msg_id not in answer]
-                still_here = self._still_in_folder(folder_name, missing) if missing else set()
-            except _CONNECTION_ERRORS as exc:
-                # Every later chunk would fail the same way, each with an error
-                # line of its own.
-                left = [uid for chunk in chunks[position:] for uid in chunk]
-                utils.log_failure(
-                    log,
-                    exc,
-                    "%s::%s: connection to the server lost, %s not fetched",
-                    self.job_name,
-                    folder_name,
-                    utils.counted(len(left), "message"),
-                )
-                if result is not None:
-                    _count_cut_off(result, left, set(retry))
-                return
-            except imaplib.IMAP4.error as exc:
-                utils.log_failure(
-                    log,
-                    exc,
-                    "%s::%s[%s]: fetch failed",
-                    self.job_name,
-                    folder_name,
-                    msg_ids_str,
-                )
-                if result is not None:
-                    result.failed += len(msg_ids)
-                    result.unfetched.extend(msg_ids)
-            else:
-                yield from self._hand_on(folder_name, answer, result)
-                self._settle_missing(folder_name, missing, still_here, result)
-            if resume is not None:
-                resume.covered(msg_ids)
+        chunks = list(utils.batched(message_ids, chunk_size)) + [[uid] for uid in retry]
+        uidvalidity = resume.uidvalidity if resume is not None else None
+        stalls = _Stalls()
+        set_aside: list[int] = []
+        try:
+            for position, msg_ids in enumerate(chunks):
+                msg_ids_str = ", ".join([str(i) for i in msg_ids])
+                log.debug("%s::%s: fetching %s", self.job_name, folder_name, msg_ids_str)
+                try:
+                    # Everything this chunk asks of the server happens here,
+                    # before the first message is yielded: a chunk that fails is
+                    # then one of which nothing was handed on.
+                    answer = self.conn.fetch(msg_ids, self._fetch_items)
+                    missing = [msg_id for msg_id in msg_ids if msg_id not in answer]
+                    still_here = (
+                        self._still_in_folder(folder_name, missing) if missing else set()
+                    )
+                except _CONNECTION_ERRORS as exc:
+                    if not self._reopen(folder_name, msg_ids, exc, stalls, uidvalidity):
+                        left = [uid for chunk in chunks[position:] for uid in chunk]
+                        self._cut_off(folder_name, exc, left, set(retry), result)
+                        return
+                    set_aside.extend(msg_ids)
+                except imaplib.IMAP4.error as exc:
+                    stalls.answered()
+                    utils.log_failure(
+                        log,
+                        exc,
+                        "%s::%s[%s]: fetch failed",
+                        self.job_name,
+                        folder_name,
+                        msg_ids_str,
+                    )
+                    _name_unfetched(result, msg_ids)
+                else:
+                    stalls.answered()
+                    yield from self._hand_on(folder_name, answer, result)
+                    self._settle_missing(folder_name, missing, still_here, result)
+                if resume is not None:
+                    resume.covered(msg_ids)
+        finally:
+            _name_unfetched(result, set_aside)
+
+    def _cut_off(
+        self,
+        folder_name: str,
+        exc: BaseException,
+        left: list[int],
+        behind: collections.abc.Set[int],
+        result: BackupResult | None,
+    ) -> None:
+        """End a walk whose connection is lost, with `left` not fetched."""
+        # Every later chunk would fail the same way, each with an error line of
+        # its own.
+        utils.log_failure(
+            log,
+            exc,
+            "%s::%s: connection to the server lost, %s not fetched",
+            self.job_name,
+            folder_name,
+            utils.counted(len(left), "message"),
+        )
+        if result is not None:
+            _count_cut_off(result, left, behind)
 
     def _hand_on(
         self,
@@ -719,7 +842,7 @@ class ImapClient:
         after export, and a torn run can never remove mail whose location was
         never written down. The folder is always unselected on exit.
 
-        The UIDs in `retry` come first, see `_walk_folder`.
+        The UIDs in `retry` come last, see `_walk_folder`.
         """
         folder_info = self.conn.select_folder(folder_name, readonly=True)
         try:
@@ -989,6 +1112,7 @@ class ImapClient:
         self,
         msg_ids: collections.abc.Sequence[int],
         folder_name: str,
+        retry: collections.abc.Sequence[int] = (),
     ) -> collections.abc.Generator[tuple[int, base.Fetched | Exception], None, None]:
         """Fetch the given UIDs of one folder, places included, in one selection.
 
@@ -1000,19 +1124,22 @@ class ImapClient:
         See `base.MailboxClient.fetch_messages` for what is yielded and raised.
         """
         try:
-            self.conn.select_folder(folder_name, readonly=True)
+            folder_info = self.conn.select_folder(folder_name, readonly=True)
         except _CONNECTION_ERRORS as exc:
             raise base.ConnectionLost(f"connection to the server lost: {exc}") from exc
         except imaplib.IMAP4.error as exc:
             # Counted per message, as a refused FETCH is: each of them is then
             # asked for again on the next run.
             refused = MailboxError(f"{folder_name}: cannot be selected: {exc}")
-            for msg_id in msg_ids:
+            for msg_id in [*msg_ids, *retry]:
                 yield msg_id, refused
             return
+        uidvalidity = _as_int(folder_info.get(b"UIDVALIDITY"))
+        stalls = _Stalls()
+        chunks = list(utils.batched(msg_ids, FETCH_CHUNK_SIZE)) + [[uid] for uid in retry]
         try:
-            for chunk in utils.batched(msg_ids, FETCH_CHUNK_SIZE):
-                yield from self._fetch_chunk(folder_name, list(chunk))
+            for chunk in chunks:
+                yield from self._fetch_chunk(folder_name, list(chunk), stalls, uidvalidity)
         finally:
             self._release(folder_name)
 
@@ -1020,23 +1147,35 @@ class ImapClient:
         self,
         folder_name: str,
         uids: list[int],
+        stalls: _Stalls,
+        uidvalidity: int | None,
     ) -> collections.abc.Generator[tuple[int, base.Fetched | Exception], None, None]:
-        """One FETCH of the selected folder, with an outcome for each of `uids`."""
+        """One FETCH of the selected folder, with an outcome for each of `uids`.
+
+        A FETCH set aside after a timeout (see `MAX_STALLS`) fails each of its
+        messages, so that a backup names them for the next run.
+        """
         try:
             answer = self.conn.fetch(uids, self._fetch_items)
             missing = [uid for uid in uids if uid not in answer]
             still_here = self._still_in_folder(folder_name, missing) if missing else set()
         except _CONNECTION_ERRORS as exc:
-            raise base.ConnectionLost(f"connection to the server lost: {exc}") from exc
+            if not self._reopen(folder_name, uids, exc, stalls, uidvalidity):
+                raise base.ConnectionLost(f"connection to the server lost: {exc}") from exc
+            for uid in uids:
+                yield uid, MailboxError(f"{folder_name}[{uid}]: no answer from the server")
+            return
         except imaplib.IMAP4.error as exc:
+            stalls.answered()
             if len(uids) > 1:
                 # A refused FETCH fails every message in it. Asked for one at a
                 # time, only the message the server will not send fails.
                 for uid in uids:
-                    yield from self._fetch_chunk(folder_name, [uid])
+                    yield from self._fetch_chunk(folder_name, [uid], stalls, uidvalidity)
                 return
             yield uids[0], MailboxError(f"{folder_name}[{uids[0]}]: fetch refused: {exc}")
             return
+        stalls.answered()
         # Read by the UIDs asked for, not by the keys of the answer: imapclient
         # files an unsolicited FETCH response, which carries no UID, under its
         # sequence number, and that number need not be a UID of this request.

@@ -243,9 +243,10 @@ class Head:
     # hash lives in files whose names *are* their hashes, so one value here
     # vouches for all of them. A list would be unattested.
     log: str | None = None
-    # Backend ids of messages behind `resume` that the server would not hand
-    # over, fetched again by the next pass. Only meaningful with `resume`, and
-    # forgotten with it.
+    # Backend ids of messages the server would not hand over. With `resume`
+    # they lie behind it and the next pass fetches them again by id. Without
+    # one the next pass compares the folder with the archive and asks for
+    # these last.
     pending: list[str | int] = dataclasses.field(default_factory=list)
 
     def last_run_at(self) -> datetime | None:
@@ -360,8 +361,6 @@ def _decode(path: pathlib.Path, payload: object) -> Head | None:
             where(path),
         )
         resume = None
-        pending = []
-    if resume is None:
         pending = []
 
     chain = payload.get("log")

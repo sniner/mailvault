@@ -241,6 +241,7 @@ def reconcile_folder(
     job_name: str,
     folder: str,
     repair: bool = False,
+    last: collections.abc.Collection[Any] = (),
 ) -> ReconcileResult:
     """List one folder, compare it against the archive, and settle what is unclear.
 
@@ -249,6 +250,10 @@ def reconcile_folder(
     `verify` does on its own. With it true the missing messages are stored and
     their locations written to the log, which makes this a full read that skips
     what is already there.
+
+    `last` names backend ids that failed on an earlier pass. They are
+    downloaded after the others, so that messages the server never sends
+    cannot end every pass before it gets to the rest.
     """
     ctx = f"{job_name}::{folder}"
     # Said before the work, not after it: this reads one header per archived
@@ -263,7 +268,7 @@ def reconcile_folder(
     result.on_server = len(listed)
 
     if not repair:
-        _Comparison(mb, store, job_name, folder, present, result).run(listed)
+        _Comparison(mb, store, job_name, folder, present, result).run(listed, last)
     else:
         # The log is written in batches and once more on the way out, however
         # the loop ends: a catch-up after an interrupted first backup can run
@@ -271,7 +276,7 @@ def reconcile_folder(
         with PassLog(log_root, heads_root, datetime.now(UTC)) as pass_log:
             comparison = _Comparison(mb, store, job_name, folder, present, result)
             comparison.repair_into(pass_log, set(archived))
-            comparison.run(listed)
+            comparison.run(listed, last)
         # Whether the locations reached disk is the caller's business: a pass
         # that fetched every message and could not write down where any of them
         # belongs must not move a resume point past them.
@@ -351,17 +356,24 @@ class _Comparison:
         self._pass_log = pass_log
         self._recorded = recorded
 
-    def run(self, listed: list[tuple[base.MessageRef, str]]) -> None:
+    def run(
+        self,
+        listed: list[tuple[base.MessageRef, str]],
+        last: collections.abc.Collection[Any] = (),
+    ) -> None:
         """Compare in rounds until the Message-ID settles everything not downloaded.
 
-        A round downloads every message the ids do not settle. One that turns
-        out to be an archived message the server lists under another id takes
-        that message out of the count for the id it carries, and the next round
-        asks the ledger again about the messages not downloaded yet. Each round
-        downloads at least one message, so the loop ends.
+        A round downloads every message the ids do not settle, those in `last`
+        after the others and one at a time (see `base.MailboxClient.fetch_messages`).
+        One that turns out to be an archived message the server lists under
+        another id takes that message out of the count for the id it carries,
+        and the next round asks the ledger again about the messages not
+        downloaded yet. Each round downloads at least one message, so the loop
+        ends.
         """
         counts = collections.Counter(key for key in self._present.values() if key)
         withdrawn: set[str] = set()
+        put_last = set(last)
         pending = listed
         first = True
         while pending:
@@ -372,7 +384,7 @@ class _Comparison:
             self._announce(matches, first)
             first = False
             pending = [item for item, m in zip(pending, matches) if m is Match.ARCHIVED]
-            found = self._compare(wanted)
+            found = self._compare(wanted, put_last)
             if found is None:
                 return
             for key, store_id in found:
@@ -417,8 +429,9 @@ class _Comparison:
     def _compare(
         self,
         wanted: list[tuple[base.MessageRef, str]],
+        put_last: collections.abc.Set[Any],
     ) -> list[tuple[str, str]] | None:
-        """Download `wanted` and decide each by hash.
+        """Download `wanted` and decide each by hash, those in `put_last` last.
 
         Returns `(Message-ID, store id)` for each one archived at this place, or
         None when the connection was lost: every message after that one would
@@ -429,7 +442,9 @@ class _Comparison:
         handled = 0
         try:
             outcomes = self._mb.fetch_messages(
-                [ref.msg_id for ref, _key in wanted], self._folder
+                [ref.msg_id for ref, _key in wanted if ref.msg_id not in put_last],
+                self._folder,
+                retry=[ref.msg_id for ref, _key in wanted if ref.msg_id in put_last],
             )
             for msg_id, outcome in outcomes:
                 handled += 1

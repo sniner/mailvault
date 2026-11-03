@@ -222,8 +222,8 @@ class MailboxClient(Protocol):
         the folder in full, which is how the caller asks for exactly that.
 
         `retry` holds the `BackupResult.unfetched` of the pass that produced
-        `resume`. Those messages lie behind the point and are fetched by id
-        first, one at a time. One that fails again is listed in `unfetched` once
+        `resume`. Those messages lie behind the point and are fetched by id,
+        one at a time. One that fails again is listed in `unfetched` once
         more; one the server no longer has is dropped. With a lost point they
         are ignored, because the read that replaces the point covers them.
 
@@ -277,14 +277,19 @@ class MailboxClient(Protocol):
         self,
         msg_ids: collections.abc.Sequence[Any],
         folder_name: str,
+        retry: collections.abc.Sequence[Any] = (),
     ) -> collections.abc.Generator[tuple[Any, Fetched | Exception], None, None]:
         """Fetch the given messages of one folder, each with its places.
 
         The repair path's way in, for the messages a listing named. Yields every
-        id in `msg_ids` once, with its `Fetched` or with the exception that says
-        why there is none: `MessageGone` when the server no longer has the
-        message, anything else when only this message failed. The order may
-        differ from `msg_ids`.
+        id in `msg_ids` and `retry` once, with its `Fetched` or with the
+        exception that says why there is none: `MessageGone` when the server no
+        longer has the message, anything else when only this message failed.
+        The order may differ from the one asked for.
+
+        `retry` names messages that failed on an earlier pass. They come after
+        `msg_ids`, each in a request of its own, so that one that fails again
+        cannot take others with it.
 
         Raises `ConnectionLost` when the connection is gone. The ids not yielded
         by then were not fetched.

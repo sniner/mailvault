@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import imaplib
 import logging
 import pathlib
@@ -512,12 +513,12 @@ class TestWalkFolder:
                 client._walk_folder("INBOX", [20, 21, 22], result=result, retry=[3, 5, 7])
             )
 
-        assert [msg_id for msg_id, _fetched in results] == [3]
+        assert [msg_id for msg_id, _fetched in results] == [20, 21, 22]
         assert conn.fetch.call_count == 2
-        assert result.unfetched == [5, 7]
-        assert result.failed == 2
-        assert result.cut_off == 3
-        assert "5 messages not fetched" in caplog.text
+        assert result.unfetched == [3, 5, 7]
+        assert result.failed == 3
+        assert result.cut_off == 0
+        assert "3 messages not fetched" in caplog.text
         assert len([r for r in caplog.records if r.levelno == logging.ERROR]) == 1
 
     def test_a_refused_chunk_costs_only_that_chunk(self):
@@ -638,6 +639,202 @@ class TestWalkFolder:
             resume.saw(msg_id)
 
         assert resume.token() == _uid_point(2)
+
+
+TIMED_OUT = TimeoutError("The read operation timed out")
+
+
+def _hangs_on(conn: MagicMock, *hanging: int) -> None:
+    """Let `conn` answer every body FETCH except one that asks for a UID in `hanging`."""
+
+    def fetch(ids, _fields):
+        if any(uid in hanging for uid in ids):
+            raise TIMED_OUT
+        return {i: {b"BODY[]": DUMMY_EML} for i in ids}
+
+    conn.fetch.side_effect = fetch
+
+
+class TestAFetchTheServerLeavesUnanswered:
+    """A server that hangs on one message would otherwise end every run there.
+
+    After a FETCH times out the client reconnects, names the UIDs of that FETCH
+    for the next run and goes on, up to `MAX_STALLS` times per pass.
+    """
+
+    @pytest.fixture
+    def opened(self, monkeypatch) -> list[conf.JobConfig]:
+        """The reconnects, each handing back the connection the test set up."""
+        calls: list[conf.JobConfig] = []
+
+        def reopen(job: conf.JobConfig) -> MagicMock:
+            calls.append(job)
+            return self.conn
+
+        monkeypatch.setattr(imap, "_open", reopen)
+        return calls
+
+    @pytest.fixture(autouse=True)
+    def _conn(self) -> None:
+        self.conn = _make_mock_conn()
+        self.conn.select_folder.return_value = {b"EXISTS": 80, b"UIDVALIDITY": 42}
+
+    def test_the_walk_goes_on_without_it(self, opened, caplog):
+        _hangs_on(self.conn, 15)
+        client = _make_client(conn=self.conn)
+        result = base.BackupResult()
+
+        with caplog.at_level(logging.WARNING):
+            results = list(client._walk_folder("INBOX", list(range(1, 36)), result=result))
+
+        assert [msg_id for msg_id, _ in results] == [*range(1, 11), *range(21, 36)]
+        assert len(opened) == 1
+        assert result.unfetched == list(range(11, 21))
+        assert result.failed == 10
+        assert result.cut_off == 0
+        assert (
+            "INBOX[11, 12, 13, 14, 15, 16, 17, 18, 19, 20]: no answer from the server"
+            " within 300 seconds, fetched again next run; reconnecting"
+        ) in caplog.text
+        self.conn.select_folder.assert_called_with("INBOX", readonly=True)
+
+    def test_the_point_moves_past_it(self, opened, tmp_path):
+        """Its UIDs are named for the next pass, as those of a refused FETCH are."""
+        _hangs_on(self.conn, 15)
+        self.conn.search.return_value = list(range(1, 36))
+        client = _make_client(conn=self.conn)
+        store = cas.ContentAddressedStorage(tmp_path, suffix=".eml")
+
+        result = client.folder_backup("INBOX", store)
+
+        assert result.resume == _uid_point(35)
+        assert result.unfetched == list(range(11, 21))
+        assert result.resumable
+
+    def test_the_fetch_after_a_reconnect_has_to_be_answered(self, opened):
+        """If it is not, the server has stopped answering, and no message explains that."""
+        _hangs_on(self.conn, 15, 25)
+        client = _make_client(conn=self.conn)
+        result = base.BackupResult()
+
+        results = list(client._walk_folder("INBOX", list(range(1, 36)), result=result))
+
+        assert len(results) == 10
+        assert len(opened) == 1
+        assert result.unfetched == list(range(11, 21))
+        assert result.cut_off == 15
+
+    def test_the_pass_ends_after_max_stalls(self, opened, caplog):
+        _hangs_on(self.conn, 5, 25, 45, 65)
+        client = _make_client(conn=self.conn)
+        result = base.BackupResult()
+
+        with caplog.at_level(logging.WARNING):
+            results = list(client._walk_folder("INBOX", list(range(1, 81)), result=result))
+
+        assert imap.MAX_STALLS == 3
+        assert len(opened) == 3
+        assert [msg_id for msg_id, _ in results] == [
+            *range(11, 21),
+            *range(31, 41),
+            *range(51, 61),
+        ]
+        assert result.unfetched == [*range(1, 11), *range(21, 31), *range(41, 51)]
+        assert result.cut_off == 20
+        assert "the server left 4 requests unanswered, not reconnecting again" in caplog.text
+
+    def test_its_uids_come_after_those_the_pass_did_not_get_to(self, opened):
+        """Retried in this order, two messages that hang every time cannot keep
+        the ones behind them from ever being asked for."""
+        _hangs_on(self.conn, 3, 5)
+        client = _make_client(conn=self.conn)
+        result = base.BackupResult()
+
+        list(client._walk_folder("INBOX", [20, 21], result=result, retry=[3, 5, 7]))
+
+        assert result.unfetched == [5, 7, 3]
+        assert result.failed == 3
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            imaplib.IMAP4.abort("socket error: EOF"),
+            ConnectionResetError("reset by peer"),
+            # A TimeoutError as well, but raised by the TCP stack.
+            OSError(errno.ETIMEDOUT, "Operation timed out"),
+        ],
+    )
+    def test_only_a_read_timeout_is_set_aside(self, opened, failure):
+        """A connection that was closed or lost says nothing about one message."""
+        self.conn.fetch.side_effect = failure
+        client = _make_client(conn=self.conn)
+        result = base.BackupResult()
+
+        list(client._walk_folder("INBOX", [1, 2], result=result))
+
+        assert opened == []
+        assert result.cut_off == 2
+
+    def test_a_changed_uidvalidity_ends_the_pass(self, opened, caplog):
+        """The UIDs still to be fetched would name other messages."""
+        _hangs_on(self.conn, 1)
+        self.conn.select_folder.return_value = {b"EXISTS": 80, b"UIDVALIDITY": 43}
+        client = _make_client(conn=self.conn)
+        result = base.BackupResult()
+
+        with caplog.at_level(logging.WARNING):
+            results = list(
+                client._walk_folder(
+                    "INBOX",
+                    [1, 2],
+                    chunk_size=1,
+                    result=result,
+                    resume=_answered_resume(),
+                )
+            )
+
+        assert results == []
+        assert result.cut_off == 2
+        assert "INBOX: UIDVALIDITY changed while reconnecting" in caplog.text
+
+    def test_a_failed_reconnect_ends_the_pass(self, monkeypatch, caplog):
+        def refuse(job):
+            raise imap.MailboxError("cannot connect to imap.example.com:993: refused")
+
+        monkeypatch.setattr(imap, "_open", refuse)
+        _hangs_on(self.conn, 1)
+        client = _make_client(conn=self.conn)
+        result = base.BackupResult()
+
+        with caplog.at_level(logging.ERROR):
+            list(client._walk_folder("INBOX", [1, 2], chunk_size=1, result=result))
+
+        assert result.cut_off == 2
+        assert "INBOX: reconnecting failed: cannot connect to" in caplog.text
+
+    def test_the_repair_fails_its_messages_and_goes_on(self, opened):
+        _hangs_on(self.conn, 3)
+        client = _make_client(conn=self.conn)
+
+        outcomes = dict(client.fetch_messages(list(range(1, 26)), "INBOX"))
+
+        assert len(opened) == 1
+        assert sorted(outcomes) == list(range(1, 26))
+        assert all(isinstance(outcomes[uid], base.Fetched) for uid in range(11, 26))
+        assert str(outcomes[3]) == "INBOX[3]: no answer from the server"
+        assert all(isinstance(outcomes[uid], imap.MailboxError) for uid in range(1, 11))
+
+    def test_the_repair_ends_when_the_server_stops_answering(self, opened):
+        _hangs_on(self.conn, 3, 13)
+        client = _make_client(conn=self.conn)
+        outcomes = []
+
+        with pytest.raises(base.ConnectionLost):
+            for outcome in client.fetch_messages(list(range(1, 26)), "INBOX"):
+                outcomes.append(outcome)
+
+        assert [uid for uid, _ in outcomes] == list(range(1, 11))
+        assert len(opened) == 1
 
 
 class TestPlacesComeWithTheMessage:
@@ -1127,8 +1324,12 @@ class TestFolderBackup:
         assert result.resumable
         assert result.resume == {"kind": imap.UID_RESUME_KIND, "uidvalidity": 42, "uid": 3}
 
-    def test_messages_to_retry_are_fetched_first_one_at_a_time(self, tmp_path):
-        """A refused FETCH fails its chunk, so a bad UID would hold its neighbours back."""
+    def test_messages_to_retry_are_fetched_last_one_at_a_time(self, tmp_path):
+        """A refused FETCH fails its chunk, so a bad UID would hold its neighbours back.
+
+        Last, so that messages which fail on every run cannot use up `MAX_STALLS`
+        before the new mail is fetched.
+        """
         conn = _make_mock_conn()
         conn.select_folder.return_value = {b"EXISTS": 20, b"UIDVALIDITY": 42}
         conn.search.return_value = [11, 12]
@@ -1141,7 +1342,7 @@ class TestFolderBackup:
 
         result = client.folder_backup("INBOX", store, resume=point, retry=[3, 5])
 
-        assert [c.args[0] for c in conn.fetch.call_args_list] == [[3], [5], [11, 12]]
+        assert [c.args[0] for c in conn.fetch.call_args_list] == [[11, 12], [3], [5]]
         # UID 5 is not in the folder any more: dropped, not failed.
         assert result.stored == 3
         assert result.failed == 0

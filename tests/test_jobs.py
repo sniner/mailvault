@@ -117,8 +117,8 @@ def _make_mock_client():
     client.job_name = "test-job"
     client.connection_lost = False
     client.folders.return_value = iter(["INBOX"])
-    client.fetch_messages.side_effect = lambda msg_ids, folder: base.fetch_each(
-        client.fetch_message, msg_ids, folder
+    client.fetch_messages.side_effect = lambda msg_ids, folder, retry=(): base.fetch_each(
+        client.fetch_message, [*msg_ids, *retry], folder
     )
     return client
 
@@ -1059,6 +1059,110 @@ def _back_up_over(conn: MagicMock, root: pathlib.Path) -> jobs.BackupReport:
         mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
         mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
         return jobs.backup(job, root)
+
+
+def _hanging_conn(
+    monkeypatch: pytest.MonkeyPatch,
+    *hanging: int,
+) -> tuple[MagicMock, list[int]]:
+    """`_imap_conn`, but a body FETCH that asks for a UID in `hanging` times out.
+
+    A reconnect hands back the same connection, so it hangs on the same UIDs.
+    Returns the connection and the UIDs whose bodies it handed out.
+    """
+    conn, bodies = _imap_conn()
+
+    def fetch(uids, items):
+        if items == ["ENVELOPE"]:
+            return {
+                uid: {b"ENVELOPE": MagicMock(message_id=f"<{uid}@x>".encode(), date=None)}
+                for uid in uids
+            }
+        if any(uid in hanging for uid in uids):
+            raise TimeoutError("The read operation timed out")
+        bodies.extend(uids)
+        return {uid: {b"BODY[]": _numbered_eml(uid)} for uid in uids}
+
+    conn.fetch.side_effect = fetch
+    monkeypatch.setattr(imap, "_open", lambda job: conn)
+    return conn, bodies
+
+
+def _body_fetches(conn: MagicMock) -> list[list[int]]:
+    return [c.args[0] for c in conn.fetch.call_args_list if c.args[1] != ["ENVELOPE"]]
+
+
+class TestAMessageTheServerHangsOn:
+    """A FETCH the server leaves unanswered is set aside, and the run goes on.
+
+    A server that hangs on one message instead of refusing it ended every run
+    at that message: the timeout counted as a lost connection, and the next run
+    started at the same place.
+    """
+
+    def test_the_point_moves_past_it(self, tmp_path, monkeypatch):
+        conn, bodies = _hanging_conn(monkeypatch, 15)
+
+        report = _back_up_over(conn, tmp_path)
+
+        assert sorted(bodies) == [*range(1, 11), *range(21, FOLDER_SIZE + 1)]
+        assert _head(tmp_path).resume == {
+            "kind": imap.UID_RESUME_KIND,
+            "uidvalidity": 1,
+            "uid": FOLDER_SIZE,
+        }
+        assert _head(tmp_path).pending == list(range(11, 21))
+        assert report.carried == ["INBOX"]
+        assert report.failed == 10
+
+    def test_the_next_run_asks_for_them_one_at_a_time(self, tmp_path, monkeypatch):
+        conn, _bodies = _hanging_conn(monkeypatch, 15)
+        _back_up_over(conn, tmp_path)
+
+        conn, bodies = _hanging_conn(monkeypatch, 15)
+        _back_up_over(conn, tmp_path)
+
+        assert _body_fetches(conn) == [[uid] for uid in range(11, 21)]
+        assert bodies == [*range(11, 15), *range(16, 21)]
+        assert _head(tmp_path).pending == [15]
+
+    def test_a_folder_without_a_point_gets_one(self, tmp_path, monkeypatch):
+        """The comparison with the archive, which issue #19 runs into."""
+        TestCatchUp._archive_with(tmp_path, *(str(uid) for uid in range(1, 11)))
+        conn, bodies = _hanging_conn(monkeypatch, 15)
+
+        report = _back_up_over(conn, tmp_path)
+
+        assert sorted(bodies) == list(range(21, FOLDER_SIZE + 1))
+        assert _head(tmp_path).resume == {
+            "kind": imap.UID_RESUME_KIND,
+            "uidvalidity": 1,
+            "uid": FOLDER_SIZE,
+        }
+        assert _head(tmp_path).pending == list(range(11, 21))
+        assert report.carried == ["INBOX"]
+
+    def test_the_comparison_leaves_what_hung_before_to_the_end(self, tmp_path, monkeypatch):
+        """Otherwise two of them in a row would end every comparison before the rest."""
+        TestCatchUp._archive_with(tmp_path, "1")
+        conn, _bodies = _hanging_conn(monkeypatch, 3, 13)
+        first = _back_up_over(conn, tmp_path)
+        assert first.retried == ["INBOX"]
+        assert _head(tmp_path).resume is None
+        assert _head(tmp_path).pending == list(range(2, 12))
+
+        conn, bodies = _hanging_conn(monkeypatch, 3, 13)
+        _back_up_over(conn, tmp_path)
+
+        assert _body_fetches(conn) == [
+            list(range(12, 22)),
+            list(range(22, 32)),
+            list(range(32, 36)),
+            *([uid] for uid in range(2, 12)),
+        ]
+        assert sorted(bodies) == [2, *range(4, 12), *range(22, FOLDER_SIZE + 1)]
+        assert _head(tmp_path).resume is not None
+        assert _head(tmp_path).pending == [*range(12, 22), 3]
 
 
 class TestAFirstPassCutShort:
