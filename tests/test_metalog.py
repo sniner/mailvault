@@ -175,6 +175,13 @@ class TestWriting:
         header = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
         assert set(header) == {"version", "mailbox", "folder", "date", "prev"}
 
+    def test_a_message_in_two_places_is_one_message(self, tmp_path):
+        writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
+        writer.add("job", ["INBOX", "Work"], STORE_ID)
+
+        assert len(writer) == 2
+        assert writer.messages == 1
+
     def test_writer_is_reusable_after_flushing(self, tmp_path):
         writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
         writer.add("job", ["INBOX"], STORE_ID)

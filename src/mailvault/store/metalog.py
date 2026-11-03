@@ -309,7 +309,13 @@ class LogWriter:
         self._places: dict[Place, list[str]] = {}
 
     def __len__(self) -> int:
+        """How many entries are pending: a message in three places counts three times."""
         return sum(len(ids) for ids in self._places.values())
+
+    @property
+    def messages(self) -> int:
+        """How many distinct messages are pending, in however many places each."""
+        return len(set().union(*self._places.values()))
 
     @property
     def places(self) -> int:

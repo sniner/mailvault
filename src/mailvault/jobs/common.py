@@ -74,7 +74,7 @@ def flush_log(writer: metalog.LogWriter, date: datetime) -> bool:
     than the sentence behind it. `metadata log:` says the same thing in words, as
     the reports have said it all along.
     """
-    recorded, places = len(writer), writer.places
+    recorded, places = writer.messages, writer.places
     try:
         paths = writer.flush(date)
     except OSError as exc:

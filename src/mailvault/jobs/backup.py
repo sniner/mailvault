@@ -424,7 +424,7 @@ def _report_carried(
         "%s::%s: %s of %s failed, fetched again next run",
         job_name,
         folder,
-        failed,
+        f"{failed:,}",
         utils.counted(total, "message"),
     )
     report.carried.append(folder)
@@ -557,7 +557,7 @@ def _catch_up_folder(
             "%s::%s: %s of %s failed, resume point not started",
             job.name,
             folder,
-            result.failed,
+            f"{result.failed:,}",
             utils.counted(result.compared + result.unchecked, "message"),
         )
         resume = None

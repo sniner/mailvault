@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Comparing a folder with the archive no longer reports the messages it has just restored as
+  not archived.** This concerns the last line of a backup of a folder without a resume point, and
+  of `verify --repair`. It now gives the messages still not archived, the restored ones and the
+  ones that could not be fetched
+- **The `metadata log:` line counts each message once.** A Gmail message with several labels was
+  counted once per label
+
 ## 0.24.0 (2026-11-02)
 
 ### Changed

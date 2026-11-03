@@ -825,6 +825,48 @@ class TestCatchUp:
         assert report.retried == ["INBOX"]
         assert _head(tmp_path).resume is None
 
+    def test_the_last_line_counts_what_is_still_open(self, tmp_path, caplog):
+        """Issue #19: it reported the messages just restored as not archived."""
+        self._archive_with(tmp_path, "a")
+        client = self._client(["a", "b", "c", "d"])
+        client.fetch_message.side_effect = [
+            base.Fetched(_numbered_eml("b"), ["INBOX"]),
+            base.ConnectionLost("INBOX: connection to the server lost: timed out"),
+        ]
+
+        with caplog.at_level(logging.INFO):
+            self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        assert (
+            "INBOX: 0 of 4 messages on the server are not archived, 1 restored, 2 not fetched"
+            in caplog.text
+        )
+
+    def test_a_message_with_two_labels_counts_once_in_the_log_line(self, tmp_path, caplog):
+        self._archive_with(tmp_path, "a")
+        client = self._client(["a", "b"])
+        client.fetch_message.return_value = base.Fetched(
+            _numbered_eml("b"),
+            ["Work", "INBOX"],
+        )
+
+        with caplog.at_level(logging.INFO):
+            self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        assert "metadata log: 1 message recorded in 2 places" in caplog.text
+
+    def test_a_large_count_of_failures_has_separators(self, tmp_path, caplog):
+        self._archive_with(tmp_path, "a")
+        client = self._client(["a", *(str(n) for n in range(1_000))])
+        client.fetch_message.side_effect = base.ConnectionLost(
+            "INBOX: connection to the server lost: timed out"
+        )
+
+        with caplog.at_level(logging.INFO):
+            self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        assert "1,000 of 1,000 messages failed, resume point not started" in caplog.text
+
 
 # Four chunks in the IMAP backend's walk, which fetches ten messages at a time.
 FOLDER_SIZE = 35

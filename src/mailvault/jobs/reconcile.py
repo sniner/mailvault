@@ -253,13 +253,23 @@ def reconcile_folder(
         # belongs must not move a resume point past them.
         result.flushed = pass_log.flushed
 
-    log.info(
-        "%s: %s of %s on the server are not archived",
-        ctx,
-        f"{result.missing:,}",
-        utils.counted(result.on_server, "message"),
-    )
+    log.info("%s: %s", ctx, _summary(result))
     return result
+
+
+def _summary(result: ReconcileResult) -> str:
+    """What is known about the folder once the comparison is over."""
+    on_server = utils.counted(result.on_server, "message")
+    # A repair stores what it finds missing: those count as restored, and only the
+    # ones it could not store are still not archived.
+    missing = result.missing - result.restored
+    parts = [f"{missing:,} of {on_server} on the server are not archived"]
+    # Only where something was restored, as in the report of `verify`.
+    if result.restored:
+        parts.append(f"{result.restored:,} restored")
+    if result.unchecked:
+        parts.append(f"{result.unchecked:,} not fetched")
+    return ", ".join(parts)
 
 
 def _list_folder(
