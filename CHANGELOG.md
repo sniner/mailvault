@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **IMAP: a message the server never sends no longer ends every run at the same place.** When a
+  request for messages goes unanswered for five minutes, the backup reconnects, notes those
+  messages for the next run and goes on with the rest, up to three times per folder. The next run
+  fetches them again one at a time, after everything else. This also applies when a folder is
+  compared with the archive. If the request after a reconnect goes unanswered as well, the server
+  has stopped answering, and the run ends as before
+
 ## 0.24.3 (2026-11-03)
 
 ### Fixed

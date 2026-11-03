@@ -23,39 +23,71 @@ from mailvault.backend import base, imap
 TIMEOUT = 1.0
 
 
-class _QuietServer:
-    """Accepts one connection, answers until `silent_on`, then says nothing."""
+BODY = b"From: sender@example.com\r\nSubject: Answered\r\n\r\nbody\r\n"
 
-    def __init__(self, silent_on: frozenset[bytes] = frozenset(), greet: bool = True):
+
+class _QuietServer:
+    """Answers until `silent_on`, then says nothing.
+
+    Silent only on the first `quiet_connections` connections, or on all of them
+    when that is None. A FETCH it answers comes back with `BODY`.
+    """
+
+    def __init__(
+        self,
+        silent_on: frozenset[bytes] = frozenset(),
+        greet: bool = True,
+        quiet_connections: int | None = None,
+    ):
         self._silent_on = silent_on
         self._greet = greet
+        self._quiet_connections = quiet_connections
         self._listener = socket.create_server(("127.0.0.1", 0))
         self.port = self._listener.getsockname()[1]
-        self._conn: socket.socket | None = None
-        threading.Thread(target=self._serve, daemon=True).start()
+        self.connections: list[socket.socket] = []
+        threading.Thread(target=self._accept, daemon=True).start()
 
-    def _serve(self) -> None:
+    def _accept(self) -> None:
         try:
-            self._conn, _addr = self._listener.accept()
+            while True:
+                conn, _addr = self._listener.accept()
+                self.connections.append(conn)
+                quiet = (
+                    self._quiet_connections is None
+                    or len(self.connections) <= self._quiet_connections
+                )
+                threading.Thread(target=self._serve, args=(conn, quiet), daemon=True).start()
+        except OSError:
+            # The test closed the listener.
+            return
+
+    def _serve(self, conn: socket.socket, quiet: bool) -> None:
+        try:
             if not self._greet:
                 return
-            self._conn.sendall(b"* OK ready\r\n")
-            for line in self._conn.makefile("rb"):
+            conn.sendall(b"* OK ready\r\n")
+            for line in conn.makefile("rb"):
                 tag, command = line.split(b" ", 2)[:2]
                 command = command.strip().upper()
-                if command in self._silent_on:
+                if quiet and command in self._silent_on:
                     continue
                 if command == b"CAPABILITY":
-                    self._conn.sendall(b"* CAPABILITY IMAP4rev1\r\n")
-                self._conn.sendall(tag + b" OK done\r\n")
+                    conn.sendall(b"* CAPABILITY IMAP4rev1 UNSELECT\r\n")
+                elif command in (b"EXAMINE", b"SELECT"):
+                    conn.sendall(b"* 2 EXISTS\r\n* OK [UIDVALIDITY 1] UIDs valid\r\n")
+                elif line.split()[1:3] == [b"UID", b"FETCH"]:
+                    uid = int(line.split()[3])
+                    conn.sendall(
+                        b"* 1 FETCH (UID %d BODY[] {%d}\r\n%s)\r\n" % (uid, len(BODY), BODY)
+                    )
+                conn.sendall(tag + b" OK done\r\n")
         except OSError:
             # The test closed the sockets; nothing is left to answer.
             return
 
     def close(self) -> None:
-        for sock in (self._conn, self._listener):
-            if sock is not None:
-                sock.close()
+        for sock in [*self.connections, self._listener]:
+            sock.close()
 
 
 @pytest.fixture
@@ -169,3 +201,18 @@ class TestAServerThatStopsAnswering:
         assert not worker.is_alive(), "the TLS handshake blocked past the connect timeout"
         assert len(outcome) == 1
         assert isinstance(outcome[0], imap.MailboxError)
+
+
+@pytest.mark.usefixtures("short_timeouts")
+class TestAFetchThatIsNotAnswered:
+    def test_is_set_aside_on_a_new_connection(self, server, monkeypatch):
+        """That the timeout arrives as a TimeoutError without an errno is what this rests on."""
+        monkeypatch.setattr(imap, "FETCH_CHUNK_SIZE", 1)
+        quiet = server(silent_on=frozenset({b"UID"}), quiet_connections=1)
+        client = imap.ImapClient.connect(_job(quiet.port))
+
+        outcomes = dict(client.fetch_messages([7, 8], "INBOX"))
+
+        assert len(quiet.connections) == 2
+        assert str(outcomes[7]) == "INBOX[7]: no answer from the server"
+        assert outcomes[8] == base.Fetched(BODY, ["INBOX"])

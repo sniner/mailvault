@@ -72,8 +72,11 @@ def _record_pass(
     lost by forgetting it, because a point the source refuses buys no coverage.
 
     `pending` goes with `resume`: the messages behind the new point that are
-    still to be fetched. It is written only together with a new point and
-    forgotten together with a void one.
+    still to be fetched. It is written together with a new point, and not when
+    an old point stands, because the pass that comes back to that point needs
+    the list that belongs to it. Where no point is left, there is nothing to
+    fetch them behind: the next pass compares the folder with the archive and
+    asks for these last (see `_catch_up_folder`).
 
     A head that cannot be written is logged and otherwise tolerated. The folder
     is simply fetched again next time, which the storage absorbs; aborting here
@@ -93,7 +96,9 @@ def _record_pass(
             folder,
         )
         head.resume = None
-        head.pending = []
+        head.pending = list(pending)
+    elif head.resume is None:
+        head.pending = list(pending)
     try:
         heads.write(heads_root, head)
     except OSError as exc:
@@ -522,6 +527,7 @@ def _catch_up_if_possible(
         archived,
         report,
         void_previous=void_previous,
+        last=head.pending if head is not None else (),
     )
 
 
@@ -535,6 +541,7 @@ def _catch_up_folder(
     archived: set[str],
     report: BackupReport,
     void_previous: bool = False,
+    last: collections.abc.Collection[Any] = (),
 ) -> bool:
     """Read a folder in full, downloading only what the archive may not have.
 
@@ -560,7 +567,15 @@ def _catch_up_folder(
     )
     resume = mb.resume_point(folder)
     result = reconcile_folder(
-        mb, store, log_root, heads_root, archived, job.name, folder, repair=True
+        mb,
+        store,
+        log_root,
+        heads_root,
+        archived,
+        job.name,
+        folder,
+        repair=True,
+        last=last,
     )
     # Whatever was not found missing, left undecided or deleted in the meantime
     # is archived, matched by Message-ID or by content.
