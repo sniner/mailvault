@@ -821,7 +821,8 @@ class TestCatchUp:
 
         assert client.fetch_message.call_count == 2
         assert len(_recorded(tmp_path)) == 2
-        assert report.failed == 2
+        assert report.failed == 0
+        assert report.not_fetched == 2
         assert report.retried == ["INBOX"]
         assert _head(tmp_path).resume is None
 
@@ -837,10 +838,7 @@ class TestCatchUp:
         with caplog.at_level(logging.INFO):
             self._run(_make_job(folders=["INBOX"]), client, tmp_path)
 
-        assert (
-            "INBOX: 0 of 4 messages on the server are not archived, 1 restored, 2 not fetched"
-            in caplog.text
-        )
+        assert "INBOX: 4 messages on the server, 1 restored, 2 not fetched" in caplog.text
 
     def test_a_message_with_two_labels_counts_once_in_the_log_line(self, tmp_path, caplog):
         self._archive_with(tmp_path, "a")
@@ -855,7 +853,8 @@ class TestCatchUp:
 
         assert "metadata log: 1 message recorded in 2 places" in caplog.text
 
-    def test_a_large_count_of_failures_has_separators(self, tmp_path, caplog):
+    def test_what_a_lost_connection_left_is_not_fetched_not_failed(self, tmp_path, caplog):
+        """Issue #19: the backup reported 33,379 messages as "could not be stored"."""
         self._archive_with(tmp_path, "a")
         client = self._client(["a", *(str(n) for n in range(1_000))])
         client.fetch_message.side_effect = base.ConnectionLost(
@@ -865,7 +864,42 @@ class TestCatchUp:
         with caplog.at_level(logging.INFO):
             self._run(_make_job(folders=["INBOX"]), client, tmp_path)
 
-        assert "1,000 of 1,000 messages failed, resume point not started" in caplog.text
+        assert "1,000 of 1,000 messages not fetched, resume point not started" in caplog.text
+
+    def test_a_large_count_of_failures_has_separators(self, tmp_path, caplog):
+        self._archive_with(tmp_path, "a")
+        client = self._client(["a", *(str(n) for n in range(1_000))])
+        client.fetch_message.side_effect = base.MailboxError("fetch refused")
+
+        with caplog.at_level(logging.INFO):
+            report = self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        assert report.failed == 1_000
+        assert "1,000 of 1,000 messages failed, fetched again next run" in caplog.text
+
+    def test_a_message_deleted_meanwhile_is_not_counted_as_archived(self, tmp_path, caplog):
+        self._archive_with(tmp_path, "a")
+        client = self._client(["a", "b"])
+        client.fetch_message.side_effect = [base.MessageGone("b: no longer in INBOX")]
+
+        with caplog.at_level(logging.INFO):
+            report = self._run(_make_job(folders=["INBOX"]), client, tmp_path)
+
+        assert (report.seen, report.stored, report.present) == (2, 0, 1)
+        assert "INBOX: 2 messages on the server, 1 no longer in the folder" in caplog.text
+
+    def test_the_archive_is_counted_once_per_message(self, tmp_path, caplog):
+        """Issue #19: 39,154 recorded, where the archive held about 15,500."""
+        store = cas.mail_store(tmp_path)
+        _status, sid, _path = store.add(_numbered_eml("a"))
+        writer = metalog.LogWriter(tmp_path / "meta", tmp_path / "heads")
+        writer.add("test-job", ["INBOX", "Work"], sid)
+        writer.flush(datetime(2026, 2, 1, tzinfo=UTC))
+
+        with caplog.at_level(logging.INFO):
+            self._run(_make_job(folders=["INBOX"]), self._client(["a"]), tmp_path)
+
+        assert "1 message recorded in 2 places" in [r.getMessage() for r in caplog.records]
 
 
 # Four chunks in the IMAP backend's walk, which fetches ten messages at a time.
@@ -1030,6 +1064,14 @@ class TestAFirstPassCutShort:
         assert report.retried == ["INBOX"]
         assert report.cut_off == []
         assert report.not_fetched == FOLDER_SIZE
+
+    def test_the_warning_says_not_fetched_rather_than_failed(self, tmp_path, caplog):
+        conn, _bodies = _imap_conn(failure=imaplib.IMAP4.abort("socket error: EOF"), after=0)
+
+        with caplog.at_level(logging.WARNING):
+            _back_up_over(conn, tmp_path)
+
+        assert "35 of 35 messages not fetched, resume point not advanced" in caplog.text
 
     def test_a_long_pass_is_written_down_as_it_goes(self, tmp_path, monkeypatch):
         """What a kill that skips every `finally` leaves: all but the last batch."""

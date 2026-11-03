@@ -114,12 +114,15 @@ def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: boo
         # of a repair run answers a question nobody asked.
         if repaired and r.missing:
             line += f", {r.restored:,} restored"
-        if r.unchecked:
-            line += f", {r.unchecked:,} could not be downloaded"
+        if r.unchecked - r.cut_off:
+            line += f", {r.unchecked - r.cut_off:,} could not be downloaded"
+        if r.cut_off:
+            line += f", {r.cut_off:,} not fetched"
         print(line)
     total_missing = sum(r.missing for r in results)
     total_restored = sum(r.restored for r in results)
     total_unchecked = sum(r.unchecked for r in results)
+    total_cut_off = sum(r.cut_off for r in results)
     unwritten = [f"{job_name}::{r.folder}" for r in results if not r.flushed]
     if not total_missing and not total_unchecked:
         print(f"{job_name}: archive is complete")
@@ -129,14 +132,21 @@ def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: boo
     elif total_missing:
         missing = utils.counted(total_missing, "message")
         print(f"{job_name}: {total_restored:,} of {missing} restored")
-    if total_unchecked:
+    if total_unchecked - total_cut_off:
         # Neither missing nor archived as far as is known: the download failed,
         # so there was nothing to compare.
-        unchecked = utils.counted(total_unchecked, "message")
-        which = "it is" if total_unchecked == 1 else "they are"
+        failed = total_unchecked - total_cut_off
+        unchecked = utils.counted(failed, "message")
+        which = "it is" if failed == 1 else "they are"
         print(
             f"{job_name}: {unchecked} could not be downloaded, so it is not known"
             f" whether {which} archived; the log names the reason for each"
+        )
+    if total_cut_off:
+        # One reason for all of them, so the log has one line and not one each.
+        print(
+            f"{job_name}: {utils.counted(total_cut_off, 'message')} not fetched, the"
+            " connection to the server was lost -- run again to check them"
         )
     # After the verdict rather than before it, because this qualifies whatever
     # the verdict said: the mail is in the archive and nothing records where it

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A comparison with the archive that loses the connection counts the rest as not fetched.** A
+  backup of a folder without a resume point reported these messages as "could not be stored".
+  `verify` reports them on a line of their own and no longer says that the log names a reason
+  for each
+- **The line after reading the metadata log counts each message once.** A Gmail message with
+  several labels was counted once per label
+- **The last line of a comparison lists only the counts that are not zero.** With messages not
+  fetched, "0 of … messages on the server are not archived" read as if the folder were complete
+- **A message deleted on the server during a comparison no longer counts as already archived**
+
 ## 0.24.1 (2026-11-03)
 
 ### Fixed

@@ -343,11 +343,10 @@ def _backup_folder(
         # Taking the new point now would push the failed messages out of
         # everything the next pass asks for, losing them permanently.
         log.warning(
-            "%s::%s: %s of %s failed, resume point not advanced",
+            "%s::%s: %s, resume point not advanced",
             job.name,
             folder,
-            result.failed + result.cut_off,
-            utils.counted(result.total, "message"),
+            _shortfall(result.failed, result.cut_off, result.total),
         )
         report.retried.append(folder)
     else:
@@ -411,6 +410,16 @@ def _can_carry(
     everything else.
     """
     return not result.complete and result.resumable and resume is not None
+
+
+def _shortfall(failed: int, not_fetched: int, total: int) -> str:
+    """How a pass fell short: `3 of 120 messages failed, 40 not fetched`."""
+    of_total = utils.counted(total, "message")
+    if not failed:
+        return f"{not_fetched:,} of {of_total} not fetched"
+    if not not_fetched:
+        return f"{failed:,} of {of_total} failed"
+    return f"{failed:,} of {of_total} failed, {not_fetched:,} not fetched"
 
 
 def _report_carried(
@@ -545,20 +554,26 @@ def _catch_up_folder(
     result = reconcile_folder(
         mb, store, log_root, heads_root, archived, job.name, folder, repair=True
     )
-    # Whatever was not found missing or left undecided is archived, matched by
-    # Message-ID or by content.
+    # Whatever was not found missing, left undecided or deleted in the meantime
+    # is archived, matched by Message-ID or by content.
     report.seen += result.on_server
     report.stored += result.restored
-    report.present += result.on_server - result.missing - result.unchecked
-    report.failed += result.failed
+    report.present += result.on_server - result.missing - result.unchecked - result.gone
+    # What a lost connection left is not a failure to store, and the backup
+    # reports it the way the ordinary pass does.
+    report.failed += result.failed - result.cut_off
+    report.not_fetched += result.cut_off
     carried = _can_carry(result, resume)
     if not result.complete and not carried:
         log.warning(
-            "%s::%s: %s of %s failed, resume point not started",
+            "%s::%s: %s, resume point not started",
             job.name,
             folder,
-            f"{result.failed:,}",
-            utils.counted(result.compared + result.unchecked, "message"),
+            _shortfall(
+                result.failed - result.cut_off,
+                result.cut_off,
+                result.compared + result.unchecked,
+            ),
         )
         resume = None
         report.retried.append(folder)

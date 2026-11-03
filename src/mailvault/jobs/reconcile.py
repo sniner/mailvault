@@ -73,8 +73,10 @@ class ReconcileResult:
     repair pass stored and recorded.
 
     `unchecked` counts the messages that could not be downloaded, so nothing is
-    known about them. `failed` adds the missing ones a repair could not store;
-    it is the count that holds a resume point back.
+    known about them. `cut_off` is the part of them a lost connection left
+    unfetched, and `gone` counts the messages deleted on the server between the
+    listing and the download. `failed` adds the missing ones a repair could not
+    store to `unchecked`; it is the count that holds a resume point back.
 
     `unfetched` is what `base.BackupResult.unfetched` is: the failed downloads,
     by backend id, that a backup may fetch again by themselves next run.
@@ -86,6 +88,8 @@ class ReconcileResult:
     missing: int = 0
     restored: int = 0
     unchecked: int = 0
+    cut_off: int = 0
+    gone: int = 0
     failed: int = 0
     flushed: bool = True
     unfetched: list[Any] = dataclasses.field(default_factory=list)
@@ -154,9 +158,11 @@ class ArchivedPlaces:
             # archive, and the archive was named once when the run started.
             log.info("reading the metadata log")
             self._places = places_from_log(self._log_root)
+            # Counted once each: a Gmail message is in the log once per label.
+            messages = len(set().union(*self._places.values()))
             log.info(
                 "%s recorded in %s",
-                utils.counted(sum(len(ids) for ids in self._places.values()), "message"),
+                utils.counted(messages, "message"),
                 utils.counted(len(self._places), "place"),
             )
         return self._places
@@ -258,18 +264,24 @@ def reconcile_folder(
 
 
 def _summary(result: ReconcileResult) -> str:
-    """What is known about the folder once the comparison is over."""
-    on_server = utils.counted(result.on_server, "message")
+    """What is known about the folder once the comparison is over.
+
+    Only the counts that are not zero. "0 not archived" next to messages that
+    were not fetched reads as a complete folder, and nothing is known about those.
+    """
+    if not result.on_server:
+        return "no messages on the server"
     # A repair stores what it finds missing: those count as restored, and only the
     # ones it could not store are still not archived.
-    missing = result.missing - result.restored
-    parts = [f"{missing:,} of {on_server} on the server are not archived"]
-    # Only where something was restored, as in the report of `verify`.
-    if result.restored:
-        parts.append(f"{result.restored:,} restored")
-    if result.unchecked:
-        parts.append(f"{result.unchecked:,} not fetched")
-    return ", ".join(parts)
+    counts = [
+        (result.missing - result.restored, "not archived"),
+        (result.restored, "restored"),
+        (result.unchecked, "not fetched"),
+        (result.gone, "no longer in the folder"),
+    ]
+    parts = [f"{count:,} {what}" for count, what in counts if count]
+    on_server = utils.counted(result.on_server, "message")
+    return f"{on_server} on the server, {', '.join(parts) or 'all archived'}"
 
 
 def _list_folder(
@@ -424,6 +436,7 @@ class _Comparison:
                 utils.counted(not_fetched, "message"),
             )
             self._result.unchecked += not_fetched
+            self._result.cut_off += not_fetched
             self._result.failed += not_fetched
             return None
         return found
@@ -437,6 +450,7 @@ class _Comparison:
         label = ref.message_id or ref.msg_id
         if isinstance(outcome, base.MessageGone):
             log.info("%s: %s is no longer in the folder", self._ctx, label)
+            self._result.gone += 1
             return None
         if isinstance(outcome, Exception):
             log.error("%s: download failed for %s: %s", self._ctx, label, outcome)

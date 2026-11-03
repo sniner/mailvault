@@ -1728,6 +1728,17 @@ class TestVerifyReportRepairCounts:
         assert "1 could not be downloaded" in out.splitlines()[0]
         assert "it is not known whether it is archived" in out
 
+    def test_messages_a_lost_connection_left_are_not_fetched(self, capsys):
+        """One cause for all of them, and the log has one line for it, not one each."""
+        results = self._results(on_server=5, unchecked=4, cut_off=3, failed=4)
+
+        report_verify("job", results, repaired=True)
+
+        out = capsys.readouterr().out
+        assert "1 could not be downloaded, 3 not fetched" in out.splitlines()[0]
+        assert "1 message could not be downloaded" in out
+        assert "3 messages not fetched, the connection to the server was lost" in out
+
 
 class TestVerifyExitCode:
     """The exit code says what the last line says, the way `archive check` does."""
