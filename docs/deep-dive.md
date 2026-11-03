@@ -186,7 +186,8 @@ counts as dropped when the server has sent nothing for five minutes while an
 answer is due.
 
 When the connection to an IMAP server drops, the folder's resume point moves up
-to the last messages fetched, and the next run continues from there. In the
+to the last messages fetched, and the next run continues from there. The
+folders of the job that come after it are not read in that run. In the
 other cases, Ctrl-C, SIGTERM or a dropped connection to Microsoft 365, the
 folder gets no resume point, so the next run lists it, compares it against the
 archive and fetches only the rest. Either way a first backup that does not fit
@@ -399,7 +400,8 @@ downloads it and compares it with the archive by content, also without
 A message found in the archive this way counts as archived, and nothing is
 written. On a folder with many duplicates this takes a while on every run. A
 message that cannot be downloaded is reported as such, and `verify` ends with
-exit code 1, because it is not known whether it is archived.
+exit code 1, because it is not known whether it is archived. The same holds for
+a folder that could not be read.
 
 `verify` does not support `exchange_journal` jobs, because there the archived
 message and the server's journal envelope carry different `Message-ID`s.

@@ -131,6 +131,11 @@ class _Connection:
 
         return call
 
+    @property
+    def lost(self) -> bool:
+        """True once a connection error has closed it."""
+        return self._lost is not None
+
     def _close(self, cause: BaseException) -> None:
         self._lost = cause
         try:
@@ -402,6 +407,13 @@ class ImapClient:
             raise MailboxError(f"login refused for '{job.username}': {exc}") from exc
         # It forwards every call, and is no IMAPClient only to the type checker.
         return cls(typing.cast(imapclient.IMAPClient, _Connection(conn)), job)
+
+    @property
+    def connection_lost(self) -> bool:
+        # Only `_Connection` records the loss. A connection passed in without it,
+        # as in the tests, is never reported lost.
+        conn = self.conn
+        return isinstance(conn, _Connection) and conn.lost
 
     def close(self) -> None:
         """Log out and close the underlying connection."""

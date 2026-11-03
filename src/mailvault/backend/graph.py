@@ -325,6 +325,12 @@ class MSGraphClient:
         token = self._acquire_token()
         self._http.headers["Authorization"] = f"Bearer {token}"
 
+    @property
+    def connection_lost(self) -> bool:
+        # Each request is retried on its own. One that failed after its retries
+        # does not mean that the next one fails: the network may be back by then.
+        return False
+
     def close(self) -> None:
         """Close the HTTP client."""
         self._http.close()

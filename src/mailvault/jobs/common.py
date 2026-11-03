@@ -89,6 +89,15 @@ def flush_log(writer: metalog.LogWriter, date: datetime) -> bool:
     return True
 
 
+def warn_not_read(job_name: str, folders: collections.abc.Sequence[str]) -> None:
+    """Log once that the remaining folders are not read, instead of one error each."""
+    log.warning(
+        "%s: connection to the server lost, %s not read",
+        job_name,
+        utils.counted(len(folders), "folder"),
+    )
+
+
 class PassLog:
     """The metadata log of one pass over a folder, written down while it runs.
 

@@ -291,6 +291,15 @@ class MailboxClient(Protocol):
         """
         ...
 
+    @property
+    def connection_lost(self) -> bool:
+        """True once the connection is gone for the rest of the session.
+
+        Every later call would fail the same way, so the caller reads no further
+        folders. A backend whose requests share no connection never reports it.
+        """
+        ...
+
     def close(self) -> None: ...
 
 

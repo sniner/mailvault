@@ -6,6 +6,7 @@ import imaplib
 import json
 import logging
 import pathlib
+import typing
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -113,6 +114,7 @@ def _make_mock_client():
     """
     client = MagicMock()
     client.job_name = "test-job"
+    client.connection_lost = False
     client.folders.return_value = iter(["INBOX"])
     client.fetch_messages.side_effect = lambda msg_ids, folder: base.fetch_each(
         client.fetch_message, msg_ids, folder
@@ -900,6 +902,73 @@ class TestCatchUp:
             self._run(_make_job(folders=["INBOX"]), self._client(["a"]), tmp_path)
 
         assert "1 message recorded in 2 places" in [r.getMessage() for r in caplog.records]
+
+
+class TestTheFoldersAfterALostConnection:
+    """Not tried one after another, each failing with a line of its own."""
+
+    @staticmethod
+    def _backup(job, client, tmp_path) -> jobs.BackupReport:
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+            return jobs.backup(job, tmp_path)
+
+    @staticmethod
+    def _verify(job, client, tmp_path) -> list[jobs.VerifyResult]:
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+            return jobs.verify(job, tmp_path)
+
+    def test_the_backup_names_them_once(self, tmp_path, caplog):
+        conn, _bodies = _imap_conn(failure=imaplib.IMAP4.abort("socket error: EOF"))
+        job = _make_job(folders=["INBOX", "Sent", "Work"])
+        client = imap.ImapClient(typing.cast(Any, imap._Connection(conn)), job)
+
+        with caplog.at_level(logging.INFO):
+            report = self._backup(job, client, tmp_path)
+
+        assert [c.args[0] for c in conn.select_folder.call_args_list] == ["INBOX"]
+        assert report.cut_off == ["INBOX"]
+        assert report.retried == ["Sent", "Work"]
+        assert "test-job: connection to the server lost, 2 folders not read" in caplog.text
+        assert "backup failed" not in caplog.text
+
+    def test_the_trash_is_left_for_the_next_run(self, tmp_path):
+        client = _make_mock_client()
+
+        def folder_backup(folder_name, store, resume=None, retry=(), callback=None):
+            client.connection_lost = True
+            return base.BackupResult(total=3, cut_off=3)
+
+        client.folder_backup.side_effect = folder_backup
+        job = _make_job(folders=["INBOX"], delete_after_export=True)
+
+        self._backup(job, client, tmp_path)
+
+        client.empty_trash.assert_not_called()
+
+    def test_verify_counts_them_as_not_read(self, tmp_path, caplog):
+        client = _make_mock_client()
+
+        def index(folder):
+            client.connection_lost = True
+            raise base.MailboxError(f"{folder}: indexing failed: timed out")
+
+        client.message_index.side_effect = index
+        job = _make_job(folders=["INBOX", "Sent", "Work"])
+
+        with caplog.at_level(logging.INFO):
+            results = self._verify(job, client, tmp_path)
+
+        assert client.message_index.call_count == 1
+        assert [(r.folder, r.read) for r in results] == [
+            ("INBOX", False),
+            ("Sent", False),
+            ("Work", False),
+        ]
+        assert "test-job: connection to the server lost, 2 folders not read" in caplog.text
 
 
 # Four chunks in the IMAP backend's walk, which fetches ten messages at a time.
@@ -2915,8 +2984,8 @@ class TestVerify:
 
             results = jobs.verify(job, tmp_path)
 
-        assert [r.folder for r in results] == ["INBOX"]
-        assert results[0].missing == 1
+        assert [(r.folder, r.read) for r in results] == [("Broken", False), ("INBOX", True)]
+        assert results[1].missing == 1
 
 
 # ---------------------------------------------------------------------------

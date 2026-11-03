@@ -80,6 +80,9 @@ class ReconcileResult:
 
     `unfetched` is what `base.BackupResult.unfetched` is: the failed downloads,
     by backend id, that a backup may fetch again by themselves next run.
+
+    `read` is False for a folder that was not read at all, because of an error
+    or a connection lost before it. Its counts are zero then.
     """
 
     folder: str
@@ -93,6 +96,7 @@ class ReconcileResult:
     failed: int = 0
     flushed: bool = True
     unfetched: list[Any] = dataclasses.field(default_factory=list)
+    read: bool = True
 
     @property
     def complete(self) -> bool:
@@ -103,7 +107,7 @@ class ReconcileResult:
         caller that advances a resume point has to ask both -- see
         `backup._catch_up_folder`.
         """
-        return self.failed == 0
+        return self.read and self.failed == 0
 
     @property
     def resumable(self) -> bool:

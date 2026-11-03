@@ -19,7 +19,7 @@ from typing import Any
 
 from mailvault import conf, mailutils, utils
 from mailvault.backend import base, session
-from mailvault.jobs.common import PassLog
+from mailvault.jobs.common import PassLog, warn_not_read
 from mailvault.jobs.db import DEFAULT_QUERY_DB_NAME, refresh_db
 from mailvault.jobs.migration import migrate_archive
 from mailvault.jobs.reconcile import ArchivedPlaces, ReconcileResult, reconcile_folder
@@ -187,8 +187,14 @@ def _backup_to_log(
     """Back up the selected folders, recording locations and resume state."""
     heads_root = store_path / heads.DEFAULT_HEADS_DIR
     log_root = store_path / metalog.DEFAULT_LOG_DIR
-    folders = job.folders if job.folders else mb.folders()
-    for folder in folders:
+    folders = list(job.folders if job.folders else mb.folders())
+    for position, folder in enumerate(folders):
+        if mb.connection_lost:
+            # None of them was read, so their resume points are unchanged and the
+            # next run reads them, as it does a folder that failed.
+            warn_not_read(job.name, folders[position:])
+            report.retried.extend(folders[position:])
+            break
         report.folders += 1
         try:
             if _backup_folder(
@@ -216,7 +222,9 @@ def _backup_to_log(
             # in this program, and then "backup failed: list index out of range"
             # says nothing about where, which is what `-v` is for.
             utils.log_failure(log, exc, "%s::%s: backup failed", job.name, folder)
-    _empty_trash(mb, job)
+    # It would fail like every other call, and the next run empties it.
+    if not mb.connection_lost:
+        _empty_trash(mb, job)
 
 
 def _empty_trash(mb: base.MailboxClient, job: conf.JobConfig) -> None:

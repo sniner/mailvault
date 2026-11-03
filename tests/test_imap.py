@@ -264,6 +264,27 @@ class TestALostConnection:
 
         assert isinstance(client.conn, imap._Connection)
 
+    def test_the_client_says_when_it_is_lost(self):
+        conn = _make_mock_conn()
+        conn.noop.side_effect = TimeoutError("timed out")
+        client = imap.ImapClient(typing.cast(Any, imap._Connection(conn)), _make_job())
+        assert not client.connection_lost
+
+        with pytest.raises(TimeoutError):
+            client.conn.noop()
+
+        assert client.connection_lost
+
+    def test_a_refused_command_is_no_lost_connection(self):
+        conn = _make_mock_conn()
+        conn.noop.side_effect = imaplib.IMAP4.error("NOOP refused")
+        client = imap.ImapClient(typing.cast(Any, imap._Connection(conn)), _make_job())
+
+        with pytest.raises(imaplib.IMAP4.error):
+            client.conn.noop()
+
+        assert not client.connection_lost
+
 
 # ---------------------------------------------------------------------------
 # folders()

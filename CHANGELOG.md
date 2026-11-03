@@ -13,6 +13,12 @@
 - **The last line of a comparison lists only the counts that are not zero.** With messages not
   fetched, "0 of … messages on the server are not archived" read as if the folder were complete
 - **A message deleted on the server during a comparison no longer counts as already archived**
+- **IMAP: after a lost connection the remaining folders of the job are not tried.** Each of them
+  failed with an error line of its own. The log now says once how many folders were not read,
+  and the next run reads them
+- **`verify` no longer calls the archive complete when a folder could not be read.** Such a
+  folder was left out of the report. It is now named as not read, and `verify` ends with exit
+  code 1
 
 ## 0.24.1 (2026-11-03)
 

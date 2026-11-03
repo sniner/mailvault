@@ -1783,6 +1783,18 @@ class TestVerifyExitCode:
         assert report_verify("job", results, repaired=True) == 1
         assert "archive is complete" not in capsys.readouterr().out
 
+    def test_a_folder_that_was_not_read_fails_the_run(self, capsys):
+        """It used to be left out, and the rest could call the archive complete."""
+        results = [*self._results(), jobs.VerifyResult("Trash", read=False)]
+
+        code = report_verify("job", results, repaired=False)
+
+        out = capsys.readouterr().out
+        assert code == 1
+        assert "archive is complete" not in out
+        assert "Trash" not in out.splitlines()[0]
+        assert "1 folder not read -- run again\n  job::Trash" in out
+
     def test_mail_that_was_fetched_and_not_recorded_is_said_and_counted(self, capsys):
         """Restored, but nothing says where it belongs -- so the folder is not done."""
         results = self._results(missing=2, restored=2, flushed=False)

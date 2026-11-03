@@ -103,12 +103,15 @@ def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: boo
     """Print what each folder holds, and whether anything is missing.
 
     The exit code follows the last line. It is non-zero while any server message
-    is not known to be archived: missing and not restored, or not downloaded at
-    all. A gap ends non-zero whether or not `--repair` was asked to close it,
-    the same answer `archive check` gives to a message the log names and the
-    archive does not have.
+    is not known to be archived: missing and not restored, not downloaded, or in
+    a folder that was not read. A gap ends non-zero whether or not `--repair` was
+    asked to close it, the same answer `archive check` gives to a message the log
+    names and the archive does not have.
     """
     for r in results:
+        if not r.read:
+            # Named with the others after the verdict; there are no counts.
+            continue
         line = f"{job_name}::{r.folder}: {r.on_server:,} on server, {r.missing:,} not archived"
         # Only where there was something to restore: "0 restored" on every line
         # of a repair run answers a question nobody asked.
@@ -124,7 +127,8 @@ def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: boo
     total_unchecked = sum(r.unchecked for r in results)
     total_cut_off = sum(r.cut_off for r in results)
     unwritten = [f"{job_name}::{r.folder}" for r in results if not r.flushed]
-    if not total_missing and not total_unchecked:
+    unread = [f"{job_name}::{r.folder}" for r in results if not r.read]
+    if not total_missing and not total_unchecked and not unread:
         print(f"{job_name}: archive is complete")
     elif total_missing and not repaired:
         missing = utils.counted(total_missing, "message")
@@ -148,6 +152,8 @@ def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: boo
             f"{job_name}: {utils.counted(total_cut_off, 'message')} not fetched, the"
             " connection to the server was lost -- run again to check them"
         )
+    # The log above says why.
+    report_items(unread, "folder", "not read -- run again")
     # After the verdict rather than before it, because this qualifies whatever
     # the verdict said: the mail is in the archive and nothing records where it
     # belongs, so a folder counted as complete is not yet finished. Ending on
@@ -159,7 +165,7 @@ def report_verify(job_name: str, results: list[jobs.VerifyResult], repaired: boo
         " with nothing recording where it came from, run again",
     )
     outstanding = sum(r.outstanding for r in results)
-    return 0 if outstanding <= 0 and not unwritten else 1
+    return 0 if outstanding <= 0 and not unwritten and not unread else 1
 
 
 def _run_job(

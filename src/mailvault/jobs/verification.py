@@ -19,7 +19,7 @@ import pathlib
 
 from mailvault import conf, utils
 from mailvault.backend import session
-from mailvault.jobs.common import JobError
+from mailvault.jobs.common import JobError, warn_not_read
 from mailvault.jobs.reconcile import ArchivedPlaces, ReconcileResult, reconcile_folder
 from mailvault.store import cas, heads, metalog
 
@@ -70,7 +70,11 @@ def verify(
     with session.open_mailbox(job) as mb:
         store = cas.mail_store(store_path, compress=compress)
         folders = job.folders if job.folders else list(mb.folders())
-        for folder in folders:
+        for position, folder in enumerate(folders):
+            if mb.connection_lost:
+                warn_not_read(job.name, folders[position:])
+                results.extend(VerifyResult(name, read=False) for name in folders[position:])
+                break
             try:
                 results.append(
                     reconcile_folder(
@@ -89,4 +93,8 @@ def verify(
                 # diagnosed the failure or nobody expected it, and the stack
                 # that tells those two apart waits for `-v`.
                 utils.log_failure(log, exc, "%s::%s: verify failed", job.name, folder)
+                # The report names it. Without a result the folder would not count
+                # against the verdict, and the archive could be called complete
+                # although this folder was never compared.
+                results.append(VerifyResult(folder, read=False))
     return results
