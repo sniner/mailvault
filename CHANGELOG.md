@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **IMAP: a comparison with the archive keeps the connection in use while it reads the
+  archive.** Reading a large archive from a slow disk can take more than an hour. The server or a
+  router dropped the unused connection, and the run ended before the folder was listed
+
 ## 0.24.2 (2026-11-03)
 
 ### Fixed

@@ -415,6 +415,15 @@ class ImapClient:
         conn = self.conn
         return isinstance(conn, _Connection) and conn.lost
 
+    def keep_alive(self) -> None:
+        try:
+            self.conn.noop()
+        except _CONNECTION_ERRORS as exc:
+            raise base.ConnectionLost(f"connection to the server lost: {exc}") from exc
+        except imaplib.IMAP4.error as exc:
+            # The server answered, so the connection is still in use.
+            log.debug("%s: NOOP refused: %s", self.job_name, exc)
+
     def close(self) -> None:
         """Log out and close the underlying connection."""
         try:

@@ -300,6 +300,15 @@ class MailboxClient(Protocol):
         """
         ...
 
+    def keep_alive(self) -> None:
+        """Use the connection while the caller has nothing to ask the server.
+
+        Called during long work on the archive alone. The server or a router on the
+        way may drop a connection that is not used for a while. Raises
+        `ConnectionLost` when the connection is already gone.
+        """
+        ...
+
     def close(self) -> None: ...
 
 

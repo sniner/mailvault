@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import imaplib
+import itertools
 import json
 import logging
 import pathlib
@@ -15,7 +16,7 @@ import pytest
 
 from mailvault import conf, jobs, mailutils
 from mailvault.backend import base, imap
-from mailvault.jobs import common, guard, migration
+from mailvault.jobs import common, guard, migration, reconcile
 from mailvault.jobs import db as db_module
 from mailvault.jobs.db import DEFAULT_QUERY_DB_NAME, freshness, refresh_db
 from mailvault.jobs.reconcile import archived_message_ids, places_from_log
@@ -902,6 +903,32 @@ class TestCatchUp:
             self._run(_make_job(folders=["INBOX"]), self._client(["a"]), tmp_path)
 
         assert "1 message recorded in 2 places" in [r.getMessage() for r in caplog.records]
+
+    def test_a_connection_lost_while_the_archive_is_read_ends_the_run(
+        self,
+        tmp_path,
+        caplog,
+        monkeypatch,
+    ):
+        """Issue #19: the listing came after 95 minutes and found the connection gone."""
+        monkeypatch.setattr(reconcile, "KEEP_ALIVE_EVERY", 0)
+        self._archive_with(tmp_path, "a", "b")
+        client = self._client(["a", "b", "c"])
+
+        def lost():
+            client.connection_lost = True
+            raise base.ConnectionLost("connection to the server lost: timed out")
+
+        client.keep_alive.side_effect = lost
+
+        with caplog.at_level(logging.INFO):
+            report = self._run(_make_job(folders=["INBOX", "Sent"]), client, tmp_path)
+
+        assert client.keep_alive.call_count == 1
+        client.message_index.assert_not_called()
+        assert report.retried == ["INBOX", "Sent"]
+        assert "INBOX: backup failed: connection to the server lost: timed out" in caplog.text
+        assert "test-job: connection to the server lost, 1 folder not read" in caplog.text
 
 
 class TestTheFoldersAfterALostConnection:
@@ -2581,6 +2608,20 @@ class TestVerify:
         path.unlink()
 
         assert archived_message_ids(store, [store_id]) == {}
+
+    def test_the_connection_is_used_once_a_minute_while_the_archive_is_read(self, tmp_path):
+        """Issue #19: after 95 minutes of reading, the connection to Gmail was gone."""
+        store = cas.mail_store(tmp_path)
+        ids = [store.add(_eml(f"<{n}@example.com>"))[1] for n in "abcdef"]
+        keep_alive = MagicMock()
+
+        # Each look at the clock is 25 seconds after the one before.
+        with patch("mailvault.jobs.reconcile.time") as clock:
+            clock.monotonic.side_effect = itertools.count(0, 25)
+            known = archived_message_ids(store, ids, keep_alive=keep_alive)
+
+        assert len(known) == 6
+        assert keep_alive.call_count == 2
 
     def test_repair_is_idempotent(self, tmp_path):
         """A second verify run right after a repair must find nothing."""

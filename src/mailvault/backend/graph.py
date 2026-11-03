@@ -331,6 +331,11 @@ class MSGraphClient:
         # does not mean that the next one fails: the network may be back by then.
         return False
 
+    def keep_alive(self) -> None:
+        # Nothing to keep: the HTTP client opens a new connection for a request
+        # when the old one was closed.
+        pass
+
     def close(self) -> None:
         """Close the HTTP client."""
         self._http.close()

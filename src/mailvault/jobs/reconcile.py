@@ -39,6 +39,7 @@ import collections.abc
 import dataclasses
 import logging
 import pathlib
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -61,6 +62,10 @@ SERVER_PROGRESS_EVERY = 5_000
 # message measured against Gmail, and a request per message on Graph -- so it
 # says where it is far more often than the passes that only read.
 FETCH_PROGRESS_EVERY = 250
+# Seconds the archive read may leave the connection to the server unused. Gmail
+# or a router on the way drops a connection nobody uses, and reading a large
+# archive from a slow disk can take more than an hour.
+KEEP_ALIVE_EVERY = 60.0
 
 
 @dataclasses.dataclass
@@ -176,6 +181,7 @@ def archived_message_ids(
     store: cas.ContentAddressedStorage,
     store_ids: collections.abc.Iterable[str],
     log_ctx: str = "",
+    keep_alive: collections.abc.Callable[[], None] | None = None,
 ) -> dict[str, str]:
     """Read the normalised Message-ID of each archived message, by store id.
 
@@ -193,6 +199,10 @@ def archived_message_ids(
     archive rather than on the server, which is not what one would guess from the
     outside.
 
+    Calls `keep_alive` between two reads once `KEEP_ALIVE_EVERY` seconds have
+    passed since the last call, so that the connection is still there for the
+    listing that follows. What it raises ends the read.
+
     Each entry is opened by its id rather than looked up first, which is one
     round trip instead of two -- the same reason `db._insert_message` does it
     that way. Asking `locate(exists=True)` where the file is costs up to two
@@ -201,7 +211,11 @@ def archived_message_ids(
     share this pass is already the slowest part of.
     """
     known: dict[str, str] = {}
+    used = time.monotonic()
     for read, store_id in enumerate(store_ids, start=1):
+        if keep_alive is not None and time.monotonic() - used >= KEEP_ALIVE_EVERY:
+            keep_alive()
+            used = time.monotonic()
         if log_ctx and read % ARCHIVE_PROGRESS_EVERY == 0:
             log.info("%s: %s read from the archive", log_ctx, utils.counted(read, "message"))
         try:
@@ -240,7 +254,7 @@ def reconcile_folder(
     # Said before the work, not after it: this reads one header per archived
     # message and has nothing to report until every one of them is done.
     log.info("%s: reading %s", ctx, utils.counted(len(archived), "archived message"))
-    present = archived_message_ids(store, archived, log_ctx=ctx)
+    present = archived_message_ids(store, archived, log_ctx=ctx, keep_alive=mb.keep_alive)
     log.info("%s: %s in archive", ctx, utils.counted(len(present), "message"))
 
     result = ReconcileResult(folder=folder)
