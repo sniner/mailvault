@@ -27,11 +27,13 @@ half of the wait -- and a run that did that says so, because otherwise "nothing
 found" would mean two different things on two different days.
 
 Nothing here repairs. What it removes is what cannot be data: the transient file
-of a write that was interrupted, under the same age rule `compact` uses. A
-message that is missing comes back through a command that has a server to ask.
-The one exception is `quarantine`, which does not repair either -- it takes the
-name away from an entry that has been proved not to deserve it, so that the
-store stops answering "yes, that one is here" and something can fetch it again.
+of a write that was interrupted, under the same age rule `compact` uses, and the
+damaged copy of a message that an earlier run set aside once the message is
+back under its name, intact. A message that is missing comes back through a
+command that has a server to ask. The one exception is `quarantine`, which does
+not repair either -- it takes the name away from an entry that has been proved
+not to deserve it, so that the store stops answering "yes, that one is here" and
+something can fetch it again.
 """
 
 from __future__ import annotations
@@ -41,7 +43,6 @@ import dataclasses
 import logging
 import os
 import pathlib
-import re
 
 from mailvault import utils
 from mailvault.jobs.common import JobError
@@ -53,19 +54,6 @@ log = logging.getLogger(__name__)
 # and huge in number; reading contents is the opposite, so it reports sooner.
 WALK_PROGRESS_EVERY = 20_000
 CONTENTS_PROGRESS_EVERY = 2_000
-
-# What an entry that failed its own hash is renamed to. The suffix is what takes
-# it out of the store's name space: `hashval_of` no longer recognises the name,
-# so `walk`, `create-db` and the existence check behind `add` all stop seeing it.
-QUARANTINE_SUFFIX = ".corrupt"
-
-# Enough to get past the entries quarantined by earlier runs of a message that
-# keeps coming back broken. Past that, something else is wrong.
-_QUARANTINE_ATTEMPTS = 100
-
-# What a quarantined entry looks like afterwards: the name it had, the suffix,
-# and a number when an earlier quarantine already took the plain form.
-_QUARANTINED = re.compile(rf"(?P<entry>.+){re.escape(QUARANTINE_SUFFIX)}(\.\d+)?\Z")
 
 
 @dataclasses.dataclass
@@ -86,7 +74,10 @@ class CheckResult:
     places: int = 0
     log_files: int = 0
     transient_removed: int = 0
-    quarantined_before: int = 0
+    # Damaged copies an earlier run set aside: the ones whose message is not back
+    # yet, by store id and file, and how many were removed because it is.
+    set_aside: list[tuple[str, pathlib.Path]] = dataclasses.field(default_factory=list)
+    set_aside_removed: int = 0
     contents_checked: bool = False
     missing: dict[str, str] = dataclasses.field(default_factory=dict)
     broken_chains: list[str] = dataclasses.field(default_factory=list)
@@ -148,18 +139,6 @@ def _store_files(root: pathlib.Path) -> collections.abc.Iterator[pathlib.Path]:
             yield here / fname
 
 
-def _quarantined_origin(store: cas.ContentAddressedStorage, path: pathlib.Path) -> str | None:
-    """The store id a quarantined file used to be filed under, or None.
-
-    So that what an earlier run set aside is recognised for what it is instead
-    of being reported as a stray file on every run from now on.
-    """
-    match = _QUARANTINED.match(path.name)
-    if match is None:
-        return None
-    return store.hashval_of(path.with_name(match.group("entry")))
-
-
 def _classify(
     store: cas.ContentAddressedStorage,
     result: CheckResult,
@@ -182,8 +161,8 @@ def _classify(
             entries[hashval] = path
         elif store.is_stale_transient(path):
             result.transient_removed += int(store.drop_transient(path))
-        elif _quarantined_origin(store, path) is not None:
-            result.quarantined_before += 1
+        elif (origin := store.quarantined_origin(path)) is not None:
+            result.set_aside.append((origin, path))
         elif store.transient_origin(path) is None:
             # Whatever is left is neither an entry, nor something an earlier run
             # set aside, nor a transient file a *running* writer may still hold
@@ -323,6 +302,49 @@ def _check_seals(meta: pathlib.Path, result: CheckResult) -> None:
             result.damaged_seals.append(found.path)
 
 
+def _drop_what_came_back(
+    store: cas.ContentAddressedStorage,
+    entries: dict[str, pathlib.Path],
+    result: CheckResult,
+) -> None:
+    """Remove the damaged copies whose message is back under its name, intact.
+
+    The hash of the entry proves it holds the right bytes, so the damaged copy
+    has nothing left to give. One whose message is not back stays: it may be all
+    that is left of it. Without the integrity check, only these entries are read.
+    """
+    damaged = {*result.corrupt, *result.unreadable}
+    kept = []
+    for store_id, path in result.set_aside:
+        entry = entries.get(store_id)
+        if entry is None or not _intact(store, entry, damaged, result.contents_checked):
+            kept.append((store_id, path))
+            continue
+        try:
+            utils.remove_file(path)
+        except OSError as exc:
+            log.warning("%s: not removed: %s", store.where(path), exc)
+            kept.append((store_id, path))
+            continue
+        log.info("%s: removed, the message is back intact", store.where(path))
+        result.set_aside_removed += 1
+    result.set_aside = kept
+
+
+def _intact(
+    store: cas.ContentAddressedStorage,
+    entry: pathlib.Path,
+    damaged: set[pathlib.Path],
+    checked: bool,
+) -> bool:
+    if checked:
+        return entry not in damaged
+    try:
+        return store.verify(entry)
+    except OSError:
+        return False
+
+
 def _check_contents(
     store: cas.ContentAddressedStorage,
     entries: dict[str, pathlib.Path],
@@ -349,51 +371,6 @@ def _check_contents(
             log.error("%s: unreadable: %s", store.where(path), exc)
             result.unreadable.append(path)
     result.contents_checked = True
-
-
-def _where(path: pathlib.Path) -> str:
-    """A message as it reads inside the archive, for a caller with no store.
-
-    `quarantine_entry` is handed the one path it acts on and nothing else, which
-    is the right amount to know for renaming a file -- but a line about it still
-    belongs to the archive that was named at the start of the run.
-    """
-    return utils.under_dir(cas.MAIL_DIR, path)
-
-
-def quarantine_entry(
-    path: pathlib.Path, attempts: int = _QUARANTINE_ATTEMPTS
-) -> pathlib.Path | None:
-    """Take an entry's name away from it, keeping every byte.
-
-    Renamed, never deleted: a message with a flipped bit is still almost all of
-    the message, and throwing away what was just found to be damaged is the
-    worse of the two ways to be wrong. What has to stop is the *claim* -- while
-    the file is called after a hash it does not have, the store keeps answering
-    that the message is present and nothing ever fetches it again.
-
-    It stays in its shard rather than moving to a directory of its own: the
-    archive is three things and nobody wanted a fourth, and where a file sits is
-    itself information.
-
-    Numbered when a name is taken, which happens to a message that was fetched
-    again after an earlier quarantine and broke a second time. Nothing is ever
-    overwritten.
-    """
-    for serial in range(attempts):
-        suffix = QUARANTINE_SUFFIX if serial == 0 else f"{QUARANTINE_SUFFIX}.{serial}"
-        target = path.with_name(path.name + suffix)
-        if target.exists():
-            continue
-        try:
-            path.rename(target)
-        except OSError as exc:
-            log.error("%s: could not be quarantined: %s", _where(path), exc)
-            return None
-        log.warning("%s: quarantined as %s", _where(path), target.name)
-        return target
-    log.error("%s: could not be quarantined, every name is taken", _where(path))
-    return None
 
 
 def check(
@@ -458,8 +435,9 @@ def check(
             utils.counted(result.entries, "message"),
         )
         _check_contents(store, entries, result, step=f"step 3 of {steps}")
+    _drop_what_came_back(store, entries, result)
     if quarantine:
         result.quarantined = [
-            target for path in result.corrupt if (target := quarantine_entry(path))
+            target for path in result.corrupt if (target := store.quarantine(path))
         ]
     return result

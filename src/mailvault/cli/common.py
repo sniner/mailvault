@@ -178,3 +178,34 @@ def shorten(value: str | None, width: int) -> str:
     if len(collapsed) <= width:
         return collapsed
     return collapsed[: width - 1] + "…"
+
+
+def report_read_back(opened: jobs.WritableArchive | None, fetching: bool = False) -> int:
+    """Print what reading back left for the user to do; non-zero when it left anything.
+
+    Reading back logs what it found while it runs. This is the part of it that
+    belongs to the verdict of the command, so that a damaged message does not
+    pass unnoticed behind an exit code of 0. `fetching` is for a run that
+    fetches the damaged messages of its folders again itself: those are not
+    left over then, the ones that came from an import still are.
+
+    `opened` is None where the archive was not opened for writing, as in a dry
+    run.
+    """
+    if opened is None:
+        return 0
+    found = opened.found
+    moves = []
+    if found.mailboxes and not fetching:
+        names = ", ".join(sorted(found.mailboxes))
+        moves.append(f"  the next `backup` fetches those of {names} again")
+    for name in sorted(found.imports):
+        moves.append(
+            f"  import the source of {name} again with `archive import --name {name} SOURCE`"
+        )
+    if not moves:
+        return 0
+    print(f"{utils.counted(len(found.damaged), 'damaged message')} set aside")
+    for move in moves:
+        print(move)
+    return 1

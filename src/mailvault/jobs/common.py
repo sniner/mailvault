@@ -29,6 +29,15 @@ log = logging.getLogger(__name__)
 # a shared constant would tie two decisions together that only happen to agree.
 FLUSH_BATCH = 2000
 
+# After how many observations a pass that starts without a resume point writes
+# its first log file. Such a pass is usually the first one over its folder, and
+# until something is written down the archive holds mail and names no mailbox:
+# a run killed outright before that (kill -9, a power loss, the Windows task
+# scheduler) leaves an archive the mailbox guard refuses, and every run after it
+# fails until somebody passes `--allow-new-mailbox`. One small file and one head
+# for that, once per such pass.
+FIRST_FLUSH = 10
+
 
 class JobError(Exception):
     pass
@@ -107,18 +116,28 @@ class PassLog:
     outright loses at most one batch. The next run then finds the folder's
     messages in the log and can catch up instead of downloading it again.
 
+    With `first`, the first flush comes after that many entries instead (see
+    `FIRST_FLUSH`), and every `FLUSH_BATCH` after it.
+
     `flushed` says whether the final flush reached the disk. It is set when the
     block is left, and the resume point and any deletion on the server wait for
     it. `recorded` counts the entries handed in.
     """
 
-    def __init__(self, log_root: pathlib.Path, heads_root: pathlib.Path, date: datetime):
+    def __init__(
+        self,
+        log_root: pathlib.Path,
+        heads_root: pathlib.Path,
+        date: datetime,
+        first: int | None = None,
+    ):
         self._writer = metalog.LogWriter(log_root, heads_root)
         self._date = date
         # Counted here rather than read off the writer: a failed flush leaves the
         # writer full, and `len(writer) >= FLUSH_BATCH` would then try to write
         # again after every entry.
         self._since_flush = 0
+        self._batch = FLUSH_BATCH if first is None else first
         self.recorded = 0
         self.flushed = False
 
@@ -132,11 +151,12 @@ class PassLog:
         self._writer.add(mailbox, folders, store_id)
         self.recorded += 1
         self._since_flush += 1
-        if self._since_flush >= FLUSH_BATCH:
+        if self._since_flush >= self._batch:
             self._flush()
 
     def _flush(self) -> bool:
         self._since_flush = 0
+        self._batch = FLUSH_BATCH
         return flush_log(self._writer, self._date)
 
     def __enter__(self) -> PassLog:

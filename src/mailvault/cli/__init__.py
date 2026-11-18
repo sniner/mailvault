@@ -383,7 +383,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Merge the many small metadata-log files an archive accumulates -- one"
             " per folder per backup, with entries repeated wherever a folder was"
             " read in full -- into one file per mailbox/folder holding each"
-            " observation once. Lossless; the originals are removed only after the"
+            " observation once, or two for a folder with messages stored within the"
+            " last hour. Lossless; the originals are removed only after the"
             " consolidated files are written and verified. Refused once the archive"
             " holds a seal, because a seal records these files as they are; see"
             " `archive seal`."
@@ -399,8 +400,9 @@ def build_parser() -> argparse.ArgumentParser:
             " wrote down about them is undamaged, and every message still matches"
             " its checksum -- the last one being the only way to find one whose"
             " bytes have changed under it. --no-integrity-check leaves that last"
-            " check out. Reports what it finds and repairs nothing; the only thing"
-            " it removes is the leftover of a write that was interrupted."
+            " check out. Reports what it finds and repairs nothing; it removes only"
+            " the leftover of a write that was interrupted, and a damaged message set"
+            " aside earlier once the message is back intact."
         ),
     )
     a_check.add_argument(

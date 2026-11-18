@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Messages are no longer flushed to the disk one at a time.** Each stored message cost one or
+  two flushes of the disk, on a network share of the server's disk, which wears flash storage.
+  `backup` and `archive import` now flush only the record of what they stored. After a crash of
+  the computer or a power loss, a message stored shortly before can be empty or cut short
+- **Every command that stores messages first reads back what earlier runs stored**, once it is an
+  hour old, and sets a damaged message aside: `backup`, `verify --repair`, `archive import`,
+  `adopt`, `compress`, `decompress` and `compact`. `backup` then compares the folder the message
+  was in with the server and fetches it again; for an imported message, the command names the
+  import to run again. A command that set a message aside and does not fetch it again itself
+  says so in its last lines and exits non-zero
+- **Before mailvault removes the source of a message, it flushes the message first**: `backup`
+  with `delete_after_export` before it deletes on the server, `archive import --move` before it
+  removes the files, `archive compress` and `decompress` before they remove the originals. The
+  messages of a folder, or 2,000 at a time, are flushed together: 3,000 messages cost about 200
+  flushes of the disk instead of 6,000. A message that is in the archive already is read first
+  there, and a damaged copy replaced by the one just fetched
+- **`archive check` removes a damaged message that was set aside once the message is back
+  intact.** Set-aside messages that are not back yet are listed by id, with the command that
+  fetches them again; before, the report only counted them, and nothing ever removed them
+- **The query database costs far fewer flushes of the disk.** Updating it after a backup took a
+  commit, four flushes, for every folder that got mail, and creating it took 80 flushes before the
+  first message. Both now take a handful
+
+### Fixed
+
+- **A first backup that was killed outright no longer stops every run after it.** Until it had
+  recorded 2,000 messages, the archive held mail and named no mailbox, and the next run refused
+  to go ahead without `--allow-new-mailbox`. A folder read without a resume point now records
+  its first ten messages right away
+- **`archive check` reports a compressed message that cannot be decompressed as damaged**, also
+  one that is empty or cut short. It stopped with an error at the first such message, and
+  `--quarantine` could not set it aside
+- **macOS: after a power loss, where a folder resumes is no longer ahead of what was recorded
+  about it.** Writes there stop in the disk's cache unless it is told to flush, and it never was.
+  Now it is, once per folder before the resume point moves, and once in `archive compact` before
+  the log files it merged are removed
+
 ## 0.25.0 (2026-11-03)
 
 ### Fixed

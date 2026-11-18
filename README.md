@@ -431,7 +431,8 @@ sound -- every message was read and matches its checksum
 
 It repairs nothing and exits non-zero when something is off. `--quarantine` sets
 damaged messages aside so they count as missing again and can be fetched back by
-`verify --repair`. Where it reports messages that belong to no place,
+`verify --repair`. Once such a message is back intact, the next check removes the
+damaged copy. Where it reports messages that belong to no place,
 [`archive adopt`](https://github.com/sniner/mailvault/blob/main/docs/deep-dive.md#taking-in-what-belongs-to-no-place)
 takes them in under a name you give.
 

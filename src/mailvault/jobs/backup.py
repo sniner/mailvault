@@ -19,9 +19,10 @@ from typing import Any
 
 from mailvault import conf, mailutils, utils
 from mailvault.backend import base, session
-from mailvault.jobs.common import PassLog, warn_not_read
+from mailvault.jobs.common import FIRST_FLUSH, PassLog, warn_not_read
 from mailvault.jobs.db import DEFAULT_QUERY_DB_NAME, refresh_db
 from mailvault.jobs.migration import migrate_archive
+from mailvault.jobs.readback import WritableArchive, open_for_writing
 from mailvault.jobs.reconcile import ArchivedPlaces, ReconcileResult, reconcile_folder
 from mailvault.store import cas, heads, metalog
 
@@ -293,7 +294,8 @@ def _backup_folder(
     # is left, also by an exception or Ctrl-C. A first pass over a large folder
     # can run for hours; cut short, it still records what it stored, and the
     # next run catches up from there instead of downloading the folder again.
-    with PassLog(log_root, heads_root, observed_at) as pass_log:
+    first = FIRST_FLUSH if previous is None else None
+    with PassLog(log_root, heads_root, observed_at, first=first) as pass_log:
         result = mb.folder_backup(
             folder,
             store,
@@ -375,7 +377,7 @@ def _backup_folder(
     # Purged before the point is written. The next run asks only for what lies
     # past it, so a point moved past messages that could not be deleted would
     # leave them on the server for good.
-    purged = _purge_after_flush(mb, job, folder, result, flushed, report)
+    purged = _purge_after_flush(mb, store, job, folder, result, flushed, report)
     if not purged and resume is not None:
         log.warning(
             "%s::%s: not all deleted, resume point not advanced",
@@ -630,24 +632,29 @@ def _catch_up_folder(
 
 def _purge_after_flush(
     mb: base.MailboxClient,
+    store: cas.ContentAddressedStorage,
     job: conf.JobConfig,
     folder: str,
     result: base.BackupResult,
     flushed: bool,
     report: BackupReport,
 ) -> bool:
-    """Delete the archived messages from the server, but only once the log is on disk.
+    """Delete the archived messages from the server, once they and the log are on disk.
 
     Returns whether nothing is left to delete. False holds the resume point back,
     so that the next run reads the messages again and deletes them then.
 
     This is the ordering the archive depends on when it deletes after export: a
-    message's location reaches the log and is fsync'd *before* the message is
-    removed from its source. A flush that failed holds the deletion back entirely
-    -- the messages stay on the server and are re-fetched next run, which the
-    content-addressed storage deduplicates -- rather than leaving `.eml` files in
-    the archive whose one unrecoverable fact, where they were seen, went with the
-    deleted server copy.
+    message and its location reach the device *before* the message is removed
+    from its source. Until then the server's copy is what a message damaged by a
+    power loss is fetched again from, which is why the store writes without a
+    flush (`cas.Flush.ON_REQUEST`) and is flushed here, all at once.
+
+    A flush that failed, of the log or of the messages, holds the deletion back
+    entirely -- the messages stay on the server and are re-fetched next run,
+    which the content-addressed storage deduplicates -- rather than leaving
+    `.eml` files in the archive whose one unrecoverable fact, where they were
+    seen, went with the deleted server copy.
 
     Deletion does not wait for a *complete* folder, only for a written log: the
     messages in `deletable` were stored and their locations written, so removing
@@ -660,6 +667,18 @@ def _purge_after_flush(
     if not flushed:
         log.error(
             "%s::%s: metadata log not written, %s left on the server",
+            job.name,
+            folder,
+            utils.counted(len(result.deletable), "message"),
+        )
+        return False
+    try:
+        store.flush()
+    except OSError as exc:
+        utils.log_failure(
+            log,
+            exc,
+            "%s::%s: %s left on the server, flushing them to disk failed",
             job.name,
             folder,
             utils.counted(len(result.deletable), "message"),
@@ -683,6 +702,7 @@ def backup(
     index_db: bool = False,
     incremental: bool = True,
     places: ArchivedPlaces | None = None,
+    archive: WritableArchive | None = None,
 ) -> BackupReport:
     """Back up one job's folders into the archive at `store_path`.
 
@@ -713,14 +733,23 @@ def backup(
     there is no reason to hold a server connection open across it. Doing it here
     also puts the "migrating, this may take a moment" line right after the job
     starts, rather than after a silent connect.
+
+    `archive` is `store_path` opened for writing, from a caller that runs several
+    jobs and opens it once for all of them. Without it the archive is opened
+    here, which reads back what earlier runs stored, before the mailbox is
+    opened for the same reason as the migration.
     """
     migrate_archive(store_path)
+    if archive is None:
+        archive = open_for_writing(store_path)
     report = BackupReport()
     if places is None:
         places = ArchivedPlaces(store_path / metalog.DEFAULT_LOG_DIR)
+    # Flushed only before a purge, which removes the one other copy.
+    flush = cas.Flush.ON_REQUEST if job.delete_after_export else cas.Flush.NEVER
+    store = archive.store(compress=compress, flush=flush)
     try:
         with session.open_mailbox(job) as mb:
-            store = cas.mail_store(store_path, compress=compress)
             _backup_to_log(mb, store, job, store_path, report, places, incremental=incremental)
     finally:
         if index_db and report.with_mail:

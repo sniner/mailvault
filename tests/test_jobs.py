@@ -24,6 +24,7 @@ from mailvault.legacy import state_json as state
 from mailvault.legacy import store_db
 from mailvault.store import cas, heads, index_db, marker, metalog
 from tests.legacy_store_db import legacy_store_db
+from tests.tamper import tamper
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1541,6 +1542,51 @@ class TestStoreMessage:
         assert [m.store_id for m in recorded] == [store_id]
 
 
+class TestTheFirstLogFile:
+    """A pass without a resume point writes its first log file early.
+
+    Until then the archive holds mail and names no mailbox, and a run killed
+    outright there leaves an archive the mailbox guard refuses.
+    """
+
+    @staticmethod
+    def _known_while_storing(tmp_path, count: int) -> list[bool]:
+        """Back up `count` messages; after each, whether the log names the job yet."""
+        known: list[bool] = []
+
+        def run(folder_name, store, resume=None, retry=(), callback=None):
+            for n in range(count):
+                _status, store_id, _path = store.add(f"Message-ID: <{n}@x>\r\n\r\n".encode())
+                if callback:
+                    callback(
+                        mailutils.MessageMetadata(
+                            mailbox="test-job", store_id=store_id, folders=[folder_name]
+                        )
+                    )
+                known.append("test-job" in metalog.mailboxes(tmp_path / "meta"))
+            return base.BackupResult(total=count, stored=count, resume=_token(LATER))
+
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = run
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+            jobs.backup(_make_job(folders=["INBOX"]), tmp_path)
+        return known
+
+    def test_after_the_first_ten_messages(self, tmp_path):
+        known = self._known_while_storing(tmp_path, 15)
+
+        assert known.index(True) == common.FIRST_FLUSH - 1
+        assert sum(len(f.store_ids) for f in metalog.read_all(tmp_path / "meta")) == 15
+
+    def test_but_a_pass_that_carries_on_writes_at_its_end(self, tmp_path):
+        """It has written before, and the guard knows the mailbox from that."""
+        _seed_resume(tmp_path, ARCHIVED_AT)
+
+        assert not any(self._known_while_storing(tmp_path, 15))
+
+
 class TestDeleteAfterExport:
     """Deletion is gated on a durable log: purge runs only after a good flush."""
 
@@ -1615,6 +1661,96 @@ class TestDeleteAfterExport:
 
         # A message must never leave the server when its location was not written.
         mock_client.purge.assert_not_called()
+
+    @staticmethod
+    def _backup_storing(stored: list[pathlib.Path], earned: dict | None = None):
+        """A folder_backup stand-in that really stores its one message."""
+
+        def run(folder_name, store, resume=None, retry=(), callback=None):
+            _status, store_id, path = store.add(b"From: a@example.org\r\n\r\nbody")
+            stored.append(path)
+            if callback:
+                callback(
+                    mailutils.MessageMetadata(
+                        mailbox="test-job",
+                        store_id=store_id,
+                        folders=[folder_name],
+                    )
+                )
+            return base.BackupResult(total=1, stored=1, deletable=[1], resume=earned)
+
+        return run
+
+    @pytest.mark.parametrize(
+        ("deletes", "policy"),
+        [(True, cas.Flush.ON_REQUEST), (False, cas.Flush.NEVER)],
+    )
+    def test_the_store_flushes_only_for_a_job_that_deletes(self, tmp_path, deletes, policy):
+        job = _make_job(folders=["INBOX"], delete_after_export=deletes)
+        mock_client = _make_mock_client()
+        policies: list[cas.Flush] = []
+
+        def run(folder_name, store, resume=None, retry=(), callback=None):
+            policies.append(store.flush_policy)
+            return base.BackupResult()
+
+        mock_client.folder_backup.side_effect = run
+
+        self._run(job, mock_client, tmp_path)
+
+        assert policies == [policy]
+
+    def test_the_messages_reach_the_disk_before_the_purge(self, tmp_path, monkeypatch):
+        """The server's copy is what a message damaged by a power loss comes back from."""
+        job = _make_job(folders=["INBOX"], delete_after_export=True)
+        mock_client = _make_mock_client()
+        stored: list[pathlib.Path] = []
+        mock_client.folder_backup.side_effect = self._backup_storing(stored)
+        order: list[str] = []
+        monkeypatch.setattr(
+            cas.atomic,
+            "sync_together",
+            lambda paths: order.append(f"flush {[p.name for p in paths]}"),
+        )
+        mock_client.purge.side_effect = lambda folder, ids: order.append("purge")
+
+        self._run(job, mock_client, tmp_path)
+
+        assert order == [f"flush {[stored[0].name]}", "purge"]
+
+    def test_a_message_an_earlier_run_left_damaged_is_replaced_before_the_purge(self, tmp_path):
+        """A power loss before its flush: no purge then, and the same message again now."""
+        body = b"From: a@example.org\r\n\r\nbody"
+        _status, store_id, path = cas.mail_store(tmp_path).add(body)
+        tamper(path, body[:5])
+        job = _make_job(folders=["INBOX"], delete_after_export=True)
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = self._backup_storing([])
+        intact_at_purge: list[bool] = []
+        mock_client.purge.side_effect = lambda folder, ids: intact_at_purge.append(
+            cas.mail_store(tmp_path).verify_entry(store_id)
+        )
+
+        self._run(job, mock_client, tmp_path)
+
+        assert intact_at_purge == [True]
+
+    def test_does_not_purge_when_the_messages_cannot_be_flushed(self, tmp_path, monkeypatch):
+        _seed_resume(tmp_path, ARCHIVED_AT)
+        job = _make_job(folders=["INBOX"], delete_after_export=True)
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = self._backup_storing([], earned=_token(LATER))
+
+        def sync_together(paths):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(cas.atomic, "sync_together", sync_together)
+
+        report = self._run(job, mock_client, tmp_path)
+
+        mock_client.purge.assert_not_called()
+        assert _resume_date(tmp_path) == ARCHIVED_AT
+        assert report.retried == ["INBOX"]
 
     def test_a_purge_that_went_through_moves_the_resume_point(self, tmp_path):
         job = _make_job(folders=["INBOX"], delete_after_export=True)
@@ -3517,6 +3653,32 @@ class TestRefreshDb:
 
         with index_db.IndexDatabase(db_path) as db:
             assert db.execute("SELECT count(*) FROM applied_log").fetchone()[0] == 1
+
+    def test_the_log_files_of_a_backup_are_taken_in_with_one_commit(
+        self, tmp_path, monkeypatch
+    ):
+        """A backup leaves a file for every folder that got mail, a commit costs four fsyncs."""
+        for n in range(20):
+            _archive_message(tmp_path, "job", f"F{n}", _eml(f"<{n}@example.com>"))
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+        with index_db.IndexDatabase(db_path, create=True):
+            pass
+        commits: list[str] = []
+        real_connect = index_db.connect
+
+        def traced(path):
+            connection = real_connect(path)
+            connection.set_trace_callback(
+                lambda statement: commits.append(statement) if statement == "COMMIT" else None
+            )
+            return connection
+
+        monkeypatch.setattr(index_db, "connect", traced)
+
+        result = refresh_db(tmp_path, db_path)
+
+        assert result.files == 20
+        assert len(commits) == 2, "the log files, then the heads"
 
     def test_a_full_build_says_why_before_it_starts(self, tmp_path, caplog):
         """Reading every message is worth minutes; nobody should have to guess why."""

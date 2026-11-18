@@ -577,6 +577,29 @@ class TestTheChain:
 
         assert head.log == second.name.removesuffix(".jsonl")
 
+    def test_the_heads_move_after_one_flush_of_the_drive_for_all_the_files(
+        self, tmp_path, monkeypatch
+    ):
+        """On macOS fsync stops at the drive's cache; a head must not be ahead of its file."""
+        root = tmp_path / "meta"
+        order: list[str] = []
+        monkeypatch.setattr(
+            metalog.atomic, "flush_drive_cache", lambda path: order.append("drive")
+        )
+        real_write = heads.write
+
+        def write(heads_root, head):
+            order.append(f"head {head.folder}")
+            real_write(heads_root, head)
+
+        monkeypatch.setattr(heads, "write", write)
+        writer = metalog.LogWriter(root, _heads(root))
+        writer.add("job", ["INBOX", "Sent"], "aa")
+
+        writer.flush(WHEN)
+
+        assert order == ["drive", "head INBOX", "head Sent"]
+
     def test_following_it_back_reaches_every_file_of_the_place(self, tmp_path):
         root = tmp_path / "meta"
         names = [self._flush(root, [sid])[0].name.removesuffix(".jsonl") for sid in "abc"]
@@ -689,6 +712,42 @@ class TestCompactAndTheChain:
 
         assert _read_head(_heads(root), "job", "INBOX").log == before
         assert len(metalog.log_files(root)) == 1
+
+    def test_the_drive_cache_is_flushed_before_the_originals_go(self, tmp_path, monkeypatch):
+        root = tmp_path / "meta"
+        TestTheChain._flush(root, ["aa"])
+        TestTheChain._flush(root, ["bb"])
+        originals = metalog.log_files(root)
+        there: list[bool] = []
+        monkeypatch.setattr(
+            metalog.atomic,
+            "flush_drive_cache",
+            lambda path: there.append(all(p.exists() for p in originals)),
+        )
+
+        metalog.compact(root, _heads(root))
+
+        assert there == [True]
+        assert not any(p.exists() for p in originals)
+
+    def test_compacting_twice_changes_nothing_for_a_place_partly_read_back(self, tmp_path):
+        root = tmp_path / "meta"
+        TestTheChain._flush(root, ["aa"])
+        head = _read_head(_heads(root), "job", "INBOX")
+        head.checked = head.log
+        heads.write(_heads(root), head)
+        TestTheChain._flush(root, ["bb"])
+        TestTheChain._flush(root, ["cc"])
+        metalog.compact(root, _heads(root))
+        before = _read_head(_heads(root), "job", "INBOX")
+        names = _log_names(root)
+
+        metalog.compact(root, _heads(root))
+
+        after = _read_head(_heads(root), "job", "INBOX")
+        assert (after.log, after.checked) == (before.log, before.checked)
+        assert _log_names(root) == names
+        assert len(names) == 2
 
 
 def _log_names(root) -> list[str]:

@@ -26,6 +26,16 @@ Message files are safe by construction. They are named after the hash of their
 content, never modified, and never written twice; a half-written one is
 recognizable and can be thrown away without touching anything else.
 
+They are not flushed to the disk one by one, though. A flush per message wears
+flash storage, and on a network share it is the server's disk that pays. After a
+power loss a message stored shortly before can therefore be empty or cut short.
+So the next command that stores messages reads back what the earlier runs
+stored, once it is an hour old, sets aside what no longer matches its hash, and
+fetches it again from the server, where it still is. Where mailvault removes the
+source itself (deleting after export, `archive import --move`, the originals of
+`archive compress`), it flushes the messages first, a folder or 2,000 messages
+at a time.
+
 An SQLite database is the opposite. It rewrites pages **in place** and relies on
 `fsync` behaving. Over SMB or NFS `fsync` is not reliably honoured, so a torn
 write does not cost you the last change — it can cost you the file. And that file
@@ -635,9 +645,11 @@ step 3 of 3: 4,000 of 130,997 checked
 ```
 
 The command **repairs nothing** and exits non-zero when the archive is not what
-it claims. The only thing it removes is the transient file of a write that was
-interrupted, by the same rule `compact` uses. A file that is not an entry is
-reported and left where it is -- it may well be someone's.
+it claims. It removes two things only: the transient file of a write that was
+interrupted, by the same rule `compact` uses, and the damaged copy of a message
+that was set aside, once the message is back under its name and matches its
+checksum. A file that is not an entry is reported and left where it is -- it may
+well be someone's.
 
 `--quarantine` is the one exception, and it cannot be combined with
 `--no-integrity-check`. A message whose content does not match its checksum is
@@ -645,7 +657,10 @@ the one finding where doing nothing is bad:
 the archive goes on answering that the message is present, so nothing ever
 fetches it again. This renames it to `<hash>.eml.corrupt` -- it keeps every byte,
 it just stops claiming to be that message. Out of the way, the message counts as
-missing again, and `verify --repair` or a `backup --full` brings it back.
+missing again, and `verify --repair` or a `backup --full` brings it back. A backup
+sets aside the same way what a power loss damaged. The damaged copy stays until
+the message is back, because until then it may be all that is left of it; the
+next check after that removes it.
 
 ### Consolidating the metadata log
 
@@ -662,8 +677,9 @@ $ mailvault --archive ./backup archive compact
 41,388 duplicate observations dropped
 ```
 
-It rewrites one file per mailbox/folder holding each observation once, verifies
-the new files, and only then removes the originals -- so it is lossless and safe
+It rewrites one file per mailbox/folder holding each observation once, or two
+where a backup stored messages within the last hour that have not been read
+back yet. It verifies the new files, and only then removes the originals -- so it is lossless and safe
 to interrupt: a half-done run just leaves both, and the next one finishes. Run it
 occasionally; there is no hurry, but do not put it off for years.
 

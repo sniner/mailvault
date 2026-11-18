@@ -6,14 +6,20 @@ carries its own integrity check; adding the same bytes twice is a no-op. Entries
 can be transparently zstd-compressed (through `mailvault.store.zstd`), and the
 header of a stored message can be read without pulling the whole body.
 
-Three rules keep an entry from ever being seen half-written. It is written to a
-transient file and renamed into place only once complete -- a rename within one
-directory is atomic on every filesystem in practical use, so a reader sees the
-whole entry or nothing at all. That transient file's name belongs to one writer
-alone, so two runs storing the same message at the same time cannot write into
-the same file and rename the mixture into place. And the content reaches the
-device before the rename, the directory entry naming it after it, so a power cut
-cannot publish a name whose content never arrived.
+Two rules keep an entry from ever being seen half-written by a program. It is
+written to a transient file and renamed into place only once complete -- a
+rename within one directory is atomic on every filesystem in practical use, so a
+reader sees the whole entry or nothing at all. And that transient file's name
+belongs to one writer alone, so two runs storing the same message at the same
+time cannot write into the same file and rename the mixture into place.
+
+Whether an entry also reaches the device before anything relies on it is the
+store's flush policy (`Flush`). The metadata log flushes every file, because
+what it records exists nowhere else. The mail store flushes only before a
+command removes the source of its messages: until then the source is the second
+copy, and a message a power loss damaged is found by its hash and fetched again.
+A flush per message costs the SSD one or two flushes each, and on a network
+share the server's SSD.
 
 What is immutable by construction is also marked as such: the write bits come
 off just before the entry takes its name, so no program that opens one finds an
@@ -131,6 +137,44 @@ def hash_by_length(hashval: str) -> str | None:
     return None
 
 
+class Flush(enum.Enum):
+    """When a store makes what it writes durable.
+
+    `EACH` flushes every entry before it gets its name and the directory after
+    it: an entry is on the device once `add` returns. `ON_REQUEST` flushes
+    nothing at the time and remembers every entry `add` returns, new or already
+    there, until `flush` makes all of them durable at once; for a command that
+    removes the source of what it stored. It also reads an entry that is already
+    there against its hash before trusting it (see `add`). `NEVER` flushes nothing: an entry
+    reaches the device when the operating system writes it out, and a power loss
+    before that can leave it empty or cut short under its name.
+    """
+
+    EACH = "each"
+    ON_REQUEST = "on-request"
+    NEVER = "never"
+
+
+# Entries `compress_all` and `decompress_all` convert before they flush the new
+# versions and remove the originals. Bounded, so that the old and the new version
+# of the whole store do not have to fit on the disk at the same time.
+CONVERT_BATCH = 2000
+
+
+# What an entry that failed its own hash is renamed to. The suffix takes it out
+# of the store's name space: `hashval_of` no longer recognises the name, so
+# `walk`, `create-db` and the existence check behind `add` all stop seeing it.
+QUARANTINE_SUFFIX = ".corrupt"
+
+# Enough to get past the entries quarantined by earlier runs of a message that
+# keeps coming back broken. Past that, something else is wrong.
+QUARANTINE_ATTEMPTS = 100
+
+# What a quarantined entry looks like afterwards: the name it had, the suffix,
+# and a number when an earlier quarantine already took the plain form.
+_QUARANTINED = re.compile(rf"(?P<entry>.+){re.escape(QUARANTINE_SUFFIX)}(\.\d+)?\Z")
+
+
 class AddStatus(enum.StrEnum):
     """What `add` did with the bytes it was handed.
 
@@ -210,7 +254,10 @@ def _open_transient(destination: pathlib.Path) -> tuple[pathlib.Path, io.Buffere
 
 
 @contextlib.contextmanager
-def _writing_to(destination: pathlib.Path) -> collections.abc.Iterator[io.BufferedWriter]:
+def _writing_to(
+    destination: pathlib.Path,
+    durable: bool,
+) -> collections.abc.Iterator[io.BufferedWriter]:
     """Yield a file to write, and rename it onto `destination` on success.
 
     The transient file is created in the destination's own directory, because a
@@ -219,17 +266,14 @@ def _writing_to(destination: pathlib.Path) -> collections.abc.Iterator[io.Buffer
     would be enough for a single writer; two runs storing the same message at
     the same time would write into one file and rename the mixture into place.
 
-    Both halves of the durability are unconditional, and their order is the
-    point. The content reaches the device *before* the rename, or a power cut
-    can publish a file under a name that claims to be the hash of bytes which
-    never arrived -- and nothing would ever find out, because the store answers
-    "is this entry here?" by looking at names. The directory entry follows the
-    rename, or the bytes survive with nothing pointing at them.
-
-    Neither is optional, because neither failure is recoverable by fetching the
-    message again: an entry that is there but wrong is indistinguishable from a
-    good one, and an entry that is gone was already accounted for by the run
-    that stored it.
+    With `durable` the content reaches the device *before* the rename, and the
+    directory entry after it. The order is the point: a rename that overtakes
+    the content can publish a name that claims to be the hash of bytes which
+    never arrived, and the store answers "is this entry here?" by looking at
+    names. Without `durable` neither is flushed. A process that is killed still
+    leaves at most a transient file, but a power loss can leave the entry empty
+    or cut short under its name, and only reading it against its hash finds
+    that out.
 
     One gap is left open deliberately. When this entry is the first of its
     shard, the directory holding it is itself a new name in the directory above,
@@ -253,8 +297,9 @@ def _writing_to(destination: pathlib.Path) -> collections.abc.Iterator[io.Buffer
     try:
         with f:
             yield f
-            f.flush()
-            os.fsync(f.fileno())
+            if durable:
+                f.flush()
+                os.fsync(f.fileno())
         utils.set_read_only(tmp_path)
         tmp_path.replace(destination)
         renamed = True
@@ -263,7 +308,8 @@ def _writing_to(destination: pathlib.Path) -> collections.abc.Iterator[io.Buffer
             log.debug("%s: write failed, removing transient file", destination)
             utils.remove_file(tmp_path, missing_ok=True)
 
-    atomic.sync_directory(destination.parent)
+    if durable:
+        atomic.sync_directory(destination.parent)
 
 
 @dataclasses.dataclass
@@ -287,6 +333,7 @@ class ContentAddressedStorage:
     `add` writes new content, returning EXISTS for content already present;
     `read` and `read_header` read it back, decompressing `.zst` entries
     transparently; `verify` checks an entry against the name it is filed under.
+    `flush` decides when what `add` wrote is on the device (see `Flush`).
     """
 
     def __init__(
@@ -296,10 +343,14 @@ class ContentAddressedStorage:
         depth: int = 2,
         compress: bool = False,
         hashfactory: HashFactory | None = None,
+        flush: Flush = Flush.EACH,
     ):
         self.root_dir = pathlib.Path(root_dir)
         self.root_dir.mkdir(parents=True, exist_ok=True)
         self.compress = compress
+        self.flush_policy = flush
+        # What `flush` still owes the device, under `Flush.ON_REQUEST`.
+        self._unflushed: list[pathlib.Path] = []
         self.hashfactory = hashfactory or HASHES[_run_hash]
         self.depth = _checked_depth(depth, self.hashfactory)
         self.suffix = suffix
@@ -418,15 +469,32 @@ class ContentAddressedStorage:
         return None
 
     def add(self, data: io.IOBase | bytes) -> tuple[AddStatus, str, pathlib.Path]:
+        """Store `data` unless an entry with its content is there already.
+
+        An entry that is there is taken at its name, except under
+        `Flush.ON_REQUEST`, where the caller is about to remove the source:
+        there it is read against its hash first, and a damaged one is replaced
+        by `data`. A power loss before the last flush of an earlier run leaves
+        such an entry, and that run's source is still there, because the
+        removal waits for the flush.
+        """
         reader = self._reader(data)
         hashval = self._hashval(reader)
         existing = self._find_existing(hashval)
-        if existing:
+        if existing and not self._damaged(existing):
             log.debug("%s: already exists", self.where(existing))
+            # Owed as well: an earlier `add` of this run may have written it
+            # without a flush, and the caller is about to rely on it.
+            self._owe(existing)
             return AddStatus.EXISTS, hashval, existing
+        if existing:
+            # Removed rather than set aside: what replaces it is the message
+            # itself, and the damaged bytes hold nothing it does not.
+            log.warning("%s: damaged, replaced by the copy just read", self.where(existing))
+            utils.remove_file(existing)
         path, filename = self._destination(hashval)
         file = path / filename
-        with _writing_to(file) as f:
+        with _writing_to(file, durable=self.flush_policy is Flush.EACH) as f:
             if self.compress:
                 # The compressor is closed -- its frame flushed into f -- while f
                 # is still open, so the flush covers the whole compressed file.
@@ -435,7 +503,37 @@ class ContentAddressedStorage:
             else:
                 self._copy(reader, f.write)
         log.debug("%s: new entry", self.where(file))
+        self._owe(file)
         return AddStatus.NEW, hashval, file
+
+    def _damaged(self, existing: pathlib.Path) -> bool:
+        """Whether an entry `add` found has to be replaced; only asked under ON_REQUEST."""
+        if self.flush_policy is not Flush.ON_REQUEST:
+            return False
+        try:
+            return not self.verify(existing)
+        except OSError as exc:
+            log.debug("%s: unreadable, replaced: %s", self.where(existing), exc)
+            return True
+
+    def _owe(self, path: pathlib.Path) -> None:
+        if self.flush_policy is Flush.ON_REQUEST:
+            self._unflushed.append(path)
+
+    def flush(self) -> None:
+        """Put every entry `add` returned since the last call on the device.
+
+        Only `Flush.ON_REQUEST` leaves anything to do: under `EACH` it is done
+        already, under `NEVER` it is not wanted. The entries are flushed all at
+        once (`atomic.sync_together`).
+
+        Raises OSError when an entry could not be flushed. The entries stay owed
+        then, and the next call tries them again.
+        """
+        if not self._unflushed:
+            return
+        atomic.sync_together(self._unflushed)
+        self._unflushed.clear()
 
     @contextlib.contextmanager
     def _reading(self, path: pathlib.Path) -> collections.abc.Iterator[zstd.ByteReader]:
@@ -566,6 +664,8 @@ class ContentAddressedStorage:
         checksum file to keep in sync. Reads the entry in blocks, so verifying a
         large message costs no more memory than storing one did.
 
+        A compressed entry that cannot be decompressed does not match either.
+
         Raises ValueError for a file that is not an entry of this store -- there
         is no name to check the content against.
         """
@@ -573,8 +673,11 @@ class ContentAddressedStorage:
         if claimed is None:
             raise ValueError(f"not an entry of this store: {path}")
         m = self.hashfactory()
-        with self._reading(path) as reader:
-            self._copy(reader, m.update)
+        try:
+            with self._reading(path) as reader:
+                self._copy(reader, m.update)
+        except zstd.DECODE_ERRORS:
+            return False
         return m.hexdigest() == claimed
 
     def verify_entry(self, hashval: str) -> bool:
@@ -588,8 +691,11 @@ class ContentAddressedStorage:
         from a damaged one.
         """
         m = self.hashfactory()
-        with self.reading(hashval) as reader:
-            self._copy(reader, m.update)
+        try:
+            with self.reading(hashval) as reader:
+                self._copy(reader, m.update)
+        except zstd.DECODE_ERRORS:
+            return False
         return m.hexdigest() == normalize_hashval(hashval)
 
     def locate(
@@ -640,29 +746,78 @@ class ContentAddressedStorage:
         converter: collections.abc.Callable[..., object],
         operation: str,
     ) -> ConversionResult:
-        """Convert all files in the store."""
+        """Convert all files in the store.
+
+        The new versions are written without a flush and flushed together every
+        `CONVERT_BATCH` entries; only then are the originals of the batch
+        removed. In every flush policy: the original is the one other copy.
+        """
         zstd.require()  # one clear failure rather than one per entry
         result = ConversionResult()
-        for path in self.walk():
-            if path.suffix == skip_suffix:
-                result.skipped += 1
-                continue
+        batch: list[tuple[pathlib.Path, pathlib.Path]] = []
+        try:
+            for path in self.walk():
+                if path.suffix == skip_suffix:
+                    result.skipped += 1
+                    continue
+                target = target_fn(path)
+                try:
+                    with path.open("rb") as src, _writing_to(target, durable=False) as dst:
+                        converter(src, dst)
+                except Exception as exc:
+                    # Deliberately broad: a codec error is not an OSError, and one
+                    # damaged entry must not stop a pass over a whole archive. The
+                    # file is named in the result, so the caller can still tell.
+                    # Every one of them is a line; the stack that tells a damaged
+                    # entry apart from a codec this program is holding wrong is one
+                    # `-v` away.
+                    utils.log_failure(log, exc, "%s: %s failed", self.where(path), operation)
+                    result.failed.append(path)
+                    continue
+                batch.append((path, target))
+                if len(batch) >= CONVERT_BATCH:
+                    self._replace_originals(batch, result, operation)
+        finally:
+            # Also on Ctrl-C: otherwise the batch stays behind in both versions,
+            # the new ones not flushed.
+            self._replace_originals(batch, result, operation)
+        return result
+
+    def _replace_originals(
+        self,
+        batch: list[tuple[pathlib.Path, pathlib.Path]],
+        result: ConversionResult,
+        operation: str,
+    ) -> None:
+        """Flush the new versions of `batch`, then remove the originals, and empty it.
+
+        A flush that fails removes nothing: both versions stay, and the next pass
+        converts the original again.
+        """
+        if not batch:
+            return
+        try:
+            atomic.sync_together(target for _original, target in batch)
+        except OSError as exc:
+            utils.log_failure(
+                log,
+                exc,
+                "%s: %s kept, flushing the new versions to disk failed",
+                operation,
+                utils.counted(len(batch), "original"),
+            )
+            result.failed.extend(original for original, _target in batch)
+            batch.clear()
+            return
+        for original, _target in batch:
             try:
-                with path.open("rb") as src, _writing_to(target_fn(path)) as dst:
-                    converter(src, dst)
-                utils.remove_file(path)
-            except Exception as exc:
-                # Deliberately broad: a codec error is not an OSError, and one
-                # damaged entry must not stop a pass over a whole archive. The
-                # file is named in the result, so the caller can still tell.
-                # Every one of them is a line; the stack that tells a damaged
-                # entry apart from a codec this program is holding wrong is one
-                # `-v` away.
-                utils.log_failure(log, exc, "%s: %s failed", self.where(path), operation)
-                result.failed.append(path)
+                utils.remove_file(original)
+            except OSError as exc:
+                utils.log_failure(log, exc, "%s: %s failed", self.where(original), operation)
+                result.failed.append(original)
             else:
                 result.converted += 1
-        return result
+        batch.clear()
 
     def compress_all(self) -> ConversionResult:
         """Compress all uncompressed files in the store."""
@@ -681,6 +836,45 @@ class ContentAddressedStorage:
             converter=zstd.decompress_stream,
             operation="decompression",
         )
+
+    def quarantine(
+        self,
+        path: pathlib.Path,
+        attempts: int = QUARANTINE_ATTEMPTS,
+    ) -> pathlib.Path | None:
+        """Rename a damaged entry so that the store no longer holds it, keeping every byte.
+
+        Returns the new path, or None when the entry could not be renamed, which
+        is logged. Renamed and not deleted: a message with a flipped bit is
+        still almost all of the message. But while the file has the name of a
+        hash it does not match, the store reports the message as present and
+        nothing fetches it again.
+
+        The file stays in its shard. A name that is taken gets a number, which
+        happens to a message that was fetched again after an earlier quarantine
+        and was damaged a second time. Nothing is overwritten.
+        """
+        for serial in range(attempts):
+            suffix = QUARANTINE_SUFFIX if serial == 0 else f"{QUARANTINE_SUFFIX}.{serial}"
+            target = path.with_name(path.name + suffix)
+            if target.exists():
+                continue
+            try:
+                path.rename(target)
+            except OSError as exc:
+                log.error("%s: could not be quarantined: %s", self.where(path), exc)
+                return None
+            log.warning("%s: quarantined as %s", self.where(path), target.name)
+            return target
+        log.error("%s: could not be quarantined, every name is taken", self.where(path))
+        return None
+
+    def quarantined_origin(self, path: pathlib.Path) -> str | None:
+        """The hash a quarantined file was filed under, or None when it is not one."""
+        match = _QUARANTINED.match(path.name)
+        if match is None:
+            return None
+        return self.hashval_of(path.with_name(match.group("entry")))
 
     def transient_origin(self, path: pathlib.Path) -> str | None:
         """The store id a transient file was being written for, or None.
@@ -802,11 +996,24 @@ class ContentAddressedStorage:
                     yield entry
 
 
-def mail_store(archive: pathlib.Path, compress: bool = False) -> ContentAddressedStorage:
+def mail_store(
+    archive: pathlib.Path,
+    compress: bool = False,
+    flush: Flush = Flush.NEVER,
+) -> ContentAddressedStorage:
     """Open the message store of `archive`.
 
     Every command that reads or writes messages comes through here, so where
     the store lies is decided once. It used to be composed at a dozen call
     sites, which is a layout written down a dozen times.
+
+    `Flush.NEVER` unless the caller says otherwise: a command that removes the
+    source of what it stores asks for `Flush.ON_REQUEST` and calls `flush`
+    before the removal.
     """
-    return ContentAddressedStorage(archive / MAIL_DIR, suffix=".eml", compress=compress)
+    return ContentAddressedStorage(
+        archive / MAIL_DIR,
+        suffix=".eml",
+        compress=compress,
+        flush=flush,
+    )

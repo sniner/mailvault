@@ -18,6 +18,7 @@ from mailvault.cli.common import (
     REPORT_LIMIT,
     archive_path,
     report_items,
+    report_read_back,
     require_archive,
     shorten,
     use_archive_hash,
@@ -631,9 +632,19 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
         plural="files in the archive that are not messages",
     )
     _report_orphans(ids(result.orphans))
-    if result.quarantined_before:
-        aside = utils.counted(result.quarantined_before, "message")
-        print(f"{aside} set aside by an earlier run")
+    if result.set_aside_removed:
+        removed = utils.counted(
+            result.set_aside_removed,
+            "damaged copy set aside by an earlier run removed -- its message is",
+            "damaged copies set aside by an earlier run removed -- their messages are",
+        )
+        print(f"{removed} back, intact")
+    report_items(
+        sorted({store_id for store_id, _path in result.set_aside}),
+        "message",
+        "set aside as damaged by an earlier run and not back yet -- fetch them again with"
+        " `verify --repair` or `backup --full`",
+    )
     if result.transient_removed:
         leftovers = utils.counted(result.transient_removed, "leftover")
         print(f"{leftovers} of an interrupted write removed")
@@ -745,8 +756,14 @@ def run(args: argparse.Namespace) -> int:
     elif cmd == "import":
         _refuse_importing_the_archive(archive, args.source)
         source = _external(args.source, args.docuware)
-        destination = cas.mail_store(archive, compress=args.compress)
-        return report_import(
+        # `--move` removes each source, so its message has to be on the disk first.
+        flush = cas.Flush.ON_REQUEST if args.move else cas.Flush.NEVER
+        opened = None if args.dry_run else jobs.open_for_writing(archive)
+        if opened is None:
+            destination = cas.mail_store(archive, compress=args.compress)
+        else:
+            destination = opened.store(compress=args.compress, flush=flush)
+        code = report_import(
             args.source,
             archive,
             source.archive_to_cas(
@@ -756,29 +773,38 @@ def run(args: argparse.Namespace) -> int:
                 dry_run=args.dry_run,
             ),
         )
+        return code | report_read_back(opened)
     elif cmd == "places":
         return report_places(metalog.summarize(archive / metalog.DEFAULT_LOG_DIR))
     elif cmd == "adopt":
-        return report_adopt(jobs.adopt(archive, args.name, dry_run=args.dry_run))
+        opened = None if args.dry_run else jobs.open_for_writing(archive)
+        result = jobs.adopt(archive, args.name, dry_run=args.dry_run, archive=opened)
+        return report_adopt(result) | report_read_back(opened)
     elif cmd == "compress":
-        store = cas.mail_store(archive)
-        return report_conversion(
-            archive, store.compress_all(), "compressed", "already compressed"
+        opened = jobs.open_for_writing(archive)
+        code = report_conversion(
+            archive, opened.store().compress_all(), "compressed", "already compressed"
         )
+        return code | report_read_back(opened)
     elif cmd == "decompress":
-        store = cas.mail_store(archive)
-        return report_conversion(
-            archive, store.decompress_all(), "decompressed", "already plain"
+        opened = jobs.open_for_writing(archive)
+        code = report_conversion(
+            archive, opened.store().decompress_all(), "decompressed", "already plain"
         )
+        return code | report_read_back(opened)
     elif cmd == "migrate":
         return report_migration(archive, jobs.migrate_archive(archive))
     elif cmd == "compact":
-        return report_compact(
+        # Not for a store: so that `compact` finds as much as possible read back
+        # and writes one file per place.
+        opened = jobs.open_for_writing(archive)
+        code = report_compact(
             metalog.compact(
                 archive / metalog.DEFAULT_LOG_DIR,
                 archive / heads.DEFAULT_HEADS_DIR,
             )
         )
+        return code | report_read_back(opened)
     elif cmd == "seal":
         if args.check:
             return report_seal_check(archive, jobs.check_seal(archive, args.check))

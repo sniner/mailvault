@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 
 from mailvault import utils
 from mailvault.jobs.common import FLUSH_BATCH, check_place_name, flush_log
+from mailvault.jobs.readback import WritableArchive, open_for_writing
 from mailvault.store import cas, heads, metalog
 
 log = logging.getLogger(__name__)
@@ -81,7 +82,12 @@ def _read_log(log_root: pathlib.Path, name: str) -> tuple[set[str], int]:
     return referenced, len(held)
 
 
-def adopt(store_path: pathlib.Path, name: str, dry_run: bool = False) -> AdoptResult:
+def adopt(
+    store_path: pathlib.Path,
+    name: str,
+    dry_run: bool = False,
+    archive: WritableArchive | None = None,
+) -> AdoptResult:
     """Record every message the log names nowhere as having been in `name`.
 
     Two passes, and neither holds the archive in memory: the log is read into the
@@ -93,10 +99,16 @@ def adopt(store_path: pathlib.Path, name: str, dry_run: bool = False) -> AdoptRe
     Messages that already have a place are not touched. A second place beside a
     real one would be a statement of its own, and a false one: this run knows
     nothing about where those messages were.
+
+    Unless it is a dry run, the archive is opened for writing first, which reads
+    back what earlier runs stored; `archive` is for a caller that has done so.
     """
     check_place_name(name)
     log_root = store_path / metalog.DEFAULT_LOG_DIR
-    store = cas.mail_store(store_path)
+    if dry_run:
+        store = cas.mail_store(store_path)
+    else:
+        store = (archive or open_for_writing(store_path)).store()
     result = AdoptResult(name=name, dry_run=dry_run)
 
     log.info("step 1 of 2: reading the metadata log")

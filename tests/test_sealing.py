@@ -13,7 +13,7 @@ import pytest
 
 from mailvault import cli
 from mailvault.cli.archive import run as run_archive
-from mailvault.jobs.check import check, quarantine_entry
+from mailvault.jobs.check import check
 from mailvault.jobs.common import JobError
 from mailvault.jobs.sealing import check_seal, seal_archive, seal_hash
 from mailvault.store import cas, heads, marker, metalog, seals
@@ -383,7 +383,7 @@ class TestCheckingASeal:
         path = _message(tmp_path, store_id)
         original = path.read_bytes()
         tamper(path, b"bit rot")
-        quarantine_entry(path)
+        cas.mail_store(tmp_path).quarantine(path)
         assert check_seal(tmp_path, seal.seal_id).gone_messages == {store_id: "job::INBOX"}
 
         cas.mail_store(tmp_path).add(original)

@@ -28,6 +28,7 @@ from mailvault.cli.common import (
     EXPECTED_ERRORS,
     archive_path,
     config_file,
+    report_read_back,
     require_archive,
 )
 from mailvault.cli.mailbox import report_backup, report_folders, report_verify
@@ -1521,6 +1522,122 @@ class TestExitCodes:
         assert self._backup_run(monkeypatch, tmp_path, report) == 1
 
 
+class TestReadingBack:
+    """What earlier runs stored is read back before a run that writes relies on it."""
+
+    @staticmethod
+    def _order(monkeypatch, tmp_path, **args: Any) -> list[str]:
+        marker.write(tmp_path)
+        monkeypatch.setattr(
+            conf, "load", lambda *a, **kw: conf.Config(jobs=[conf.JobConfig(name="proton.me")])
+        )
+        order: list[str] = []
+        monkeypatch.setattr(jobs, "open_for_writing", lambda archive: order.append("read back"))
+        monkeypatch.setattr(jobs, "backup", lambda *a, **kw: order.append("backup"))
+        monkeypatch.setattr(jobs, "verify", lambda *a, **kw: order.append("verify") or [])
+        run_mailbox(_args(archive=tmp_path, allow_new_mailbox=True, **args))
+        return order
+
+    def test_before_the_first_backup_job(self, monkeypatch, tmp_path):
+        """So that the backup fetches a damaged message again in the same run."""
+        assert self._order(monkeypatch, tmp_path) == ["read back", "backup"]
+
+    def test_once_for_all_the_jobs_of_a_run(self, monkeypatch, tmp_path):
+        marker.write(tmp_path)
+        names = ["one", "two", "three"]
+        monkeypatch.setattr(
+            conf,
+            "load",
+            lambda *a, **kw: conf.Config(jobs=[conf.JobConfig(name=n) for n in names]),
+        )
+        opened: list[pathlib.Path] = []
+        handed: list[object] = []
+        it = jobs.WritableArchive(tmp_path, jobs.ReadBackResult())
+
+        def open_for_writing(archive: pathlib.Path) -> jobs.WritableArchive:
+            opened.append(archive)
+            return it
+
+        def backup(*a: Any, archive: object, **kw: Any) -> jobs.BackupReport:
+            handed.append(archive)
+            return jobs.BackupReport()
+
+        monkeypatch.setattr(jobs, "open_for_writing", open_for_writing)
+        monkeypatch.setattr(jobs, "backup", backup)
+
+        run_mailbox(_args(archive=tmp_path, allow_new_mailbox=True))
+
+        assert opened == [tmp_path]
+        assert handed == [it, it, it]
+
+    def test_before_a_repair(self, monkeypatch, tmp_path):
+        order = self._order(monkeypatch, tmp_path, command="verify", repair=True)
+
+        assert order == ["read back", "verify"]
+
+    def test_not_for_a_verify_that_only_reports(self, monkeypatch, tmp_path):
+        order = self._order(monkeypatch, tmp_path, command="verify", repair=False)
+
+        assert order == ["verify"]
+
+
+class TestWhatReadingBackLeftOver:
+    """A damaged message that the run does not fetch again is in its verdict and exit code."""
+
+    @staticmethod
+    def _opened(tmp_path, **found: Any) -> jobs.WritableArchive:
+        return jobs.WritableArchive(tmp_path, jobs.ReadBackResult(**found))
+
+    def test_nothing_damaged_says_nothing(self, tmp_path, capsys):
+        assert report_read_back(self._opened(tmp_path)) == 0
+        assert capsys.readouterr().out == ""
+
+    def test_an_archive_that_was_not_opened_for_writing(self, capsys):
+        assert report_read_back(None) == 0
+        assert capsys.readouterr().out == ""
+
+    def test_a_damaged_message_of_a_mailbox_names_the_backup(self, tmp_path, capsys):
+        opened = self._opened(tmp_path, damaged=["aa", "bb"], mailboxes={"proton.me"})
+
+        assert report_read_back(opened) == 1
+        out = capsys.readouterr().out
+        assert "2 damaged messages set aside" in out
+        assert "the next `backup` fetches those of proton.me again" in out
+
+    def test_a_backup_fetches_those_of_its_mailboxes_itself(self, tmp_path, capsys):
+        opened = self._opened(tmp_path, damaged=["aa"], mailboxes={"proton.me"})
+
+        assert report_read_back(opened, fetching=True) == 0
+        assert capsys.readouterr().out == ""
+
+    def test_one_of_an_import_is_left_over_for_a_backup_too(self, tmp_path, capsys):
+        opened = self._opened(tmp_path, damaged=["aa"], imports={"docuware-2019"})
+
+        assert report_read_back(opened, fetching=True) == 1
+        assert (
+            "  import the source of docuware-2019 again with"
+            " `archive import --name docuware-2019 SOURCE`" in capsys.readouterr().out
+        )
+
+    def test_compress_exits_non_zero_for_it(self, tmp_path, capsys):
+        marker.write(tmp_path)
+        store = cas.mail_store(tmp_path)
+        _status, store_id, victim = store.add(b"Subject: one\r\n\r\nbody\r\n")
+        log_root = tmp_path / metalog.DEFAULT_LOG_DIR
+        writer = metalog.LogWriter(log_root, tmp_path / heads.DEFAULT_HEADS_DIR)
+        writer.add("proton.me", ["INBOX"], store_id)
+        (log_file,) = writer.flush(datetime(2026, 11, 18, tzinfo=UTC))
+        os.utime(log_file, (0, 0))
+        tamper(victim, b"cut sh")
+
+        exit_code = run_archive(
+            argparse.Namespace(archive_command="compress", archive=tmp_path, config=None)
+        )
+
+        assert exit_code == 1
+        assert "1 damaged message set aside" in capsys.readouterr().out
+
+
 class TestDbCommands:
     """The four things one can do to a database that is only ever a copy."""
 
@@ -1948,7 +2065,7 @@ class TestTheLogIsReadOncePerRun:
 
         # Each job asks for a folder with nothing archived, which is what makes
         # the question get asked at all.
-        def _ask(job, args, config, destination=None, places=None):
+        def _ask(job, args, config, destination=None, places=None, opened=None):
             assert places is not None, "the run has to hand one down"
             places.of(job.name, "INBOX")
 

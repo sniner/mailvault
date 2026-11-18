@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 import pytest
 
 from mailvault.cli.archive import report_check
-from mailvault.jobs.check import check, quarantine_entry
+from mailvault.jobs.check import check
 from mailvault.jobs.common import JobError
 from mailvault.store import cas, heads, metalog, seals
 from tests.tamper import tamper
@@ -115,6 +115,15 @@ class TestWhatItFinds:
         result = check(tmp_path)
         assert result.corrupt == [victim]
         assert not result.sound
+
+    def test_a_compressed_message_that_cannot_be_decompressed(self, tmp_path):
+        store = cas.mail_store(tmp_path, compress=True)
+        _status, _hashval, victim = store.add(b"Message-Id: <z@example.com>\r\n\r\nbody\r\n")
+        tamper(victim, b"\0" * 100)
+
+        result = check(tmp_path)
+
+        assert result.corrupt == [victim]
 
     def test_a_log_file_that_no_longer_matches_its_own_name(self, tmp_path):
         _archive(tmp_path)
@@ -265,13 +274,57 @@ class TestQuarantine:
         assert not after.sound, "it has to stay reported until something fetches it"
 
     def test_a_quarantined_file_is_recognised_next_time(self, tmp_path):
-        self._with_a_damaged_entry(tmp_path)
+        _store, ids, _victim = self._with_a_damaged_entry(tmp_path)
         check(tmp_path, contents=True, quarantine=True)
 
         after = check(tmp_path)
 
-        assert after.quarantined_before == 1
+        assert [path.name for _store_id, path in after.set_aside] == [f"{ids[1]}.eml.corrupt"]
         assert after.foreign == [], "not a stray file, and not reported as one every run"
+
+    def test_a_damaged_copy_goes_once_the_message_is_back_intact(self, tmp_path):
+        """The hash proves the new copy right; the damaged one has nothing left to give."""
+        store, ids, victim = self._with_a_damaged_entry(tmp_path)
+        check(tmp_path, contents=True, quarantine=True)
+        store.add(b"Message-Id: <1@example.com>\r\n\r\nbody 1\r\n")
+
+        after = check(tmp_path)
+
+        assert after.set_aside_removed == 1
+        assert after.set_aside == []
+        assert not victim.with_name(victim.name + ".corrupt").exists()
+        assert store.verify(victim)
+        assert after.sound
+
+    def test_the_report_names_what_is_not_back_and_counts_what_went(self, tmp_path, capsys):
+        store, ids, _victim = self._with_a_damaged_entry(tmp_path)
+        check(tmp_path, contents=True, quarantine=True)
+        capsys.readouterr()
+
+        report_check(tmp_path, check(tmp_path))
+        waiting = capsys.readouterr().out
+        store.add(b"Message-Id: <1@example.com>\r\n\r\nbody 1\r\n")
+        report_check(tmp_path, check(tmp_path))
+        back = capsys.readouterr().out
+
+        assert "1 message set aside as damaged by an earlier run and not back yet" in waiting
+        assert f"  {ids[1]}" in waiting
+        assert (
+            "1 damaged copy set aside by an earlier run removed -- its message is back, intact"
+            in back
+        )
+        assert "not back yet" not in back
+
+    def test_without_the_integrity_check_the_message_is_read_all_the_same(self, tmp_path):
+        store, _ids, victim = self._with_a_damaged_entry(tmp_path)
+        check(tmp_path, contents=True, quarantine=True)
+        store.add(b"Message-Id: <1@example.com>\r\n\r\nbody 1\r\n")
+        tamper(victim, b"broken again")
+
+        after = check(tmp_path, contents=False)
+
+        assert after.set_aside_removed == 0, "what came back is damaged too"
+        assert victim.with_name(victim.name + ".corrupt").exists()
 
     def test_a_second_quarantine_does_not_overwrite_the_first(self, tmp_path):
         _store, _ids, victim = self._with_a_damaged_entry(tmp_path)
@@ -304,11 +357,11 @@ class TestQuarantine:
 
     def test_it_gives_up_rather_than_looping(self, tmp_path, caplog):
         """Every name taken means something else is wrong; say so, do not spin."""
-        _store, _ids, victim = self._with_a_damaged_entry(tmp_path)
+        store, _ids, victim = self._with_a_damaged_entry(tmp_path)
         for suffix in (".corrupt", ".corrupt.1"):
             victim.with_name(victim.name + suffix).write_bytes(b"taken")
 
-        assert quarantine_entry(victim, attempts=2) is None
+        assert store.quarantine(victim, attempts=2) is None
 
         assert victim.exists()
         assert "every name is taken" in caplog.text

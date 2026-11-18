@@ -82,7 +82,7 @@ from datetime import datetime
 from typing import Any
 
 from mailvault import utils
-from mailvault.store import cas, heads, seals
+from mailvault.store import atomic, cas, heads, seals
 
 log = logging.getLogger(__name__)
 
@@ -361,23 +361,34 @@ class LogWriter:
         if not self._places:
             return []
         written: list[pathlib.Path] = []
+        moves: list[tuple[heads.Head | None, str]] = []
         store = open_store(self.root)
-        for (mailbox, folder), store_ids in sorted(
-            self._places.items(),
-            key=lambda item: (item[0][0] or "", item[0][1] or ""),
-        ):
-            head = _head_of(self.heads_root, mailbox, folder)
-            _status, hashval, path = store.add(
-                _serialize(mailbox, folder, date.isoformat(), store_ids, prev=_chain(head))
-            )
-            log.debug(
-                "%s: %s in %s",
-                where(path),
-                utils.counted(len(store_ids), "message"),
-                heads.place_name(mailbox, folder),
-            )
-            _move_head(self.heads_root, head, hashval)
-            written.append(path)
+        try:
+            for (mailbox, folder), store_ids in sorted(
+                self._places.items(),
+                key=lambda item: (item[0][0] or "", item[0][1] or ""),
+            ):
+                head = _head_of(self.heads_root, mailbox, folder)
+                _status, hashval, path = store.add(
+                    _serialize(mailbox, folder, date.isoformat(), store_ids, prev=_chain(head))
+                )
+                log.debug(
+                    "%s: %s in %s",
+                    where(path),
+                    utils.counted(len(store_ids), "message"),
+                    heads.place_name(mailbox, folder),
+                )
+                moves.append((head, hashval))
+                written.append(path)
+        finally:
+            # The heads move only once the files they name are on the disk, and
+            # on macOS that takes one flush of the drive's cache for all of them.
+            # Also when a later file failed: those written are chained all the
+            # same.
+            if written:
+                atomic.flush_drive_cache(written[0])
+            for head, hashval in moves:
+                _move_head(self.heads_root, head, hashval)
         self._places = {}
         return written
 
@@ -649,6 +660,38 @@ class CompactResult:
     transient_removed: int = 0
 
 
+def _read_back_files(head: heads.Head | None, by_hash: dict[str, LogFile]) -> set[str]:
+    """The log files whose messages have been read back: the chain from `checked` on."""
+    found: set[str] = set()
+    hashval = None if head is None else head.checked
+    while hashval is not None and hashval in by_hash and hashval not in found:
+        found.add(hashval)
+        hashval = by_hash[hashval].prev
+    return found
+
+
+def _consolidated(
+    files: list[LogFile],
+    read_back: set[str],
+) -> list[tuple[list[str], str | None]]:
+    """What `compact` writes for one place, as (sorted store ids, newest date) per file.
+
+    One file, or two when the place has files both in `read_back` and outside
+    it. The first then holds what was read back and the second the rest:
+    younger files of the chain, and files no chain reaches. A message recorded
+    on both sides is in both, because the later record may be of a new write.
+    """
+    parts: list[tuple[list[str], str | None]] = []
+    for wanted in (True, False):
+        chosen = [f for f in files if (f.hashval in read_back) is wanted]
+        if not chosen:
+            continue
+        store_ids = sorted({store_id for f in chosen for store_id in f.store_ids})
+        dates = [f.date for f in chosen if f.date is not None]
+        parts.append((store_ids, max(dates, default=None)))
+    return parts
+
+
 def compact(root: pathlib.Path, heads_root: pathlib.Path) -> CompactResult:
     """Consolidate the log into one file per place, dropping duplicate entries.
 
@@ -664,7 +707,13 @@ def compact(root: pathlib.Path, heads_root: pathlib.Path) -> CompactResult:
     data is never silently dropped. Producing byte-identical files for the same
     content (via `_serialize`) makes a second run a no-op.
 
-    Each consolidated file **starts its place's chain over**: it holds everything
+    A place whose messages have not all been read back (`jobs.readback`) gets
+    two files instead of one: what was read back, and chained onto it the rest.
+    `Head.checked` then names the first, so that the next read back takes the
+    rest and nothing else. The rest includes files no chain reaches, which read
+    back never sees.
+
+    The consolidated files **start their place's chain over**: they hold everything
     that came before, so pointing back at files that are about to be removed
     would name what is deliberately gone. The heads are moved on before the
     originals are dropped, so an interrupt in between leaves duplicates and a
@@ -684,37 +733,37 @@ def compact(root: pathlib.Path, heads_root: pathlib.Path) -> CompactResult:
     if not originals:
         return result
 
-    # Union each place's store ids, keeping the newest date it was seen.
-    places: dict[tuple[str | None, str | None], set[str]] = {}
-    dates: dict[tuple[str | None, str | None], str] = {}
     consumed: list[pathlib.Path] = []
+    by_place: dict[Place, list[LogFile]] = {}
+    by_hash: dict[str, LogFile] = {}
     for path in originals:
         entry = read_log(path)
         if entry is None:
             continue
         consumed.append(path)
-        key = (entry.mailbox, entry.folder)
         result.entries_before += len(entry.store_ids)
-        places.setdefault(key, set()).update(entry.store_ids)
-        existing = dates.get(key)
-        if entry.date is not None and (existing is None or entry.date > existing):
-            dates[key] = entry.date
-    if not places:
+        by_place.setdefault(entry.place, []).append(entry)
+        by_hash[entry.hashval] = entry
+    if not by_place:
         return result
-    result.places = len(places)
+    result.places = len(by_place)
 
     store = open_store(root)
     written: set[pathlib.Path] = set()
-    roots: list[tuple[Place, str]] = []
-    for key in sorted(places, key=lambda k: (k[0] or "", k[1] or "")):
+    roots: list[tuple[Place, list[str], bool]] = []
+    for key in sorted(by_place, key=lambda k: (k[0] or "", k[1] or "")):
         mailbox, folder = key
-        store_ids = sorted(places[key])
-        result.entries_after += len(store_ids)
-        _status, hashval, path = store.add(
-            _serialize(mailbox, folder, dates.get(key), store_ids, prev=None)
-        )
-        written.add(path)
-        roots.append((key, hashval))
+        read_back = _read_back_files(_head_of(heads_root, mailbox, folder), by_hash)
+        parts = _consolidated(by_place[key], read_back)
+        chain: list[str] = []
+        for store_ids, date in parts:
+            result.entries_after += len(store_ids)
+            _status, hashval, path = store.add(
+                _serialize(mailbox, folder, date, store_ids, prev=chain[-1] if chain else None)
+            )
+            written.add(path)
+            chain.append(hashval)
+        roots.append((key, chain, bool(read_back)))
 
     # Verify the consolidated files landed before removing anything.
     if not all(verify_file(path) for path in written):
@@ -723,13 +772,19 @@ def compact(root: pathlib.Path, heads_root: pathlib.Path) -> CompactResult:
         result.files_after = len(log_files(root))
         return result
 
-    # And move each place's head onto its new root before anything is removed --
+    # And move each place's head onto its new chain before anything is removed --
     # a head still naming a file that has just been deleted is the one state
     # worth avoiding here.
-    for (mailbox, folder), hashval in roots:
-        _move_head(heads_root, _head_of(heads_root, mailbox, folder), hashval)
+    for (mailbox, folder), chain, had_read_back in roots:
+        head = _head_of(heads_root, mailbox, folder)
+        if head is not None and had_read_back:
+            head.checked = chain[0]
+        _move_head(heads_root, head, chain[-1])
 
     seals.refuse_if_sealed(root, _COMPACTING)
+
+    # On macOS the fsync of each new file stopped at the drive's cache.
+    atomic.flush_drive_cache(next(iter(written)))
 
     # Drop the originals we consolidated, but never one byte-identical to a file
     # just written (an already-compact place produces the same hash).

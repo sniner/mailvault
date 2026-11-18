@@ -174,6 +174,11 @@ def _provenance(archive: pathlib.Path, name: str = "docuware-2019") -> importing
     )
 
 
+def _moving_store(archive: pathlib.Path) -> cas.ContentAddressedStorage:
+    """The store the CLI opens for `--move`: flushed before a source goes."""
+    return cas.mail_store(archive, flush=cas.Flush.ON_REQUEST)
+
+
 def _sources(root: pathlib.Path, count: int) -> list[pathlib.Path]:
     root.mkdir(parents=True, exist_ok=True)
     paths = []
@@ -304,7 +309,7 @@ class TestMoveWaitsForTheLog:
 
         monkeypatch.setattr(metalog.LogWriter, "flush", flush)
         importing.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
-            cas.mail_store(archive), provenance=_provenance(archive), move=True
+            _moving_store(archive), provenance=_provenance(archive), move=True
         )
 
         assert flushed == [3, 1], "nothing removed before its flush, everything after"
@@ -319,12 +324,55 @@ class TestMoveWaitsForTheLog:
 
         monkeypatch.setattr(metalog.LogWriter, "flush", refuse)
         result = importing.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
-            cas.mail_store(archive), provenance=_provenance(archive), move=True
+            _moving_store(archive), provenance=_provenance(archive), move=True
         )
 
         assert result.recorded == 0
         assert (result.stored, result.present) == (2, 0), "the mail is in the archive"
         assert all(path.exists() for path in sources), "and its source is still there"
+
+    def test_sources_go_only_after_their_messages_reach_the_disk(self, tmp_path, monkeypatch):
+        """The store writes without a flush, so the source is the second copy until then."""
+        monkeypatch.setattr(importing, "FLUSH_BATCH", 2)
+        archive = tmp_path / "archive"
+        sources = _sources(tmp_path / "src", 3)
+        batches: list[tuple[int, int]] = []
+
+        def sync_together(paths):
+            batches.append((len(list(paths)), sum(path.exists() for path in sources)))
+
+        monkeypatch.setattr(cas.atomic, "sync_together", sync_together)
+
+        importing.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+            _moving_store(archive), provenance=_provenance(archive), move=True
+        )
+
+        assert batches == [(2, 3), (1, 1)], "each batch flushed while its sources are there"
+        assert not any(path.exists() for path in sources)
+
+    def test_sources_stay_when_their_messages_cannot_be_flushed(self, tmp_path, monkeypatch):
+        archive = tmp_path / "archive"
+        sources = _sources(tmp_path / "src", 2)
+
+        def sync_together(paths):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(cas.atomic, "sync_together", sync_together)
+
+        importing.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+            _moving_store(archive), provenance=_provenance(archive), move=True
+        )
+
+        assert all(path.exists() for path in sources)
+
+    def test_a_store_that_never_flushes_is_refused(self, tmp_path):
+        archive = tmp_path / "archive"
+        _sources(tmp_path / "src", 1)
+
+        with pytest.raises(ValueError):
+            importing.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
+                cas.mail_store(archive), provenance=_provenance(archive), move=True
+            )
 
     def test_one_file_that_will_not_go_does_not_end_the_import(self, tmp_path, monkeypatch):
         # The message behind it is stored and recorded; letting the OSError out
@@ -342,7 +390,7 @@ class TestMoveWaitsForTheLog:
 
         monkeypatch.setattr(importing.utils, "remove_file", remove)
         result = importing.ExternalMailArchive(root_dir=tmp_path / "src").archive_to_cas(
-            cas.mail_store(archive), provenance=_provenance(archive), move=True
+            _moving_store(archive), provenance=_provenance(archive), move=True
         )
 
         assert result.stored == 3, "every message was archived"

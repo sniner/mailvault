@@ -44,6 +44,18 @@ else:
         _BACKEND = None
 
 
+# What reading a damaged compressed file raises, none of it an OSError. Each
+# backend has an error of its own for a frame it cannot decode, such as zeros
+# where the frame should begin. `compression.zstd` raises EOFError for a file
+# that ends before its frame does, an empty one included; `zstandard` returns
+# short data for those instead. A power loss can leave any of them.
+DECODE_ERRORS: tuple[type[Exception], ...] = (
+    (EOFError,)
+    if _BACKEND is None
+    else (typing.cast(type[Exception], _zstd.ZstdError), EOFError)
+)
+
+
 class ByteReader(typing.Protocol):
     """Blocks of bytes, and a `with` block to hold them in.
 

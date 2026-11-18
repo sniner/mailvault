@@ -248,6 +248,11 @@ class Head:
     # one the next pass compares the folder with the archive and asks for
     # these last.
     pending: list[str | int] = dataclasses.field(default_factory=list)
+    # The log file up to which the messages of this place have been read back
+    # and held against their hashes (`jobs.readback`), or None for none of them.
+    # Messages are written without a flush, so what lies past it may have been
+    # damaged by a power loss.
+    checked: str | None = None
 
     def last_run_at(self) -> datetime | None:
         """When a run last read this place, or None if the value is unusable.
@@ -279,6 +284,7 @@ class Head:
             "resume": self.resume,
             "log": self.log,
             "pending": self.pending,
+            "checked": self.checked,
         }
 
 
@@ -368,6 +374,13 @@ def _decode(path: pathlib.Path, payload: object) -> Head | None:
         log.warning("%s: non-string log head, dropped", where(path))
         chain = None
 
+    # A head without the field was written by a version that flushed every
+    # message, so all of its chain is on the device already.
+    checked = payload.get("checked", chain)
+    if checked is not None and not isinstance(checked, str):
+        log.warning("%s: non-string read-back mark, the place is read back", where(path))
+        checked = None
+
     return Head(
         job=job,
         folder=folder,
@@ -375,6 +388,7 @@ def _decode(path: pathlib.Path, payload: object) -> Head | None:
         resume=resume,
         log=chain,
         pending=pending,
+        checked=checked,
     )
 
 

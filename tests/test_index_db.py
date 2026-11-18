@@ -222,6 +222,24 @@ def test_index_db_transaction_rollback(tmp_path):
         assert row is not None
 
 
+def test_a_transaction_that_begins_with_a_create_is_one_transaction(tmp_path):
+    """`sqlite3` begins one by itself only before a row is written.
+
+    Before, each CREATE committed on its own: a rollback kept the table, and the
+    schema of the projection cost a commit per statement.
+    """
+    db = sqlite.DatabaseConnection(sqlite.connect(tmp_path / "test.db"))
+
+    with pytest.raises(sqlite.RollbackException):
+        with db.transaction():
+            db.execute("CREATE TABLE gone (x)")
+            assert db.dbconn.in_transaction
+            db.rollback()
+
+    tables = db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    assert tables == []
+
+
 def test_a_deliberate_rollback_reports_nothing(tmp_path, caplog):
     # It used to log ERROR once per nesting level, each line reading
     # "Transaction failed:" and then nothing -- the exception carries no
