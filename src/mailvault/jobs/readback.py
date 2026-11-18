@@ -15,11 +15,11 @@ position in its log chain. Only log files older than `MIN_AGE` are read back.
 Soon after the write the bytes still come from memory, and reading them would
 vouch for what may not have reached the disk yet.
 
-The log names the places a message was seen in, not the folder the backup was
-reading when it stored it. Mostly they are the same. For Gmail they are not: a
-message fetched from `[Gmail]/All Mail` is recorded under its labels, and a
-label nobody configured has no resume point. Where none of a message's places
-has one, every resume point of its job is dropped.
+A backup records every message under the folder it was reading, and a Gmail
+message under its labels besides (`base.places_read_from`). So the folder whose
+resume point lies past a damaged message is always among its places. A place
+without a resume point is a label, or a folder whose next pass compares it with
+the server anyway.
 """
 
 from __future__ import annotations
@@ -53,18 +53,16 @@ class ReadBackResult:
     """What reading back found.
 
     `damaged` holds the store ids of the messages that were set aside or that the
-    log names and the archive no longer holds; both are fetched again. `jobs`
-    names the jobs that lost every resume point, because no place of a damaged
-    message had one, and `folders` the other places whose resume points were
-    dropped, as `job::folder`. `imports` names the imports whose messages have
-    to be imported again. `unreadable` counts the messages that could not be read
+    log names and the archive no longer holds; both are fetched again. `folders`
+    names the places whose resume points were dropped for them, as
+    `job::folder`, and `imports` the imports whose messages have to be imported
+    again. `unreadable` counts the messages that could not be read
     at all; their places are read back again next time.
     """
 
     read: int = 0
     damaged: list[str] = dataclasses.field(default_factory=list)
     folders: list[str] = dataclasses.field(default_factory=list)
-    jobs: set[str] = dataclasses.field(default_factory=set)
     imports: set[str] = dataclasses.field(default_factory=set)
     unreadable: int = 0
 
@@ -165,17 +163,15 @@ def _to_drop(
     damaged: set[str],
     result: ReadBackResult,
 ) -> set[pathlib.Path]:
-    """The heads whose resume points go, and in `result` the jobs that lose all of theirs."""
+    """The heads whose resume points go, and in `result` the imports to run again."""
     dropped: set[pathlib.Path] = set()
-    for store_id in damaged:
-        holding = [entry for entry in pending if store_id in entry.store_ids]
-        resumed = [entry.path for entry in holding if entry.head.resume is not None]
-        dropped.update(resumed)
-        for entry in holding:
-            if entry.head.job is None:
-                result.imports.add(entry.head.folder or "?")
-            elif not resumed:
-                result.jobs.add(entry.head.job)
+    for entry in pending:
+        if not damaged.intersection(entry.store_ids):
+            continue
+        if entry.head.job is None:
+            result.imports.add(entry.head.folder or "?")
+        elif entry.head.resume is not None:
+            dropped.add(entry.path)
     return dropped
 
 
@@ -205,10 +201,9 @@ def _rewrite(
             if not unreadable.intersection(entry.store_ids):
                 head.checked = entry.upto
                 changed = True
-        if head.resume is not None and (path in dropped or head.job in result.jobs):
+        if head.resume is not None and path in dropped:
             head.resume = None
-            if head.job not in result.jobs:
-                result.folders.append(heads.place_name(head.job, head.folder))
+            result.folders.append(heads.place_name(head.job, head.folder))
             changed = True
         if changed:
             try:
@@ -248,12 +243,6 @@ def _report(result: ReadBackResult) -> None:
         "read back: %s damaged or missing, most likely by a power loss",
         utils.counted(len(result.damaged), "message"),
     )
-    for job in sorted(result.jobs):
-        log.warning(
-            "%s: the next backup compares all its folders with the server and fetches"
-            " them again",
-            job,
-        )
     for place in result.folders:
         log.warning(
             "%s: the next backup compares the folder with the server and fetches them again",

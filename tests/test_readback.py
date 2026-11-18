@@ -108,7 +108,7 @@ class TestADamagedMessage:
         result = readback.read_back(tmp_path, now=LATER)
 
         assert len(result.damaged) == 1
-        assert (result.folders, result.jobs) == (["job::INBOX"], set())
+        assert result.folders == ["job::INBOX"]
         assert not victim.exists()
         assert victim.with_name(victim.name + ".corrupt").exists()
         assert _head(tmp_path).resume is None
@@ -116,20 +116,33 @@ class TestADamagedMessage:
         head = _head(tmp_path)
         assert head.checked == head.log
 
-    def test_recorded_only_under_labels_takes_every_resume_point_of_its_job(self, tmp_path):
-        """Gmail: read from `[Gmail]/All Mail`, recorded under a label nobody configured."""
+    def test_of_gmail_takes_the_resume_point_of_the_folder_read_not_of_others(self, tmp_path):
+        """Recorded under the folder being read and under its label, which has none."""
         _resume(tmp_path, "job", "[Gmail]/All Mail")
         _resume(tmp_path, "job", "INBOX")
-        _resume(tmp_path, "other", "INBOX")
-        (victim,) = _record(tmp_path, [_mail(1)], folder="Work")
+        store = cas.mail_store(tmp_path)
+        _status, store_id, victim = store.add(_mail(1))
+        writer = metalog.LogWriter(tmp_path / metalog.DEFAULT_LOG_DIR, _heads(tmp_path))
+        writer.add("job", ["Huhu", "[Gmail]/All Mail"], store_id)
+        writer.flush(WHEN)
         tamper(victim, b"")
 
         result = readback.read_back(tmp_path, now=LATER)
 
-        assert (result.folders, result.jobs) == ([], {"job"})
-        assert _head(tmp_path, "job", "[Gmail]/All Mail").resume is None
-        assert _head(tmp_path, "job", "INBOX").resume is None
-        assert _head(tmp_path, "other", "INBOX").resume == RESUME
+        assert result.folders == ["job::[Gmail]/All Mail"]
+        assert _head(tmp_path, "job", "INBOX").resume == RESUME
+
+    def test_in_a_folder_without_a_resume_point_leaves_the_others_alone(self, tmp_path):
+        """Its next pass compares that folder with the server anyway."""
+        _resume(tmp_path, "job", "Sent")
+        (victim,) = _record(tmp_path, [_mail(1)])
+        tamper(victim, b"")
+
+        result = readback.read_back(tmp_path, now=LATER)
+
+        assert len(result.damaged) == 1
+        assert result.folders == []
+        assert _head(tmp_path, "job", "Sent").resume == RESUME
 
     def test_one_the_archive_no_longer_holds_is_fetched_again_too(self, tmp_path):
         _resume(tmp_path, "job", "INBOX")
@@ -148,7 +161,7 @@ class TestADamagedMessage:
         result = readback.read_back(tmp_path, now=LATER)
 
         assert result.imports == {"docuware-2019"}
-        assert result.jobs == set()
+        assert result.folders == []
 
 
 class TestWhatIsLeftForNextTime:
