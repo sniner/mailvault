@@ -201,8 +201,7 @@ def report_read_back(opened: jobs.WritableArchive | None, fetching: bool = False
         moves.append(f"  the next `backup` fetches those of {names} again")
     for name in sorted(found.imports):
         moves.append(
-            f"  those of the import {name}: import its source again with"
-            f" `archive import --name {name} SOURCE`"
+            f"  import the source of {name} again with `archive import --name {name} SOURCE`"
         )
     if not moves:
         return 0

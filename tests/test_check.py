@@ -309,7 +309,10 @@ class TestQuarantine:
 
         assert "1 message set aside as damaged by an earlier run and not back yet" in waiting
         assert f"  {ids[1]}" in waiting
-        assert "1 damaged copy set aside by an earlier run removed" in back
+        assert (
+            "1 damaged copy set aside by an earlier run removed -- its message is back, intact"
+            in back
+        )
         assert "not back yet" not in back
 
     def test_without_the_integrity_check_the_message_is_read_all_the_same(self, tmp_path):

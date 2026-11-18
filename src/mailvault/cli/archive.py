@@ -633,8 +633,12 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
     )
     _report_orphans(ids(result.orphans))
     if result.set_aside_removed:
-        removed = utils.counted(result.set_aside_removed, "damaged copy", "damaged copies")
-        print(f"{removed} set aside by an earlier run removed -- the messages are back, intact")
+        removed = utils.counted(
+            result.set_aside_removed,
+            "damaged copy set aside by an earlier run removed -- its message is",
+            "damaged copies set aside by an earlier run removed -- their messages are",
+        )
+        print(f"{removed} back, intact")
     report_items(
         sorted({store_id for store_id, _path in result.set_aside}),
         "message",

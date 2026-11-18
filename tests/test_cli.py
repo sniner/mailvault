@@ -1614,7 +1614,10 @@ class TestWhatReadingBackLeftOver:
         opened = self._opened(tmp_path, damaged=["aa"], imports={"docuware-2019"})
 
         assert report_read_back(opened, fetching=True) == 1
-        assert "`archive import --name docuware-2019 SOURCE`" in capsys.readouterr().out
+        assert (
+            "  import the source of docuware-2019 again with"
+            " `archive import --name docuware-2019 SOURCE`" in capsys.readouterr().out
+        )
 
     def test_compress_exits_non_zero_for_it(self, tmp_path, capsys):
         marker.write(tmp_path)

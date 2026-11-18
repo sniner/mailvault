@@ -276,7 +276,7 @@ def _report(result: ReadBackResult) -> None:
     )
     for place in result.folders:
         log.warning(
-            "%s: the next backup compares the folder with the server and fetches them again",
+            "%s: `backup` compares the folder with the server and fetches them again",
             place,
         )
     for name in sorted(result.imports):
