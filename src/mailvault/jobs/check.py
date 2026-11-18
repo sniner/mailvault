@@ -43,7 +43,6 @@ import dataclasses
 import logging
 import os
 import pathlib
-import re
 
 from mailvault import utils
 from mailvault.jobs.common import JobError
@@ -55,19 +54,6 @@ log = logging.getLogger(__name__)
 # and huge in number; reading contents is the opposite, so it reports sooner.
 WALK_PROGRESS_EVERY = 20_000
 CONTENTS_PROGRESS_EVERY = 2_000
-
-# What an entry that failed its own hash is renamed to. The suffix is what takes
-# it out of the store's name space: `hashval_of` no longer recognises the name,
-# so `walk`, `create-db` and the existence check behind `add` all stop seeing it.
-QUARANTINE_SUFFIX = ".corrupt"
-
-# Enough to get past the entries quarantined by earlier runs of a message that
-# keeps coming back broken. Past that, something else is wrong.
-_QUARANTINE_ATTEMPTS = 100
-
-# What a quarantined entry looks like afterwards: the name it had, the suffix,
-# and a number when an earlier quarantine already took the plain form.
-_QUARANTINED = re.compile(rf"(?P<entry>.+){re.escape(QUARANTINE_SUFFIX)}(\.\d+)?\Z")
 
 
 @dataclasses.dataclass
@@ -153,18 +139,6 @@ def _store_files(root: pathlib.Path) -> collections.abc.Iterator[pathlib.Path]:
             yield here / fname
 
 
-def _quarantined_origin(store: cas.ContentAddressedStorage, path: pathlib.Path) -> str | None:
-    """The store id a quarantined file used to be filed under, or None.
-
-    So that what an earlier run set aside is recognised for what it is instead
-    of being reported as a stray file on every run from now on.
-    """
-    match = _QUARANTINED.match(path.name)
-    if match is None:
-        return None
-    return store.hashval_of(path.with_name(match.group("entry")))
-
-
 def _classify(
     store: cas.ContentAddressedStorage,
     result: CheckResult,
@@ -187,7 +161,7 @@ def _classify(
             entries[hashval] = path
         elif store.is_stale_transient(path):
             result.transient_removed += int(store.drop_transient(path))
-        elif (origin := _quarantined_origin(store, path)) is not None:
+        elif (origin := store.quarantined_origin(path)) is not None:
             result.set_aside.append((origin, path))
         elif store.transient_origin(path) is None:
             # Whatever is left is neither an entry, nor something an earlier run
@@ -349,10 +323,10 @@ def _drop_what_came_back(
         try:
             utils.remove_file(path)
         except OSError as exc:
-            log.warning("%s: not removed: %s", _where(path), exc)
+            log.warning("%s: not removed: %s", store.where(path), exc)
             kept.append((store_id, path))
             continue
-        log.info("%s: removed, the message is back intact", _where(path))
+        log.info("%s: removed, the message is back intact", store.where(path))
         result.set_aside_removed += 1
     result.set_aside = kept
 
@@ -397,51 +371,6 @@ def _check_contents(
             log.error("%s: unreadable: %s", store.where(path), exc)
             result.unreadable.append(path)
     result.contents_checked = True
-
-
-def _where(path: pathlib.Path) -> str:
-    """A message as it reads inside the archive, for a caller with no store.
-
-    `quarantine_entry` is handed the one path it acts on and nothing else, which
-    is the right amount to know for renaming a file -- but a line about it still
-    belongs to the archive that was named at the start of the run.
-    """
-    return utils.under_dir(cas.MAIL_DIR, path)
-
-
-def quarantine_entry(
-    path: pathlib.Path, attempts: int = _QUARANTINE_ATTEMPTS
-) -> pathlib.Path | None:
-    """Take an entry's name away from it, keeping every byte.
-
-    Renamed, never deleted: a message with a flipped bit is still almost all of
-    the message, and throwing away what was just found to be damaged is the
-    worse of the two ways to be wrong. What has to stop is the *claim* -- while
-    the file is called after a hash it does not have, the store keeps answering
-    that the message is present and nothing ever fetches it again.
-
-    It stays in its shard rather than moving to a directory of its own: the
-    archive is three things and nobody wanted a fourth, and where a file sits is
-    itself information.
-
-    Numbered when a name is taken, which happens to a message that was fetched
-    again after an earlier quarantine and broke a second time. Nothing is ever
-    overwritten.
-    """
-    for serial in range(attempts):
-        suffix = QUARANTINE_SUFFIX if serial == 0 else f"{QUARANTINE_SUFFIX}.{serial}"
-        target = path.with_name(path.name + suffix)
-        if target.exists():
-            continue
-        try:
-            path.rename(target)
-        except OSError as exc:
-            log.error("%s: could not be quarantined: %s", _where(path), exc)
-            return None
-        log.warning("%s: quarantined as %s", _where(path), target.name)
-        return target
-    log.error("%s: could not be quarantined, every name is taken", _where(path))
-    return None
 
 
 def check(
@@ -509,6 +438,6 @@ def check(
     _drop_what_came_back(store, entries, result)
     if quarantine:
         result.quarantined = [
-            target for path in result.corrupt if (target := quarantine_entry(path))
+            target for path in result.corrupt if (target := store.quarantine(path))
         ]
     return result

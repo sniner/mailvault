@@ -161,6 +161,20 @@ class Flush(enum.Enum):
 CONVERT_BATCH = 2000
 
 
+# What an entry that failed its own hash is renamed to. The suffix takes it out
+# of the store's name space: `hashval_of` no longer recognises the name, so
+# `walk`, `create-db` and the existence check behind `add` all stop seeing it.
+QUARANTINE_SUFFIX = ".corrupt"
+
+# Enough to get past the entries quarantined by earlier runs of a message that
+# keeps coming back broken. Past that, something else is wrong.
+QUARANTINE_ATTEMPTS = 100
+
+# What a quarantined entry looks like afterwards: the name it had, the suffix,
+# and a number when an earlier quarantine already took the plain form.
+_QUARANTINED = re.compile(rf"(?P<entry>.+){re.escape(QUARANTINE_SUFFIX)}(\.\d+)?\Z")
+
+
 class AddStatus(enum.StrEnum):
     """What `add` did with the bytes it was handed.
 
@@ -822,6 +836,45 @@ class ContentAddressedStorage:
             converter=zstd.decompress_stream,
             operation="decompression",
         )
+
+    def quarantine(
+        self,
+        path: pathlib.Path,
+        attempts: int = QUARANTINE_ATTEMPTS,
+    ) -> pathlib.Path | None:
+        """Rename a damaged entry so that the store no longer holds it, keeping every byte.
+
+        Returns the new path, or None when the entry could not be renamed, which
+        is logged. Renamed and not deleted: a message with a flipped bit is
+        still almost all of the message. But while the file has the name of a
+        hash it does not match, the store reports the message as present and
+        nothing fetches it again.
+
+        The file stays in its shard. A name that is taken gets a number, which
+        happens to a message that was fetched again after an earlier quarantine
+        and was damaged a second time. Nothing is overwritten.
+        """
+        for serial in range(attempts):
+            suffix = QUARANTINE_SUFFIX if serial == 0 else f"{QUARANTINE_SUFFIX}.{serial}"
+            target = path.with_name(path.name + suffix)
+            if target.exists():
+                continue
+            try:
+                path.rename(target)
+            except OSError as exc:
+                log.error("%s: could not be quarantined: %s", self.where(path), exc)
+                return None
+            log.warning("%s: quarantined as %s", self.where(path), target.name)
+            return target
+        log.error("%s: could not be quarantined, every name is taken", self.where(path))
+        return None
+
+    def quarantined_origin(self, path: pathlib.Path) -> str | None:
+        """The hash a quarantined file was filed under, or None when it is not one."""
+        match = _QUARANTINED.match(path.name)
+        if match is None:
+            return None
+        return self.hashval_of(path.with_name(match.group("entry")))
 
     def transient_origin(self, path: pathlib.Path) -> str | None:
         """The store id a transient file was being written for, or None.

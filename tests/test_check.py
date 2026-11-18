@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 import pytest
 
 from mailvault.cli.archive import report_check
-from mailvault.jobs.check import check, quarantine_entry
+from mailvault.jobs.check import check
 from mailvault.jobs.common import JobError
 from mailvault.store import cas, heads, metalog, seals
 from tests.tamper import tamper
@@ -354,11 +354,11 @@ class TestQuarantine:
 
     def test_it_gives_up_rather_than_looping(self, tmp_path, caplog):
         """Every name taken means something else is wrong; say so, do not spin."""
-        _store, _ids, victim = self._with_a_damaged_entry(tmp_path)
+        store, _ids, victim = self._with_a_damaged_entry(tmp_path)
         for suffix in (".corrupt", ".corrupt.1"):
             victim.with_name(victim.name + suffix).write_bytes(b"taken")
 
-        assert quarantine_entry(victim, attempts=2) is None
+        assert store.quarantine(victim, attempts=2) is None
 
         assert victim.exists()
         assert "every name is taken" in caplog.text

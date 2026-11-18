@@ -32,7 +32,6 @@ import pathlib
 import time
 
 from mailvault import utils
-from mailvault.jobs.check import quarantine_entry
 from mailvault.store import cas, heads, metalog
 
 log = logging.getLogger(__name__)
@@ -152,7 +151,7 @@ def _verdicts(
             unreadable.add(store_id)
             continue
         path = store.locate(store_id, exists=True)
-        if path is not None and quarantine_entry(path) is None:
+        if path is not None and store.quarantine(path) is None:
             # Still under its name: the store goes on saying it is here, so it
             # is read back again next time rather than counted as handled.
             unreadable.add(store_id)
