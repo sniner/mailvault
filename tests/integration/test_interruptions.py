@@ -25,7 +25,7 @@ import imapclient
 import pytest
 
 from mailvault import conf, jobs
-from mailvault.jobs import readback
+from mailvault.jobs import guard, readback
 from mailvault.store import cas, marker, metalog
 from tests.integration import corpus
 
@@ -302,7 +302,11 @@ def _fetch_with(then: Any) -> Any:
 class TestAProcessThatIsKilled:
     @pytest.mark.parametrize("deleting", [False, True], ids=["keeping", "deleting"])
     def test_kill_9_in_the_middle_of_a_first_backup(self, dovecot, tmp_path, deleting):
-        """No `finally` runs: nothing written down, ten messages lying in the store."""
+        """No `finally` runs: ten messages in the store, and the log names them early.
+
+        Without that early log file the archive would name no mailbox, and the
+        guard would refuse every run after this one.
+        """
         user = f"kill-{'del' if deleting else 'keep'}"
         _fill(dovecot, user, "INBOX", corpus.numbered(25))
         original = _on_server(dovecot, user)
@@ -319,6 +323,7 @@ class TestAProcessThatIsKilled:
             child.join()
         assert len(_entries(archive)) == 10
         assert _on_server(dovecot, user) == original, "nothing deleted"
+        guard.check_jobs(archive, [job])
 
         _backup(job, archive)
 

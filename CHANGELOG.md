@@ -25,6 +25,10 @@
 
 ### Fixed
 
+- **A first backup that was killed outright no longer stops every run after it.** Until it had
+  recorded 2,000 messages, the archive held mail and named no mailbox, and the next run refused
+  to go ahead without `--allow-new-mailbox`. A folder read without a resume point now records
+  its first ten messages right away
 - **`archive check` reports a compressed message that cannot be decompressed as damaged.** It
   stopped with a zstd error at the first such message, and `--quarantine` could not set it aside
 - **macOS: after a power loss, where a folder resumes is no longer ahead of what was recorded

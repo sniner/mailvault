@@ -1542,6 +1542,51 @@ class TestStoreMessage:
         assert [m.store_id for m in recorded] == [store_id]
 
 
+class TestTheFirstLogFile:
+    """A pass without a resume point writes its first log file early.
+
+    Until then the archive holds mail and names no mailbox, and a run killed
+    outright there leaves an archive the mailbox guard refuses.
+    """
+
+    @staticmethod
+    def _known_while_storing(tmp_path, count: int) -> list[bool]:
+        """Back up `count` messages; after each, whether the log names the job yet."""
+        known: list[bool] = []
+
+        def run(folder_name, store, resume=None, retry=(), callback=None):
+            for n in range(count):
+                _status, store_id, _path = store.add(f"Message-ID: <{n}@x>\r\n\r\n".encode())
+                if callback:
+                    callback(
+                        mailutils.MessageMetadata(
+                            mailbox="test-job", store_id=store_id, folders=[folder_name]
+                        )
+                    )
+                known.append("test-job" in metalog.mailboxes(tmp_path / "meta"))
+            return base.BackupResult(total=count, stored=count, resume=_token(LATER))
+
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = run
+        with patch("mailvault.backend.session.open_mailbox") as mock_mb_cls:
+            mock_mb_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_mb_cls.return_value.__exit__ = MagicMock(return_value=False)
+            jobs.backup(_make_job(folders=["INBOX"]), tmp_path)
+        return known
+
+    def test_after_the_first_ten_messages(self, tmp_path):
+        known = self._known_while_storing(tmp_path, 15)
+
+        assert known.index(True) == common.FIRST_FLUSH - 1
+        assert sum(len(f.store_ids) for f in metalog.read_all(tmp_path / "meta")) == 15
+
+    def test_but_a_pass_that_carries_on_writes_at_its_end(self, tmp_path):
+        """It has written before, and the guard knows the mailbox from that."""
+        _seed_resume(tmp_path, ARCHIVED_AT)
+
+        assert not any(self._known_while_storing(tmp_path, 15))
+
+
 class TestDeleteAfterExport:
     """Deletion is gated on a durable log: purge runs only after a good flush."""
 

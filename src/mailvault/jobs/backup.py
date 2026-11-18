@@ -19,7 +19,7 @@ from typing import Any
 
 from mailvault import conf, mailutils, utils
 from mailvault.backend import base, session
-from mailvault.jobs.common import PassLog, warn_not_read
+from mailvault.jobs.common import FIRST_FLUSH, PassLog, warn_not_read
 from mailvault.jobs.db import DEFAULT_QUERY_DB_NAME, refresh_db
 from mailvault.jobs.migration import migrate_archive
 from mailvault.jobs.reconcile import ArchivedPlaces, ReconcileResult, reconcile_folder
@@ -293,7 +293,8 @@ def _backup_folder(
     # is left, also by an exception or Ctrl-C. A first pass over a large folder
     # can run for hours; cut short, it still records what it stored, and the
     # next run catches up from there instead of downloading the folder again.
-    with PassLog(log_root, heads_root, observed_at) as pass_log:
+    first = FIRST_FLUSH if previous is None else None
+    with PassLog(log_root, heads_root, observed_at, first=first) as pass_log:
         result = mb.folder_backup(
             folder,
             store,
