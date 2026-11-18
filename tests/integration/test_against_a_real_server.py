@@ -14,13 +14,14 @@ from __future__ import annotations
 import dataclasses
 import pathlib
 import socket
+import time
 
 import imapclient
 import pytest
 
 from mailvault import jobs
 from mailvault.backend import imap
-from mailvault.jobs import guard, reconcile
+from mailvault.jobs import guard, readback, reconcile
 from mailvault.store import cas, heads, marker, metalog
 from tests.integration import corpus
 
@@ -403,6 +404,33 @@ class TestPuttingBackWhatWasLost:
         assert results[0].missing == 1
         assert results[0].restored == 1
         assert jobs.check(archive).entries == len(corpus.PLAIN) + 1
+        assert jobs.check(archive).sound
+
+
+class TestAPowerLossAfterABackup:
+    def test_a_damaged_message_is_fetched_again_by_the_next_backup(self, dovecot, tmp_path):
+        """Messages are written without a flush; the server's copy is the second one.
+
+        Reading back sets the damaged message aside and drops the resume point,
+        and the next incremental backup compares the folder with the server and
+        fetches just that one.
+        """
+        user = "powerloss"
+        _fill(dovecot, user, "INBOX", corpus.PLAIN)
+        archive = _archive(tmp_path)
+        job = dovecot.job(user, ["INBOX"])
+        jobs.backup(job, archive, incremental=True)
+        store = cas.mail_store(archive)
+        victim = next(store.walk())
+        victim.chmod(0o644)
+        victim.write_bytes(victim.read_bytes()[:10])
+
+        found = jobs.read_back(archive, now=time.time() + readback.MIN_AGE + 60)
+        again = jobs.backup(job, archive, incremental=True)
+
+        assert len(found.damaged) == 1
+        assert found.jobs == {user}
+        assert (again.stored, again.present) == (1, len(corpus.PLAIN) - 1)
         assert jobs.check(archive).sound
 
 
