@@ -50,6 +50,13 @@ class DatabaseConnection:
     def transaction(self) -> collections.abc.Generator[DatabaseConnection, None, None]:
         with self.lock:
             outer = self._transaction == 0
+            if outer and not self.dbconn.in_transaction:
+                # `sqlite3` opens a transaction by itself only before INSERT,
+                # UPDATE, DELETE and REPLACE. Without this a block that begins
+                # with anything else, CREATE above all, committed each statement
+                # on its own: the schema of the projection took 25 commits of
+                # four fsyncs each.
+                self.dbconn.execute("BEGIN")
             self._transaction += 1
             try:
                 yield self

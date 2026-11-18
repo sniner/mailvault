@@ -686,6 +686,33 @@ def _apply_new_logs(
     """
     applied = {row[0] for row in db.execute("SELECT hash FROM applied_log")}
     rows = _Rows(db, store)
+    for batch in _batched(_unapplied(log_root, applied), CREATE_DB_BATCH):
+        # What a file said and the note that the file was read are one step, so
+        # neither can reach disk without the other; the transaction inside
+        # `_fold_log_file` joins this one. `execute` does not commit, so a note
+        # written outside a transaction owes its durability to whatever call
+        # happens to open one next -- which for the last file is nothing.
+        #
+        # Many files to a commit, not one: a backup leaves a file for every
+        # folder that got mail, and a commit costs about four fsyncs.
+        with db.transaction():
+            for path, logfile in batch:
+                result.files += 1
+                folded, unknown = _fold_log_file(db, rows, logfile)
+                db.execute(
+                    "INSERT OR IGNORE INTO applied_log (hash) VALUES (?)",
+                    (_log_hash(path),),
+                )
+                result.applied += folded
+                result.unknown += unknown
+    result.messages = rows.created
+
+
+def _unapplied(
+    log_root: pathlib.Path,
+    applied: collections.abc.Set[str],
+) -> collections.abc.Iterator[tuple[pathlib.Path, metalog.LogFile]]:
+    """The log files the projection has not taken in yet, read."""
     for path in metalog.log_files(log_root):
         if _log_hash(path) in applied:
             continue
@@ -694,21 +721,24 @@ def _apply_new_logs(
             # Unreadable or naming no place at all: leave it unmarked so a later,
             # repaired file is retried rather than skipped for good.
             continue
-        result.files += 1
-        # What the file said and the note that the file was read are one step,
-        # so neither can reach disk without the other; the transaction inside
-        # `_fold_log_file` joins this one. `execute` does not commit, so a note
-        # written outside a transaction owes its durability to whatever call
-        # happens to open one next -- which for the last file is nothing.
-        with db.transaction():
-            folded, unknown = _fold_log_file(db, rows, logfile)
-            db.execute(
-                "INSERT OR IGNORE INTO applied_log (hash) VALUES (?)",
-                (_log_hash(path),),
-            )
-        result.applied += folded
-        result.unknown += unknown
-    result.messages = rows.created
+        yield path, logfile
+
+
+def _batched(
+    files: collections.abc.Iterable[tuple[pathlib.Path, metalog.LogFile]],
+    entries: int,
+) -> collections.abc.Iterator[list[tuple[pathlib.Path, metalog.LogFile]]]:
+    """Group `files` into batches of at least `entries` store ids, the last one short."""
+    batch: list[tuple[pathlib.Path, metalog.LogFile]] = []
+    held = 0
+    for path, logfile in files:
+        batch.append((path, logfile))
+        held += len(logfile.store_ids)
+        if held >= entries:
+            yield batch
+            batch, held = [], 0
+    if batch:
+        yield batch
 
 
 def drop_db(db_path: pathlib.Path) -> bool:

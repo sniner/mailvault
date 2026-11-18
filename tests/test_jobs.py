@@ -3591,6 +3591,32 @@ class TestRefreshDb:
         with index_db.IndexDatabase(db_path) as db:
             assert db.execute("SELECT count(*) FROM applied_log").fetchone()[0] == 1
 
+    def test_the_log_files_of_a_backup_are_taken_in_with_one_commit(
+        self, tmp_path, monkeypatch
+    ):
+        """A backup leaves a file for every folder that got mail, a commit costs four fsyncs."""
+        for n in range(20):
+            _archive_message(tmp_path, "job", f"F{n}", _eml(f"<{n}@example.com>"))
+        db_path = tmp_path / DEFAULT_QUERY_DB_NAME
+        with index_db.IndexDatabase(db_path, create=True):
+            pass
+        commits: list[str] = []
+        real_connect = index_db.connect
+
+        def traced(path):
+            connection = real_connect(path)
+            connection.set_trace_callback(
+                lambda statement: commits.append(statement) if statement == "COMMIT" else None
+            )
+            return connection
+
+        monkeypatch.setattr(index_db, "connect", traced)
+
+        result = refresh_db(tmp_path, db_path)
+
+        assert result.files == 20
+        assert len(commits) == 2, "the log files, then the heads"
+
     def test_a_full_build_says_why_before_it_starts(self, tmp_path, caplog):
         """Reading every message is worth minutes; nobody should have to guess why."""
         _archive_message(tmp_path, "job", "INBOX", _eml("<a@example.com>"))

@@ -18,6 +18,9 @@
   removes the files, `archive compress` and `decompress` before they remove the originals. The
   messages of a folder, or 2,000 at a time, are flushed together: 3,000 messages cost about 200
   flushes of the disk instead of 6,000
+- **The query database costs far fewer flushes of the disk.** Updating it after a backup took a
+  commit, four flushes, for every folder that got mail, and creating it took 80 flushes before the
+  first message. Both now take a handful
 
 ### Fixed
 
