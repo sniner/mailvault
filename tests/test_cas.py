@@ -333,6 +333,28 @@ def test_cas_compress_all_mixed(tmp_path):
     assert result.skipped == 1
 
 
+def test_cas_compress_all_interrupted_leaves_no_entry_in_both_versions(tmp_path, monkeypatch):
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
+    for n in range(5):
+        store.add(f"message {n} ".encode() * 50)
+    compress, calls = cas.zstd.compress_stream, []
+
+    def interrupted(src, dst):
+        calls.append(src)
+        if len(calls) == 3:
+            raise KeyboardInterrupt
+        compress(src, dst)
+
+    monkeypatch.setattr(cas.zstd, "compress_stream", interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        store.compress_all()
+
+    names = sorted(path.name for path in store.walk())
+    assert len([name for name in names if name.endswith(".zst")]) == 2
+    assert len({name.removesuffix(".zst") for name in names}) == len(names) == 5
+
+
 def test_cas_decompress_all(tmp_path):
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml", compress=True)
     data1 = b"first email"

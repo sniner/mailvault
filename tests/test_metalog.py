@@ -713,6 +713,23 @@ class TestCompactAndTheChain:
         assert _read_head(_heads(root), "job", "INBOX").log == before
         assert len(metalog.log_files(root)) == 1
 
+    def test_the_drive_cache_is_flushed_before_the_originals_go(self, tmp_path, monkeypatch):
+        root = tmp_path / "meta"
+        TestTheChain._flush(root, ["aa"])
+        TestTheChain._flush(root, ["bb"])
+        originals = metalog.log_files(root)
+        there: list[bool] = []
+        monkeypatch.setattr(
+            metalog.atomic,
+            "flush_drive_cache",
+            lambda path: there.append(all(p.exists() for p in originals)),
+        )
+
+        metalog.compact(root, _heads(root))
+
+        assert there == [True]
+        assert not any(p.exists() for p in originals)
+
     def test_compacting_twice_changes_nothing_for_a_place_partly_read_back(self, tmp_path):
         root = tmp_path / "meta"
         TestTheChain._flush(root, ["aa"])

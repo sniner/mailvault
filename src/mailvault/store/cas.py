@@ -741,28 +741,32 @@ class ContentAddressedStorage:
         zstd.require()  # one clear failure rather than one per entry
         result = ConversionResult()
         batch: list[tuple[pathlib.Path, pathlib.Path]] = []
-        for path in self.walk():
-            if path.suffix == skip_suffix:
-                result.skipped += 1
-                continue
-            target = target_fn(path)
-            try:
-                with path.open("rb") as src, _writing_to(target, durable=False) as dst:
-                    converter(src, dst)
-            except Exception as exc:
-                # Deliberately broad: a codec error is not an OSError, and one
-                # damaged entry must not stop a pass over a whole archive. The
-                # file is named in the result, so the caller can still tell.
-                # Every one of them is a line; the stack that tells a damaged
-                # entry apart from a codec this program is holding wrong is one
-                # `-v` away.
-                utils.log_failure(log, exc, "%s: %s failed", self.where(path), operation)
-                result.failed.append(path)
-                continue
-            batch.append((path, target))
-            if len(batch) >= CONVERT_BATCH:
-                self._replace_originals(batch, result, operation)
-        self._replace_originals(batch, result, operation)
+        try:
+            for path in self.walk():
+                if path.suffix == skip_suffix:
+                    result.skipped += 1
+                    continue
+                target = target_fn(path)
+                try:
+                    with path.open("rb") as src, _writing_to(target, durable=False) as dst:
+                        converter(src, dst)
+                except Exception as exc:
+                    # Deliberately broad: a codec error is not an OSError, and one
+                    # damaged entry must not stop a pass over a whole archive. The
+                    # file is named in the result, so the caller can still tell.
+                    # Every one of them is a line; the stack that tells a damaged
+                    # entry apart from a codec this program is holding wrong is one
+                    # `-v` away.
+                    utils.log_failure(log, exc, "%s: %s failed", self.where(path), operation)
+                    result.failed.append(path)
+                    continue
+                batch.append((path, target))
+                if len(batch) >= CONVERT_BATCH:
+                    self._replace_originals(batch, result, operation)
+        finally:
+            # Also on Ctrl-C: otherwise the batch stays behind in both versions,
+            # the new ones not flushed.
+            self._replace_originals(batch, result, operation)
         return result
 
     def _replace_originals(

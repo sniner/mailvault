@@ -783,6 +783,9 @@ def compact(root: pathlib.Path, heads_root: pathlib.Path) -> CompactResult:
 
     seals.refuse_if_sealed(root, _COMPACTING)
 
+    # On macOS the fsync of each new file stopped at the drive's cache.
+    atomic.flush_drive_cache(next(iter(written)))
+
     # Drop the originals we consolidated, but never one byte-identical to a file
     # just written (an already-compact place produces the same hash).
     for path in consumed:
