@@ -7,8 +7,12 @@
 - **Messages are no longer flushed to the disk one at a time.** Each stored message cost one or
   two flushes of the disk, on a network share of the server's disk, which wears flash storage.
   `backup` and `archive import` now flush only the record of what they stored. After a crash of
-  the computer or a power loss, a message stored shortly before can be empty or cut short:
-  `archive check` reports it, `--quarantine` sets it aside, and `verify --repair` fetches it again
+  the computer or a power loss, a message stored shortly before can be empty or cut short
+- **Every command that stores messages first reads back what earlier runs stored**, once it is an
+  hour old, and sets a damaged message aside: `backup`, `verify --repair`, `archive import`,
+  `adopt`, `compress`, `decompress` and `compact`. `backup` then compares the folders of the
+  message's job with the server and fetches it again; for an imported message, the log names the
+  import to run again
 - **Before mailvault removes the source of a message, it flushes the message first**: `backup`
   with `delete_after_export` before it deletes on the server, `archive import --move` before it
   removes the files, `archive compress` and `decompress` before they remove the originals. The

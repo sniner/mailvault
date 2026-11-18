@@ -727,7 +727,12 @@ def compact(root: pathlib.Path, heads_root: pathlib.Path) -> CompactResult:
     # a head still naming a file that has just been deleted is the one state
     # worth avoiding here.
     for (mailbox, folder), hashval in roots:
-        _move_head(heads_root, _head_of(heads_root, mailbox, folder), hashval)
+        head = _head_of(heads_root, mailbox, folder)
+        # The new file holds what the old chain held and nothing else, so what
+        # had all been read back still has.
+        if head is not None and head.checked == head.log:
+            head.checked = hashval
+        _move_head(heads_root, head, hashval)
 
     seals.refuse_if_sealed(root, _COMPACTING)
 

@@ -1521,6 +1521,37 @@ class TestExitCodes:
         assert self._backup_run(monkeypatch, tmp_path, report) == 1
 
 
+class TestReadingBack:
+    """What earlier runs stored is read back before a run that writes relies on it."""
+
+    @staticmethod
+    def _order(monkeypatch, tmp_path, **args: Any) -> list[str]:
+        marker.write(tmp_path)
+        monkeypatch.setattr(
+            conf, "load", lambda *a, **kw: conf.Config(jobs=[conf.JobConfig(name="proton.me")])
+        )
+        order: list[str] = []
+        monkeypatch.setattr(jobs, "read_back", lambda archive: order.append("read back"))
+        monkeypatch.setattr(jobs, "backup", lambda *a, **kw: order.append("backup"))
+        monkeypatch.setattr(jobs, "verify", lambda *a, **kw: order.append("verify") or [])
+        run_mailbox(_args(archive=tmp_path, allow_new_mailbox=True, **args))
+        return order
+
+    def test_before_the_first_backup_job(self, monkeypatch, tmp_path):
+        """So that the backup fetches a damaged message again in the same run."""
+        assert self._order(monkeypatch, tmp_path) == ["read back", "backup"]
+
+    def test_before_a_repair(self, monkeypatch, tmp_path):
+        order = self._order(monkeypatch, tmp_path, command="verify", repair=True)
+
+        assert order == ["read back", "verify"]
+
+    def test_not_for_a_verify_that_only_reports(self, monkeypatch, tmp_path):
+        order = self._order(monkeypatch, tmp_path, command="verify", repair=False)
+
+        assert order == ["verify"]
+
+
 class TestDbCommands:
     """The four things one can do to a database that is only ever a copy."""
 

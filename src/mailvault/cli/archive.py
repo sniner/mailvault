@@ -744,6 +744,8 @@ def run(args: argparse.Namespace) -> int:
         print(f"{count:,} emails, {_human_size(size)} total")
     elif cmd == "import":
         _refuse_importing_the_archive(archive, args.source)
+        if not args.dry_run:
+            jobs.read_back(archive)
         source = _external(args.source, args.docuware)
         # `--move` removes each source, so its message has to be on the disk first.
         flush = cas.Flush.ON_REQUEST if args.move else cas.Flush.NEVER
@@ -761,13 +763,17 @@ def run(args: argparse.Namespace) -> int:
     elif cmd == "places":
         return report_places(metalog.summarize(archive / metalog.DEFAULT_LOG_DIR))
     elif cmd == "adopt":
+        if not args.dry_run:
+            jobs.read_back(archive)
         return report_adopt(jobs.adopt(archive, args.name, dry_run=args.dry_run))
     elif cmd == "compress":
+        jobs.read_back(archive)
         store = cas.mail_store(archive)
         return report_conversion(
             archive, store.compress_all(), "compressed", "already compressed"
         )
     elif cmd == "decompress":
+        jobs.read_back(archive)
         store = cas.mail_store(archive)
         return report_conversion(
             archive, store.decompress_all(), "decompressed", "already plain"
@@ -775,6 +781,7 @@ def run(args: argparse.Namespace) -> int:
     elif cmd == "migrate":
         return report_migration(archive, jobs.migrate_archive(archive))
     elif cmd == "compact":
+        jobs.read_back(archive)
         return report_compact(
             metalog.compact(
                 archive / metalog.DEFAULT_LOG_DIR,

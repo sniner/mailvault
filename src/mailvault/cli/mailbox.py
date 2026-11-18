@@ -276,6 +276,10 @@ def run(args: argparse.Namespace) -> int:
         destination = archive
         use_archive_hash(args, destination, config)
         guard.check_jobs(destination, selected, allow_new=args.allow_new_mailbox)
+        # Before the first job, so that a message a power loss damaged is
+        # fetched again by this run: what it drops is the resume points.
+        if args.command == "backup" or args.repair:
+            jobs.read_back(destination)
         # One archive, one metadata log, one reading of it -- however many jobs
         # the configuration names. Every job used to read all of it to keep the
         # part that is theirs.
