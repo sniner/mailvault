@@ -44,6 +44,14 @@ else:
         _BACKEND = None
 
 
+# What reading a damaged compressed file raises: each backend has an error of its
+# own, and neither is an OSError. A file of zero bytes where the frame should
+# begin, which a power loss can leave, is one of them.
+DECODE_ERRORS: tuple[type[Exception], ...] = (
+    () if _BACKEND is None else (typing.cast(type[Exception], _zstd.ZstdError),)
+)
+
+
 class ByteReader(typing.Protocol):
     """Blocks of bytes, and a `with` block to hold them in.
 

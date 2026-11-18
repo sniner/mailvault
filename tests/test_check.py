@@ -116,6 +116,15 @@ class TestWhatItFinds:
         assert result.corrupt == [victim]
         assert not result.sound
 
+    def test_a_compressed_message_that_cannot_be_decompressed(self, tmp_path):
+        store = cas.mail_store(tmp_path, compress=True)
+        _status, _hashval, victim = store.add(b"Message-Id: <z@example.com>\r\n\r\nbody\r\n")
+        tamper(victim, b"\0" * 100)
+
+        result = check(tmp_path)
+
+        assert result.corrupt == [victim]
+
     def test_a_log_file_that_no_longer_matches_its_own_name(self, tmp_path):
         _archive(tmp_path)
         (logfile,) = metalog.log_files(tmp_path / metalog.DEFAULT_LOG_DIR)

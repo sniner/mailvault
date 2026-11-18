@@ -625,6 +625,8 @@ class ContentAddressedStorage:
         checksum file to keep in sync. Reads the entry in blocks, so verifying a
         large message costs no more memory than storing one did.
 
+        A compressed entry that cannot be decompressed does not match either.
+
         Raises ValueError for a file that is not an entry of this store -- there
         is no name to check the content against.
         """
@@ -632,8 +634,11 @@ class ContentAddressedStorage:
         if claimed is None:
             raise ValueError(f"not an entry of this store: {path}")
         m = self.hashfactory()
-        with self._reading(path) as reader:
-            self._copy(reader, m.update)
+        try:
+            with self._reading(path) as reader:
+                self._copy(reader, m.update)
+        except zstd.DECODE_ERRORS:
+            return False
         return m.hexdigest() == claimed
 
     def verify_entry(self, hashval: str) -> bool:
@@ -647,8 +652,11 @@ class ContentAddressedStorage:
         from a damaged one.
         """
         m = self.hashfactory()
-        with self.reading(hashval) as reader:
-            self._copy(reader, m.update)
+        try:
+            with self.reading(hashval) as reader:
+                self._copy(reader, m.update)
+        except zstd.DECODE_ERRORS:
+            return False
         return m.hexdigest() == normalize_hashval(hashval)
 
     def locate(

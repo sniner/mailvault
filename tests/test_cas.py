@@ -445,6 +445,16 @@ def test_cas_verify_compressed(tmp_path):
     assert store.verify(path)
 
 
+def test_cas_verify_a_compressed_entry_that_cannot_be_decompressed(tmp_path):
+    """What a power loss can leave: zeros where the frame should begin."""
+    store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml", compress=True)
+    _, hashval, path = store.add(b"compressible " * 100)
+    tamper(path, b"\0" * 100)
+
+    assert not store.verify(path)
+    assert not store.verify_entry(hashval)
+
+
 def test_cas_verify_needs_an_entry(tmp_path):
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
     stray = store.root_dir / "notes.eml"

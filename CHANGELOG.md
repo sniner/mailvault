@@ -15,6 +15,11 @@
   messages of a folder, or 2,000 at a time, are flushed together: 3,000 messages cost about 200
   flushes of the disk instead of 6,000
 
+### Fixed
+
+- **`archive check` reports a compressed message that cannot be decompressed as damaged.** It
+  stopped with a zstd error at the first such message, and `--quarantine` could not set it aside
+
 ## 0.25.0 (2026-11-03)
 
 ### Fixed
