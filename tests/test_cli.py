@@ -1531,7 +1531,7 @@ class TestReadingBack:
             conf, "load", lambda *a, **kw: conf.Config(jobs=[conf.JobConfig(name="proton.me")])
         )
         order: list[str] = []
-        monkeypatch.setattr(jobs, "read_back", lambda archive: order.append("read back"))
+        monkeypatch.setattr(jobs, "open_for_writing", lambda archive: order.append("read back"))
         monkeypatch.setattr(jobs, "backup", lambda *a, **kw: order.append("backup"))
         monkeypatch.setattr(jobs, "verify", lambda *a, **kw: order.append("verify") or [])
         run_mailbox(_args(archive=tmp_path, allow_new_mailbox=True, **args))
@@ -1540,6 +1540,26 @@ class TestReadingBack:
     def test_before_the_first_backup_job(self, monkeypatch, tmp_path):
         """So that the backup fetches a damaged message again in the same run."""
         assert self._order(monkeypatch, tmp_path) == ["read back", "backup"]
+
+    def test_once_for_all_the_jobs_of_a_run(self, monkeypatch, tmp_path):
+        marker.write(tmp_path)
+        names = ["one", "two", "three"]
+        monkeypatch.setattr(
+            conf,
+            "load",
+            lambda *a, **kw: conf.Config(jobs=[conf.JobConfig(name=n) for n in names]),
+        )
+        opened: list[pathlib.Path] = []
+        handed: list[object] = []
+        monkeypatch.setattr(
+            jobs, "open_for_writing", lambda archive: opened.append(archive) or "it"
+        )
+        monkeypatch.setattr(jobs, "backup", lambda *a, archive, **kw: handed.append(archive))
+
+        run_mailbox(_args(archive=tmp_path, allow_new_mailbox=True))
+
+        assert opened == [tmp_path]
+        assert handed == ["it", "it", "it"]
 
     def test_before_a_repair(self, monkeypatch, tmp_path):
         order = self._order(monkeypatch, tmp_path, command="verify", repair=True)
@@ -1979,7 +1999,7 @@ class TestTheLogIsReadOncePerRun:
 
         # Each job asks for a folder with nothing archived, which is what makes
         # the question get asked at all.
-        def _ask(job, args, config, destination=None, places=None):
+        def _ask(job, args, config, destination=None, places=None, opened=None):
             assert places is not None, "the run has to hand one down"
             places.of(job.name, "INBOX")
 

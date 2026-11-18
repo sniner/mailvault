@@ -4,9 +4,10 @@ Messages are written without a flush (`cas.Flush`). A power loss shortly after
 can leave one empty or cut short under its name, recorded in the log and with
 the resume point of its folder past it. Nothing would fetch it again on its own:
 the store answers "is this message here?" by its name. So every command that
-stores or rewrites messages first reads back the messages recorded since the
-last time, holds each against its hash, sets aside what is damaged, and drops
-the resume point of each folder it was recorded in. The next backup then
+stores or rewrites messages opens the archive through `open_for_writing`, which
+first reads back the messages recorded since the last time, holds each against
+its hash, sets aside what is damaged, and drops the resume point of each folder
+it was recorded in. The next backup then
 compares that folder with the server and fetches what is missing, and starts a
 new resume point.
 
@@ -233,6 +234,33 @@ def read_back(archive: pathlib.Path, now: float | None = None) -> ReadBackResult
     _rewrite(archive, pending, damaged, unreadable, result)
     _report(result)
     return result
+
+
+@dataclasses.dataclass
+class WritableArchive:
+    """An archive that a command is about to store or rewrite messages in.
+
+    Made by `open_for_writing`, which reads back first; `found` is what that
+    came to. A command gets its message store from here, so that none writes
+    into an archive that was not read back. One is enough for a run: a command
+    that runs several jobs opens it once and hands it to each.
+    """
+
+    path: pathlib.Path
+    found: ReadBackResult
+
+    def store(
+        self,
+        compress: bool = False,
+        flush: cas.Flush = cas.Flush.NEVER,
+    ) -> cas.ContentAddressedStorage:
+        """The message store, as `cas.mail_store` opens it."""
+        return cas.mail_store(self.path, compress=compress, flush=flush)
+
+
+def open_for_writing(archive: pathlib.Path) -> WritableArchive:
+    """Read back what earlier runs stored in `archive`, and open it for a writing command."""
+    return WritableArchive(archive, read_back(archive))
 
 
 def _report(result: ReadBackResult) -> None:

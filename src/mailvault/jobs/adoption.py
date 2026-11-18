@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 
 from mailvault import utils
 from mailvault.jobs.common import FLUSH_BATCH, check_place_name, flush_log
+from mailvault.jobs.readback import open_for_writing
 from mailvault.store import cas, heads, metalog
 
 log = logging.getLogger(__name__)
@@ -96,7 +97,7 @@ def adopt(store_path: pathlib.Path, name: str, dry_run: bool = False) -> AdoptRe
     """
     check_place_name(name)
     log_root = store_path / metalog.DEFAULT_LOG_DIR
-    store = cas.mail_store(store_path)
+    store = cas.mail_store(store_path) if dry_run else open_for_writing(store_path).store()
     result = AdoptResult(name=name, dry_run=dry_run)
 
     log.info("step 1 of 2: reading the metadata log")

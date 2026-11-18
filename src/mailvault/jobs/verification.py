@@ -20,6 +20,7 @@ import pathlib
 from mailvault import conf, utils
 from mailvault.backend import session
 from mailvault.jobs.common import JobError, warn_not_read
+from mailvault.jobs.readback import WritableArchive, open_for_writing
 from mailvault.jobs.reconcile import ArchivedPlaces, ReconcileResult, reconcile_folder
 from mailvault.store import cas, heads, metalog
 
@@ -36,6 +37,7 @@ def verify(
     repair: bool = False,
     compress: bool = False,
     places: ArchivedPlaces | None = None,
+    archive: WritableArchive | None = None,
 ) -> list[VerifyResult]:
     """Check the archive for messages the server still has but the archive lacks.
 
@@ -50,6 +52,9 @@ def verify(
     Without `repair` it still downloads the messages whose Message-ID does not
     settle whether they are archived, and compares them by content. It stores
     nothing then.
+
+    With `repair` it stores messages, so the archive is opened for writing first
+    unless the caller hands it in as `archive` (see `backup`).
     """
     if job.exchange_journal:
         raise JobError(
@@ -67,8 +72,12 @@ def verify(
     # run to share it across -- one archive has one log, and every job was
     # reading all of it to keep the sixth of it that is theirs.
     places = places if places is not None else ArchivedPlaces(log_root)
-    with session.open_mailbox(job) as mb:
+    if repair:
+        archive = archive or open_for_writing(store_path)
+        store = archive.store(compress=compress)
+    else:
         store = cas.mail_store(store_path, compress=compress)
+    with session.open_mailbox(job) as mb:
         folders = job.folders if job.folders else list(mb.folders())
         for position, folder in enumerate(folders):
             if mb.connection_lost:

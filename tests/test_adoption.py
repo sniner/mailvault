@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 import pytest
 
 from mailvault import jobs
-from mailvault.jobs import adoption
+from mailvault.jobs import adoption, readback
 from mailvault.store import cas, heads, metalog
 
 
@@ -240,3 +240,27 @@ class TestTogetherWithTheCheck:
         assert after.orphans == []
         assert after.referenced == 3
         assert after.sound, f"findings: {after.missing} {after.broken_chains}"
+
+
+class TestReadingBack:
+    """Adopting writes into the archive, so what earlier runs stored is read back first."""
+
+    @staticmethod
+    def _opened(monkeypatch, tmp_path, dry_run: bool) -> list[pathlib.Path]:
+        opened: list[pathlib.Path] = []
+        real = readback.open_for_writing
+
+        def recording(archive: pathlib.Path) -> readback.WritableArchive:
+            opened.append(archive)
+            return real(archive)
+
+        monkeypatch.setattr(adoption, "open_for_writing", recording)
+        cas.mail_store(tmp_path).add(b"Subject: nobody knows\r\n\r\nbody\r\n")
+        adoption.adopt(tmp_path, "orphaned", dry_run=dry_run)
+        return opened
+
+    def test_before_messages_are_recorded(self, monkeypatch, tmp_path):
+        assert self._opened(monkeypatch, tmp_path, dry_run=False) == [tmp_path]
+
+    def test_not_for_a_dry_run(self, monkeypatch, tmp_path):
+        assert self._opened(monkeypatch, tmp_path, dry_run=True) == []

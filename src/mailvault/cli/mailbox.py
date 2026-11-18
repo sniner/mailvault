@@ -174,6 +174,7 @@ def _run_job(
     config: conf.Config,
     destination: pathlib.Path | None = None,
     places: jobs.ArchivedPlaces | None = None,
+    opened: jobs.WritableArchive | None = None,
 ) -> int:
     """Run one job, and say whether it got through what it was asked to do.
 
@@ -209,12 +210,18 @@ def _run_job(
                 index_db=index_db,
                 incremental=incremental,
                 places=places,
+                archive=opened,
             ),
         )
     elif args.command == "verify":
         compress = args.compress or config.compress
         results = jobs.verify(
-            job, destination, repair=args.repair, compress=compress, places=places
+            job,
+            destination,
+            repair=args.repair,
+            compress=compress,
+            places=places,
+            archive=opened,
         )
         return report_verify(job.name, results, repaired=args.repair)
     return 0
@@ -272,14 +279,16 @@ def run(args: argparse.Namespace) -> int:
     # `delete_after_export`, removed from the server.
     destination = None
     places = None
+    opened = None
     if needs_archive:
         destination = archive
         use_archive_hash(args, destination, config)
         guard.check_jobs(destination, selected, allow_new=args.allow_new_mailbox)
-        # Before the first job, so that a message a power loss damaged is
-        # fetched again by this run: what it drops is the resume points.
+        # Once for all jobs, and before the first: a message a power loss
+        # damaged is then fetched again by this run, because what reading back
+        # drops is the resume points.
         if args.command == "backup" or args.repair:
-            jobs.read_back(destination)
+            opened = jobs.open_for_writing(destination)
         # One archive, one metadata log, one reading of it -- however many jobs
         # the configuration names. Every job used to read all of it to keep the
         # part that is theirs.
@@ -289,7 +298,7 @@ def run(args: argparse.Namespace) -> int:
         # One broken job must not stop the remaining ones, but the run as a
         # whole reports failure so callers/cron can react.
         try:
-            exit_code |= _run_job(job, args, config, destination, places)
+            exit_code |= _run_job(job, args, config, destination, places, opened)
         except EXPECTED_ERRORS as exc:
             # A misconfigured or refused job is a user error, not a crash --
             # reported as one line here for the same reason `main` does it.
