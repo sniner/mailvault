@@ -24,6 +24,7 @@ from mailvault.legacy import state_json as state
 from mailvault.legacy import store_db
 from mailvault.store import cas, heads, index_db, marker, metalog
 from tests.legacy_store_db import legacy_store_db
+from tests.tamper import tamper
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1671,6 +1672,23 @@ class TestDeleteAfterExport:
         self._run(job, mock_client, tmp_path)
 
         assert order == [f"flush {[stored[0].name]}", "purge"]
+
+    def test_a_message_an_earlier_run_left_damaged_is_replaced_before_the_purge(self, tmp_path):
+        """A power loss before its flush: no purge then, and the same message again now."""
+        body = b"From: a@example.org\r\n\r\nbody"
+        _status, store_id, path = cas.mail_store(tmp_path).add(body)
+        tamper(path, body[:5])
+        job = _make_job(folders=["INBOX"], delete_after_export=True)
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = self._backup_storing([])
+        intact_at_purge: list[bool] = []
+        mock_client.purge.side_effect = lambda folder, ids: intact_at_purge.append(
+            cas.mail_store(tmp_path).verify_entry(store_id)
+        )
+
+        self._run(job, mock_client, tmp_path)
+
+        assert intact_at_purge == [True]
 
     def test_does_not_purge_when_the_messages_cannot_be_flushed(self, tmp_path, monkeypatch):
         _seed_resume(tmp_path, ARCHIVED_AT)

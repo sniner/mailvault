@@ -144,7 +144,8 @@ class Flush(enum.Enum):
     it: an entry is on the device once `add` returns. `ON_REQUEST` flushes
     nothing at the time and remembers every entry `add` returns, new or already
     there, until `flush` makes all of them durable at once; for a command that
-    removes the source of what it stored. `NEVER` flushes nothing: an entry
+    removes the source of what it stored. It also reads an entry that is already
+    there against its hash before trusting it (see `add`). `NEVER` flushes nothing: an entry
     reaches the device when the operating system writes it out, and a power loss
     before that can leave it empty or cut short under its name.
     """
@@ -454,15 +455,29 @@ class ContentAddressedStorage:
         return None
 
     def add(self, data: io.IOBase | bytes) -> tuple[AddStatus, str, pathlib.Path]:
+        """Store `data` unless an entry with its content is there already.
+
+        An entry that is there is taken at its name, except under
+        `Flush.ON_REQUEST`, where the caller is about to remove the source:
+        there it is read against its hash first, and a damaged one is replaced
+        by `data`. A power loss before the last flush of an earlier run leaves
+        such an entry, and that run's source is still there, because the
+        removal waits for the flush.
+        """
         reader = self._reader(data)
         hashval = self._hashval(reader)
         existing = self._find_existing(hashval)
-        if existing:
+        if existing and not self._damaged(existing):
             log.debug("%s: already exists", self.where(existing))
             # Owed as well: an earlier `add` of this run may have written it
             # without a flush, and the caller is about to rely on it.
             self._owe(existing)
             return AddStatus.EXISTS, hashval, existing
+        if existing:
+            # Removed rather than set aside: what replaces it is the message
+            # itself, and the damaged bytes hold nothing it does not.
+            log.warning("%s: damaged, replaced by the copy just read", self.where(existing))
+            utils.remove_file(existing)
         path, filename = self._destination(hashval)
         file = path / filename
         with _writing_to(file, durable=self.flush_policy is Flush.EACH) as f:
@@ -476,6 +491,16 @@ class ContentAddressedStorage:
         log.debug("%s: new entry", self.where(file))
         self._owe(file)
         return AddStatus.NEW, hashval, file
+
+    def _damaged(self, existing: pathlib.Path) -> bool:
+        """Whether an entry `add` found has to be replaced; only asked under ON_REQUEST."""
+        if self.flush_policy is not Flush.ON_REQUEST:
+            return False
+        try:
+            return not self.verify(existing)
+        except OSError as exc:
+            log.debug("%s: unreadable, replaced: %s", self.where(existing), exc)
+            return True
 
     def _owe(self, path: pathlib.Path) -> None:
         if self.flush_policy is Flush.ON_REQUEST:

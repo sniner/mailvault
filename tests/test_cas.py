@@ -734,6 +734,44 @@ def test_cas_flush_on_request_flushes_all_entries_together_when_asked(tmp_path, 
     assert seen == [f"together {sorted([first.name, second.name, first.name])}"]
 
 
+def test_cas_flush_on_request_replaces_a_damaged_entry_it_finds(tmp_path):
+    """The caller removes the source next; a power loss may have cut the entry short."""
+    store = cas.ContentAddressedStorage(
+        tmp_path / "cas", suffix=".eml", flush=cas.Flush.ON_REQUEST
+    )
+    _s, hashval, path = store.add(b"a whole message")
+    tamper(path, b"a who")
+
+    status, again, replaced = store.add(b"a whole message")
+
+    assert (status, again) == (cas.AddStatus.NEW, hashval)
+    assert store.verify(replaced)
+
+
+def test_cas_flush_on_request_keeps_an_intact_entry_it_finds(tmp_path):
+    store = cas.ContentAddressedStorage(
+        tmp_path / "cas", suffix=".eml", flush=cas.Flush.ON_REQUEST
+    )
+    _s, _h, path = store.add(b"a whole message")
+    written = path.stat().st_mtime_ns
+
+    status, _h, again = store.add(b"a whole message")
+
+    assert (status, again) == (cas.AddStatus.EXISTS, path)
+    assert path.stat().st_mtime_ns == written
+
+
+def test_cas_flush_never_takes_an_entry_at_its_name(tmp_path):
+    """Reading every message that is already there would cost a run that removes nothing."""
+    store = cas.ContentAddressedStorage(tmp_path / "cas", suffix=".eml", flush=cas.Flush.NEVER)
+    _s, _h, path = store.add(b"a whole message")
+    tamper(path, b"a who")
+
+    status, _h, _path = store.add(b"a whole message")
+
+    assert status is cas.AddStatus.EXISTS
+
+
 def test_cas_a_failed_flush_leaves_the_entries_owed(tmp_path, monkeypatch):
     store = cas.ContentAddressedStorage(
         tmp_path / "cas", suffix=".eml", flush=cas.Flush.ON_REQUEST
