@@ -98,25 +98,38 @@ class TestWhatIsReadBack:
 
 
 class TestADamagedMessage:
-    def test_is_set_aside_and_its_job_loses_its_resume_points(self, tmp_path):
-        """Every folder of the job: the log does not say which one stored it."""
+    def test_is_set_aside_and_its_folder_loses_its_resume_point(self, tmp_path):
+        """The incremental backup asks only past it, and would never fetch it again."""
         _resume(tmp_path, "job", "INBOX")
         _resume(tmp_path, "job", "Sent")
-        _resume(tmp_path, "other", "INBOX")
         victim, _intact = _record(tmp_path, [_mail(1), _mail(2)])
         tamper(victim, b"")
 
         result = readback.read_back(tmp_path, now=LATER)
 
         assert len(result.damaged) == 1
-        assert result.jobs == {"job"}
+        assert (result.folders, result.jobs) == (["job::INBOX"], set())
         assert not victim.exists()
         assert victim.with_name(victim.name + ".corrupt").exists()
         assert _head(tmp_path).resume is None
-        assert _head(tmp_path, "job", "Sent").resume is None
-        assert _head(tmp_path, "other", "INBOX").resume == RESUME
+        assert _head(tmp_path, "job", "Sent").resume == RESUME
         head = _head(tmp_path)
         assert head.checked == head.log
+
+    def test_recorded_only_under_labels_takes_every_resume_point_of_its_job(self, tmp_path):
+        """Gmail: read from `[Gmail]/All Mail`, recorded under a label nobody configured."""
+        _resume(tmp_path, "job", "[Gmail]/All Mail")
+        _resume(tmp_path, "job", "INBOX")
+        _resume(tmp_path, "other", "INBOX")
+        (victim,) = _record(tmp_path, [_mail(1)], folder="Work")
+        tamper(victim, b"")
+
+        result = readback.read_back(tmp_path, now=LATER)
+
+        assert (result.folders, result.jobs) == ([], {"job"})
+        assert _head(tmp_path, "job", "[Gmail]/All Mail").resume is None
+        assert _head(tmp_path, "job", "INBOX").resume is None
+        assert _head(tmp_path, "other", "INBOX").resume == RESUME
 
     def test_one_the_archive_no_longer_holds_is_fetched_again_too(self, tmp_path):
         _resume(tmp_path, "job", "INBOX")

@@ -429,7 +429,7 @@ class TestAPowerLossAfterABackup:
         again = jobs.backup(job, archive, incremental=True)
 
         assert len(found.damaged) == 1
-        assert found.jobs == {user}
+        assert found.folders == [f"{user}::INBOX"]
         assert (again.stored, again.present) == (1, len(corpus.PLAIN) - 1)
         assert jobs.check(archive).sound
 

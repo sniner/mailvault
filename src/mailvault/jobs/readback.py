@@ -6,18 +6,20 @@ the resume point of its folder past it. Nothing would fetch it again on its own:
 the store answers "is this message here?" by its name. So every command that
 stores or rewrites messages first reads back the messages recorded since the
 last time, holds each against its hash, sets aside what is damaged, and drops
-the resume points of the job it came from. The next backup of that job then
-compares its folders with the server and fetches what is missing.
+the resume point of each folder it was recorded in. The next backup then
+compares that folder with the server and fetches what is missing, and starts a
+new resume point.
 
 How far a place has been read back is noted in its head (`Head.checked`), as a
 position in its log chain. Only log files older than `MIN_AGE` are read back.
 Soon after the write the bytes still come from memory, and reading them would
 vouch for what may not have reached the disk yet.
 
-Dropping every resume point of the job, and not only that of the folder, is
-deliberate. The log says in which places a message was seen, not which folder
-the backup was reading when it stored it, and for Gmail those differ: a message
-fetched from `[Gmail]/All Mail` is recorded under its labels.
+The log names the places a message was seen in, not the folder the backup was
+reading when it stored it. Mostly they are the same. For Gmail they are not: a
+message fetched from `[Gmail]/All Mail` is recorded under its labels, and a
+label nobody configured has no resume point. Where none of a message's places
+has one, every resume point of its job is dropped.
 """
 
 from __future__ import annotations
@@ -52,14 +54,16 @@ class ReadBackResult:
 
     `damaged` holds the store ids of the messages that were set aside or that the
     log names and the archive no longer holds; both are fetched again. `jobs`
-    names the jobs whose resume points were dropped for them, `imports` the
-    imports whose messages have to be imported again. `unreadable` counts the
-    messages that could not be read at all; their places are read back again
-    next time.
+    names the jobs that lost every resume point, because no place of a damaged
+    message had one, and `folders` the other places whose resume points were
+    dropped, as `job::folder`. `imports` names the imports whose messages have
+    to be imported again. `unreadable` counts the messages that could not be read
+    at all; their places are read back again next time.
     """
 
     read: int = 0
     damaged: list[str] = dataclasses.field(default_factory=list)
+    folders: list[str] = dataclasses.field(default_factory=list)
     jobs: set[str] = dataclasses.field(default_factory=set)
     imports: set[str] = dataclasses.field(default_factory=set)
     unreadable: int = 0
@@ -73,7 +77,7 @@ class _Pending:
     head: heads.Head
     # Where `checked` moves to once the messages below are read back.
     upto: str
-    store_ids: list[str]
+    store_ids: set[str]
 
 
 def _unchecked(
@@ -116,7 +120,7 @@ def _pending(archive: pathlib.Path, oldest_write: float) -> list[_Pending]:
         unchecked = _unchecked(log_store, head, oldest_write)
         if unchecked is not None:
             upto, store_ids = unchecked
-            found.append(_Pending(path, head, upto, store_ids))
+            found.append(_Pending(path, head, upto, set(store_ids)))
     return found
 
 
@@ -156,6 +160,25 @@ def _verdicts(
     return damaged, unreadable
 
 
+def _to_drop(
+    pending: list[_Pending],
+    damaged: set[str],
+    result: ReadBackResult,
+) -> set[pathlib.Path]:
+    """The heads whose resume points go, and in `result` the jobs that lose all of theirs."""
+    dropped: set[pathlib.Path] = set()
+    for store_id in damaged:
+        holding = [entry for entry in pending if store_id in entry.store_ids]
+        resumed = [entry.path for entry in holding if entry.head.resume is not None]
+        dropped.update(resumed)
+        for entry in holding:
+            if entry.head.job is None:
+                result.imports.add(entry.head.folder or "?")
+            elif not resumed:
+                result.jobs.add(entry.head.job)
+    return dropped
+
+
 def _rewrite(
     archive: pathlib.Path,
     pending: list[_Pending],
@@ -163,18 +186,13 @@ def _rewrite(
     unreadable: set[str],
     result: ReadBackResult,
 ) -> None:
-    """Move `checked` on, and drop the resume points of the jobs that lost mail.
+    """Move `checked` on, and drop the resume points the damaged messages lie behind.
 
     Each head is read again right before it is written, and one that a running
     backup changed meanwhile is left alone: its own write wins, and what is
     left is read back next time.
     """
-    for entry in pending:
-        if damaged.intersection(entry.store_ids):
-            if entry.head.job is None:
-                result.imports.add(entry.head.folder or "?")
-            else:
-                result.jobs.add(entry.head.job)
+    dropped = _to_drop(pending, damaged, result)
     root = archive / heads.DEFAULT_HEADS_DIR
     moving = {entry.path: entry for entry in pending}
     for path in heads.head_files(root):
@@ -187,8 +205,10 @@ def _rewrite(
             if not unreadable.intersection(entry.store_ids):
                 head.checked = entry.upto
                 changed = True
-        if head.job in result.jobs and head.resume is not None:
+        if head.resume is not None and (path in dropped or head.job in result.jobs):
             head.resume = None
+            if head.job not in result.jobs:
+                result.folders.append(heads.place_name(head.job, head.folder))
             changed = True
         if changed:
             try:
@@ -230,8 +250,14 @@ def _report(result: ReadBackResult) -> None:
     )
     for job in sorted(result.jobs):
         log.warning(
-            "%s: the next backup compares its folders with the server and fetches them again",
+            "%s: the next backup compares all its folders with the server and fetches"
+            " them again",
             job,
+        )
+    for place in result.folders:
+        log.warning(
+            "%s: the next backup compares the folder with the server and fetches them again",
+            place,
         )
     for name in sorted(result.imports):
         log.warning(
