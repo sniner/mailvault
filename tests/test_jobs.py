@@ -1616,6 +1616,79 @@ class TestDeleteAfterExport:
         # A message must never leave the server when its location was not written.
         mock_client.purge.assert_not_called()
 
+    @staticmethod
+    def _backup_storing(stored: list[pathlib.Path], earned: dict | None = None):
+        """A folder_backup stand-in that really stores its one message."""
+
+        def run(folder_name, store, resume=None, retry=(), callback=None):
+            _status, store_id, path = store.add(b"From: a@example.org\r\n\r\nbody")
+            stored.append(path)
+            if callback:
+                callback(
+                    mailutils.MessageMetadata(
+                        mailbox="test-job",
+                        store_id=store_id,
+                        folders=[folder_name],
+                    )
+                )
+            return base.BackupResult(total=1, stored=1, deletable=[1], resume=earned)
+
+        return run
+
+    @pytest.mark.parametrize(
+        ("deletes", "policy"),
+        [(True, cas.Flush.ON_REQUEST), (False, cas.Flush.NEVER)],
+    )
+    def test_the_store_flushes_only_for_a_job_that_deletes(self, tmp_path, deletes, policy):
+        job = _make_job(folders=["INBOX"], delete_after_export=deletes)
+        mock_client = _make_mock_client()
+        policies: list[cas.Flush] = []
+
+        def run(folder_name, store, resume=None, retry=(), callback=None):
+            policies.append(store.flush_policy)
+            return base.BackupResult()
+
+        mock_client.folder_backup.side_effect = run
+
+        self._run(job, mock_client, tmp_path)
+
+        assert policies == [policy]
+
+    def test_the_messages_reach_the_disk_before_the_purge(self, tmp_path, monkeypatch):
+        """The server's copy is what a message damaged by a power loss comes back from."""
+        job = _make_job(folders=["INBOX"], delete_after_export=True)
+        mock_client = _make_mock_client()
+        stored: list[pathlib.Path] = []
+        mock_client.folder_backup.side_effect = self._backup_storing(stored)
+        order: list[str] = []
+        monkeypatch.setattr(
+            cas.atomic,
+            "sync_together",
+            lambda paths: order.append(f"flush {[p.name for p in paths]}"),
+        )
+        mock_client.purge.side_effect = lambda folder, ids: order.append("purge")
+
+        self._run(job, mock_client, tmp_path)
+
+        assert order == [f"flush {[stored[0].name]}", "purge"]
+
+    def test_does_not_purge_when_the_messages_cannot_be_flushed(self, tmp_path, monkeypatch):
+        _seed_resume(tmp_path, ARCHIVED_AT)
+        job = _make_job(folders=["INBOX"], delete_after_export=True)
+        mock_client = _make_mock_client()
+        mock_client.folder_backup.side_effect = self._backup_storing([], earned=_token(LATER))
+
+        def sync_together(paths):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(cas.atomic, "sync_together", sync_together)
+
+        report = self._run(job, mock_client, tmp_path)
+
+        mock_client.purge.assert_not_called()
+        assert _resume_date(tmp_path) == ARCHIVED_AT
+        assert report.retried == ["INBOX"]
+
     def test_a_purge_that_went_through_moves_the_resume_point(self, tmp_path):
         job = _make_job(folders=["INBOX"], delete_after_export=True)
         mock_client = _make_mock_client()

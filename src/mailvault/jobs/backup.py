@@ -375,7 +375,7 @@ def _backup_folder(
     # Purged before the point is written. The next run asks only for what lies
     # past it, so a point moved past messages that could not be deleted would
     # leave them on the server for good.
-    purged = _purge_after_flush(mb, job, folder, result, flushed, report)
+    purged = _purge_after_flush(mb, store, job, folder, result, flushed, report)
     if not purged and resume is not None:
         log.warning(
             "%s::%s: not all deleted, resume point not advanced",
@@ -630,24 +630,29 @@ def _catch_up_folder(
 
 def _purge_after_flush(
     mb: base.MailboxClient,
+    store: cas.ContentAddressedStorage,
     job: conf.JobConfig,
     folder: str,
     result: base.BackupResult,
     flushed: bool,
     report: BackupReport,
 ) -> bool:
-    """Delete the archived messages from the server, but only once the log is on disk.
+    """Delete the archived messages from the server, once they and the log are on disk.
 
     Returns whether nothing is left to delete. False holds the resume point back,
     so that the next run reads the messages again and deletes them then.
 
     This is the ordering the archive depends on when it deletes after export: a
-    message's location reaches the log and is fsync'd *before* the message is
-    removed from its source. A flush that failed holds the deletion back entirely
-    -- the messages stay on the server and are re-fetched next run, which the
-    content-addressed storage deduplicates -- rather than leaving `.eml` files in
-    the archive whose one unrecoverable fact, where they were seen, went with the
-    deleted server copy.
+    message and its location reach the device *before* the message is removed
+    from its source. Until then the server's copy is what a message damaged by a
+    power loss is fetched again from, which is why the store writes without a
+    flush (`cas.Flush.ON_REQUEST`) and is flushed here, all at once.
+
+    A flush that failed, of the log or of the messages, holds the deletion back
+    entirely -- the messages stay on the server and are re-fetched next run,
+    which the content-addressed storage deduplicates -- rather than leaving
+    `.eml` files in the archive whose one unrecoverable fact, where they were
+    seen, went with the deleted server copy.
 
     Deletion does not wait for a *complete* folder, only for a written log: the
     messages in `deletable` were stored and their locations written, so removing
@@ -660,6 +665,18 @@ def _purge_after_flush(
     if not flushed:
         log.error(
             "%s::%s: metadata log not written, %s left on the server",
+            job.name,
+            folder,
+            utils.counted(len(result.deletable), "message"),
+        )
+        return False
+    try:
+        store.flush()
+    except OSError as exc:
+        utils.log_failure(
+            log,
+            exc,
+            "%s::%s: %s left on the server, flushing them to disk failed",
             job.name,
             folder,
             utils.counted(len(result.deletable), "message"),
@@ -720,7 +737,9 @@ def backup(
         places = ArchivedPlaces(store_path / metalog.DEFAULT_LOG_DIR)
     try:
         with session.open_mailbox(job) as mb:
-            store = cas.mail_store(store_path, compress=compress)
+            # Flushed only before a purge, which removes the one other copy.
+            flush = cas.Flush.ON_REQUEST if job.delete_after_export else cas.Flush.NEVER
+            store = cas.mail_store(store_path, compress=compress, flush=flush)
             _backup_to_log(mb, store, job, store_path, report, places, incremental=incremental)
     finally:
         if index_db and report.with_mail:

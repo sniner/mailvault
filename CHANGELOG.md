@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Messages are no longer flushed to the disk one at a time.** Each stored message cost one or
+  two flushes of the disk, on a network share of the server's disk, which wears flash storage.
+  `backup` and `archive import` now flush only the record of what they stored. After a crash of
+  the computer or a power loss, a message stored shortly before can be empty or cut short:
+  `archive check` reports it, `--quarantine` sets it aside, and `verify --repair` fetches it again
+- **Before mailvault removes the source of a message, it flushes the message first**: `backup`
+  with `delete_after_export` before it deletes on the server, `archive import --move` before it
+  removes the files, `archive compress` and `decompress` before they remove the originals. The
+  messages of a folder, or 2,000 at a time, are flushed together: 3,000 messages cost about 200
+  flushes of the disk instead of 6,000
+
 ## 0.25.0 (2026-11-03)
 
 ### Fixed

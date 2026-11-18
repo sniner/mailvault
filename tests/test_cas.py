@@ -543,8 +543,8 @@ def test_cas_transient_files_do_not_collide(tmp_path, monkeypatch):
     destination = store.root_dir / "aa" / "aabbcc.eml"
     destination.parent.mkdir(parents=True)
 
-    with cas._writing_to(destination) as first:
-        with cas._writing_to(destination) as second:
+    with cas._writing_to(destination, durable=True) as first:
+        with cas._writing_to(destination, durable=True) as second:
             first.write(b"one writer")
             second.write(b"another writer")
             assert first.name != second.name
@@ -557,7 +557,7 @@ def test_cas_write_is_not_seen_before_it_is_complete(tmp_path):
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml")
     destination = store.root_dir / "aa" / "aabbcc.eml"
 
-    with cas._writing_to(destination) as f:
+    with cas._writing_to(destination, durable=True) as f:
         f.write(b"half a message")
         assert not destination.exists()
 
@@ -592,7 +592,7 @@ def test_cas_content_is_on_the_device_before_the_entry_has_a_name(tmp_path, monk
         lambda path: seen.append(f"directory, entry exists: {destination.exists()}"),
     )
 
-    with cas._writing_to(destination) as f:
+    with cas._writing_to(destination, durable=True) as f:
         f.write(b"a whole message")
 
     assert seen == ["content, entry exists: False", "directory, entry exists: True"]
@@ -646,13 +646,175 @@ def test_cas_a_failed_write_syncs_nothing(tmp_path, monkeypatch):
     synced: list[pathlib.Path] = []
     monkeypatch.setattr(cas.atomic, "sync_directory", synced.append)
 
-    with pytest.raises(OSError), cas._writing_to(destination) as f:
+    with pytest.raises(OSError), cas._writing_to(destination, durable=True) as f:
         f.write(b"half a message")
         raise OSError("the network went away")
 
     assert synced == []
     assert not destination.exists()
     assert [p for p in (tmp_path / "cas").rglob("*") if p.is_file()] == []
+
+
+# ---------------------------------------------------------------------------
+# Writing: when an entry reaches the device
+# ---------------------------------------------------------------------------
+
+
+def _record_syncs(monkeypatch) -> list[str]:
+    """Every flush the store asks for, in order: per file, per directory, together."""
+    seen: list[str] = []
+    real_fsync = os.fsync
+
+    def fsync(fd):
+        seen.append("fsync")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(cas.os, "fsync", fsync)
+    monkeypatch.setattr(cas.atomic, "sync_directory", lambda path: seen.append("directory"))
+    monkeypatch.setattr(
+        cas.atomic,
+        "sync_together",
+        lambda paths: seen.append(f"together {sorted(p.name for p in paths)}"),
+    )
+    return seen
+
+
+def test_cas_flush_never_flushes_nothing(tmp_path, monkeypatch):
+    """A message whose source is still there needs no flush of its own."""
+    seen = _record_syncs(monkeypatch)
+    store = cas.ContentAddressedStorage(tmp_path / "cas", suffix=".eml", flush=cas.Flush.NEVER)
+
+    _status, _hashval, path = store.add(b"a message")
+    store.flush()
+
+    assert seen == []
+    assert store.read(path) == b"a message"
+
+
+def test_cas_flush_each_flushes_every_entry_as_it_is_written(tmp_path, monkeypatch):
+    seen = _record_syncs(monkeypatch)
+    store = cas.ContentAddressedStorage(tmp_path / "cas", suffix=".eml")
+
+    store.add(b"a message")
+    store.flush()
+
+    assert seen == ["fsync", "directory"], "the default, and nothing left for flush()"
+
+
+def test_cas_flush_on_request_flushes_all_entries_together_when_asked(tmp_path, monkeypatch):
+    """What a command is about to remove the source of: new entries and old ones.
+
+    An entry that was there already may have been written by an earlier `add`
+    of the same run, without a flush.
+    """
+    seen = _record_syncs(monkeypatch)
+    store = cas.ContentAddressedStorage(
+        tmp_path / "cas", suffix=".eml", flush=cas.Flush.ON_REQUEST
+    )
+
+    _s, _h, first = store.add(b"first")
+    _s, _h, second = store.add(b"second")
+    status, _h, again = store.add(b"first")
+    assert seen == [], "nothing until asked"
+
+    store.flush()
+    store.flush()
+
+    assert status is cas.AddStatus.EXISTS and again == first
+    assert seen == [f"together {sorted([first.name, second.name, first.name])}"]
+
+
+def test_cas_a_failed_flush_leaves_the_entries_owed(tmp_path, monkeypatch):
+    store = cas.ContentAddressedStorage(
+        tmp_path / "cas", suffix=".eml", flush=cas.Flush.ON_REQUEST
+    )
+    _s, _h, path = store.add(b"a message")
+    calls: list[list[pathlib.Path]] = []
+
+    def sync_together(paths):
+        calls.append(list(paths))
+        if len(calls) == 1:
+            raise OSError("no space left on device")
+
+    monkeypatch.setattr(cas.atomic, "sync_together", sync_together)
+
+    with pytest.raises(OSError):
+        store.flush()
+    store.flush()
+
+    assert calls == [[path], [path]]
+
+
+def test_sync_together_flushes_each_file_and_then_each_directory(tmp_path, monkeypatch):
+    files = [tmp_path / "a" / "one", tmp_path / "a" / "two", tmp_path / "b" / "three"]
+    for path in files:
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(b"content")
+        path.chmod(0o444)
+    flushed: list[str] = []
+    atomic = cas.atomic
+    real_file, real_directory = atomic._fsync_path, atomic.sync_directory
+
+    def fsync_path(path):
+        flushed.append(path.name)
+        real_file(path)
+
+    def sync_directory(path):
+        flushed.append(path.name)
+        real_directory(path)
+
+    monkeypatch.setattr(atomic, "_fsync_path", fsync_path)
+    monkeypatch.setattr(atomic, "sync_directory", sync_directory)
+
+    atomic.sync_together(files + files[:1])
+
+    assert sorted(flushed[:3]) == ["one", "three", "two"], "each file once, read-only too"
+    assert sorted(flushed[3:]) == ["a", "b"]
+
+
+def test_sync_together_raises_when_a_file_cannot_be_flushed(tmp_path):
+    with pytest.raises(OSError):
+        cas.atomic.sync_together([tmp_path / "gone"])
+
+
+def test_cas_conversion_removes_an_original_only_once_its_batch_is_flushed(
+    tmp_path, monkeypatch
+):
+    """The original is the one other copy, in every flush policy."""
+    monkeypatch.setattr(cas, "CONVERT_BATCH", 2)
+    store = cas.ContentAddressedStorage(tmp_path / "cas", suffix=".eml", flush=cas.Flush.NEVER)
+    originals = [store.add(f"message {i}".encode())[2] for i in range(3)]
+    batches: list[tuple[int, bool]] = []
+
+    def sync_together(paths):
+        targets = list(paths)
+        still_there = all(t.with_suffix("").exists() for t in targets)
+        batches.append((len(targets), still_there))
+
+    monkeypatch.setattr(cas.atomic, "sync_together", sync_together)
+
+    result = store.compress_all()
+
+    assert batches == [(2, True), (1, True)]
+    assert result.converted == 3
+    assert not any(path.exists() for path in originals)
+
+
+def test_cas_conversion_keeps_the_originals_when_the_flush_fails(tmp_path, monkeypatch):
+    store = cas.ContentAddressedStorage(tmp_path / "cas", suffix=".eml")
+    _s, hashval, original = store.add(b"a message")
+
+    def sync_together(paths):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(cas.atomic, "sync_together", sync_together)
+
+    result = store.compress_all()
+
+    assert (result.converted, result.failed) == (0, [original])
+    assert original.exists()
+    with store.reading(hashval) as reader:
+        assert reader.read() == b"a message"
 
 
 # ---------------------------------------------------------------------------

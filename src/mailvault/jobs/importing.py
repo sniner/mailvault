@@ -89,6 +89,7 @@ def _read_eml(path: pathlib.Path) -> bytes:
 
 
 def _record(
+    store: cas.ContentAddressedStorage,
     provenance: Provenance | None,
     pending: list[pathlib.Path],
     result: ImportResult,
@@ -100,6 +101,11 @@ def _record(
     second import finds them, says EXISTS and records them again -- which costs
     a duplicate observation that `archive compact` drops. The other order deletes
     a file whose provenance was never written, and nothing brings that back.
+
+    Before a source goes, its message is flushed to the device with the others
+    of the batch (`store.flush`): the store writes without a flush, and the
+    source is what a message damaged by a power loss would be imported from
+    again.
 
     A flush that fails keeps the sources too. What was observed stays in the
     writer and goes out with the next batch, so nothing has to be repeated by
@@ -116,6 +122,18 @@ def _record(
         if not flush_log(provenance.log, datetime.now(UTC)):
             return
         result.recorded += observed
+    if not pending:
+        return
+    try:
+        store.flush()
+    except OSError as exc:
+        utils.log_failure(
+            log,
+            exc,
+            "%s kept, flushing their messages to disk failed",
+            utils.counted(len(pending), "source file"),
+        )
+        return
     for path in pending:
         try:
             # The source may be another mailvault archive, whose entries carry a
@@ -167,7 +185,13 @@ class ExternalMailArchive:
         `provenance` is what records where these messages came from. Without it
         the import is what it used to be and leaves mail nothing says anything
         about.
+
+        `move` removes each source once its message and provenance are on the
+        device, which needs a store that flushes (`cas.Flush.ON_REQUEST`); one
+        that never does is refused with ValueError.
         """
+        if move and not dry_run and store.flush_policy is cas.Flush.NEVER:
+            raise ValueError("removing the sources needs a store that flushes")
         result = ImportResult(
             dry_run=dry_run, name=None if provenance is None else provenance.name
         )
@@ -211,9 +235,9 @@ class ExternalMailArchive:
                 pending.append(eml)
             since_flush += 1
             if since_flush >= FLUSH_BATCH:
-                _record(provenance, pending, result)
+                _record(store, provenance, pending, result)
                 since_flush = 0
-        _record(provenance, pending, result)
+        _record(store, provenance, pending, result)
         return result
 
     def stats(self) -> tuple[int, int]:

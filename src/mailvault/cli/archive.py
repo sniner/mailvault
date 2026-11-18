@@ -745,7 +745,9 @@ def run(args: argparse.Namespace) -> int:
     elif cmd == "import":
         _refuse_importing_the_archive(archive, args.source)
         source = _external(args.source, args.docuware)
-        destination = cas.mail_store(archive, compress=args.compress)
+        # `--move` removes each source, so its message has to be on the disk first.
+        flush = cas.Flush.ON_REQUEST if args.move else cas.Flush.NEVER
+        destination = cas.mail_store(archive, compress=args.compress, flush=flush)
         return report_import(
             args.source,
             archive,

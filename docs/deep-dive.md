@@ -26,6 +26,14 @@ Message files are safe by construction. They are named after the hash of their
 content, never modified, and never written twice; a half-written one is
 recognizable and can be thrown away without touching anything else.
 
+They are not flushed to the disk one by one, though. A flush per message wears
+flash storage, and on a network share it is the server's disk that pays. After a
+power loss a message stored shortly before can therefore be empty or cut short.
+Its hash shows that, and the message is fetched again from the server, where it
+still is. Where mailvault removes the source itself (deleting after export,
+`archive import --move`, the originals of `archive compress`), it flushes the
+messages first, a folder or 2,000 messages at a time.
+
 An SQLite database is the opposite. It rewrites pages **in place** and relies on
 `fsync` behaving. Over SMB or NFS `fsync` is not reliably honoured, so a torn
 write does not cost you the last change — it can cost you the file. And that file
