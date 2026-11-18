@@ -211,3 +211,42 @@ def test_compact_keeps_what_was_read_back(tmp_path):
     head = _head(tmp_path)
     assert head.checked == head.log
     assert readback.read_back(tmp_path, now=LATER).read == 0
+
+
+def _age(archive: pathlib.Path) -> None:
+    """Make every log file written so far old enough to be read back."""
+    old = time.time() - readback.MIN_AGE - 60
+    for path in metalog.log_files(archive / metalog.DEFAULT_LOG_DIR):
+        os.utime(path, (old, old))
+
+
+def test_compact_soon_after_a_backup_leaves_only_the_new_messages_to_read_back(tmp_path):
+    _record(tmp_path, [_mail(1), _mail(2)])
+    _age(tmp_path)
+    readback.read_back(tmp_path)
+    _record(tmp_path, [_mail(3)])
+    assert readback.read_back(tmp_path).read == 0
+
+    metalog.compact(tmp_path / metalog.DEFAULT_LOG_DIR, _heads(tmp_path))
+
+    assert _head(tmp_path).checked != _head(tmp_path).log
+    assert readback.read_back(tmp_path, now=LATER).read == 1
+    assert _head(tmp_path).checked == _head(tmp_path).log
+
+
+def test_compact_leaves_a_log_file_no_chain_reaches_to_read_back(tmp_path):
+    """A power loss between the log file and its head, and the message cut short."""
+    _record(tmp_path, [_mail(1)])
+    readback.read_back(tmp_path, now=LATER)
+    _status, store_id, path = cas.mail_store(tmp_path).add(_mail(2))
+    log_root = tmp_path / metalog.DEFAULT_LOG_DIR
+    metalog.open_store(log_root).add(
+        metalog._serialize("job", "INBOX", WHEN.isoformat(), [store_id], _head(tmp_path).log)
+    )
+    tamper(path, b"Message-Id: <2@")
+
+    metalog.compact(log_root, _heads(tmp_path))
+    result = readback.read_back(tmp_path, now=LATER)
+
+    assert result.damaged == [store_id]
+    assert not path.exists()

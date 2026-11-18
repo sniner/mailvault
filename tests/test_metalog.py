@@ -713,6 +713,25 @@ class TestCompactAndTheChain:
         assert _read_head(_heads(root), "job", "INBOX").log == before
         assert len(metalog.log_files(root)) == 1
 
+    def test_compacting_twice_changes_nothing_for_a_place_partly_read_back(self, tmp_path):
+        root = tmp_path / "meta"
+        TestTheChain._flush(root, ["aa"])
+        head = _read_head(_heads(root), "job", "INBOX")
+        head.checked = head.log
+        heads.write(_heads(root), head)
+        TestTheChain._flush(root, ["bb"])
+        TestTheChain._flush(root, ["cc"])
+        metalog.compact(root, _heads(root))
+        before = _read_head(_heads(root), "job", "INBOX")
+        names = _log_names(root)
+
+        metalog.compact(root, _heads(root))
+
+        after = _read_head(_heads(root), "job", "INBOX")
+        assert (after.log, after.checked) == (before.log, before.checked)
+        assert _log_names(root) == names
+        assert len(names) == 2
+
 
 def _log_names(root) -> list[str]:
     return [path.name.removesuffix(".jsonl") for path in metalog.log_files(root)]

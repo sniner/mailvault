@@ -445,11 +445,19 @@ def test_cas_verify_compressed(tmp_path):
     assert store.verify(path)
 
 
-def test_cas_verify_a_compressed_entry_that_cannot_be_decompressed(tmp_path):
-    """What a power loss can leave: zeros where the frame should begin."""
+@pytest.mark.parametrize(
+    "left",
+    [
+        pytest.param(lambda raw: b"\0" * len(raw), id="zeros"),
+        pytest.param(lambda raw: b"", id="empty"),
+        pytest.param(lambda raw: raw[: len(raw) // 2], id="cut short"),
+    ],
+)
+def test_cas_verify_a_compressed_entry_that_cannot_be_decompressed(tmp_path, left):
+    """What a power loss can leave of a compressed entry does not match, and raises nothing."""
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas", suffix=".eml", compress=True)
-    _, hashval, path = store.add(b"compressible " * 100)
-    tamper(path, b"\0" * 100)
+    _, hashval, path = store.add(os.urandom(100_000))
+    tamper(path, left(path.read_bytes()))
 
     assert not store.verify(path)
     assert not store.verify_entry(hashval)

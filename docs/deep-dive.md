@@ -677,8 +677,9 @@ $ mailvault --archive ./backup archive compact
 41,388 duplicate observations dropped
 ```
 
-It rewrites one file per mailbox/folder holding each observation once, verifies
-the new files, and only then removes the originals -- so it is lossless and safe
+It rewrites one file per mailbox/folder holding each observation once, or two
+where a backup stored messages within the last hour that have not been read
+back yet. It verifies the new files, and only then removes the originals -- so it is lossless and safe
 to interrupt: a half-done run just leaves both, and the next one finishes. Run it
 occasionally; there is no hurry, but do not put it off for years.
 

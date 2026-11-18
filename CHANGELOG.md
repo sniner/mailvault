@@ -32,8 +32,9 @@
   recorded 2,000 messages, the archive held mail and named no mailbox, and the next run refused
   to go ahead without `--allow-new-mailbox`. A folder read without a resume point now records
   its first ten messages right away
-- **`archive check` reports a compressed message that cannot be decompressed as damaged.** It
-  stopped with a zstd error at the first such message, and `--quarantine` could not set it aside
+- **`archive check` reports a compressed message that cannot be decompressed as damaged**, also
+  one that is empty or cut short. It stopped with an error at the first such message, and
+  `--quarantine` could not set it aside
 - **macOS: after a power loss, where a folder resumes is no longer ahead of what was recorded
   about it.** Writes there stop in the disk's cache unless it is told to flush, and it never was.
   Now it is, once per folder before the resume point moves
