@@ -124,8 +124,9 @@ def _interrupt(client: imapclient.IMAPClient) -> None:
 
 
 def _sound(archive: pathlib.Path) -> bool:
+    """Sound, nothing unaccounted for, and no damaged copy left whose message is back."""
     result = jobs.check(archive)
-    return result.sound and not result.orphans
+    return result.sound and not result.orphans and not result.set_aside
 
 
 class TestAPowerLoss:

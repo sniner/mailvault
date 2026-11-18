@@ -19,6 +19,9 @@
   messages of a folder, or 2,000 at a time, are flushed together: 3,000 messages cost about 200
   flushes of the disk instead of 6,000. A message that is in the archive already is read first
   there, and a damaged copy replaced by the one just fetched
+- **`archive check` removes a damaged message that was set aside once the message is back
+  intact.** Set-aside messages that are not back yet are listed by id, with the command that
+  fetches them again; before, the report only counted them, and nothing ever removed them
 - **The query database costs far fewer flushes of the disk.** Updating it after a backup took a
   commit, four flushes, for every folder that got mail, and creating it took 80 flushes before the
   first message. Both now take a handful

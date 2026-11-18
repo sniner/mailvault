@@ -645,9 +645,11 @@ step 3 of 3: 4,000 of 130,997 checked
 ```
 
 The command **repairs nothing** and exits non-zero when the archive is not what
-it claims. The only thing it removes is the transient file of a write that was
-interrupted, by the same rule `compact` uses. A file that is not an entry is
-reported and left where it is -- it may well be someone's.
+it claims. It removes two things only: the transient file of a write that was
+interrupted, by the same rule `compact` uses, and the damaged copy of a message
+that was set aside, once the message is back under its name and matches its
+checksum. A file that is not an entry is reported and left where it is -- it may
+well be someone's.
 
 `--quarantine` is the one exception, and it cannot be combined with
 `--no-integrity-check`. A message whose content does not match its checksum is
@@ -655,7 +657,10 @@ the one finding where doing nothing is bad:
 the archive goes on answering that the message is present, so nothing ever
 fetches it again. This renames it to `<hash>.eml.corrupt` -- it keeps every byte,
 it just stops claiming to be that message. Out of the way, the message counts as
-missing again, and `verify --repair` or a `backup --full` brings it back.
+missing again, and `verify --repair` or a `backup --full` brings it back. A backup
+sets aside the same way what a power loss damaged. The damaged copy stays until
+the message is back, because until then it may be all that is left of it; the
+next check after that removes it.
 
 ### Consolidating the metadata log
 

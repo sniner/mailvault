@@ -274,13 +274,54 @@ class TestQuarantine:
         assert not after.sound, "it has to stay reported until something fetches it"
 
     def test_a_quarantined_file_is_recognised_next_time(self, tmp_path):
-        self._with_a_damaged_entry(tmp_path)
+        _store, ids, _victim = self._with_a_damaged_entry(tmp_path)
         check(tmp_path, contents=True, quarantine=True)
 
         after = check(tmp_path)
 
-        assert after.quarantined_before == 1
+        assert [path.name for _store_id, path in after.set_aside] == [f"{ids[1]}.eml.corrupt"]
         assert after.foreign == [], "not a stray file, and not reported as one every run"
+
+    def test_a_damaged_copy_goes_once_the_message_is_back_intact(self, tmp_path):
+        """The hash proves the new copy right; the damaged one has nothing left to give."""
+        store, ids, victim = self._with_a_damaged_entry(tmp_path)
+        check(tmp_path, contents=True, quarantine=True)
+        store.add(b"Message-Id: <1@example.com>\r\n\r\nbody 1\r\n")
+
+        after = check(tmp_path)
+
+        assert after.set_aside_removed == 1
+        assert after.set_aside == []
+        assert not victim.with_name(victim.name + ".corrupt").exists()
+        assert store.verify(victim)
+        assert after.sound
+
+    def test_the_report_names_what_is_not_back_and_counts_what_went(self, tmp_path, capsys):
+        store, ids, _victim = self._with_a_damaged_entry(tmp_path)
+        check(tmp_path, contents=True, quarantine=True)
+        capsys.readouterr()
+
+        report_check(tmp_path, check(tmp_path))
+        waiting = capsys.readouterr().out
+        store.add(b"Message-Id: <1@example.com>\r\n\r\nbody 1\r\n")
+        report_check(tmp_path, check(tmp_path))
+        back = capsys.readouterr().out
+
+        assert "1 message set aside as damaged by an earlier run and not back yet" in waiting
+        assert f"  {ids[1]}" in waiting
+        assert "1 damaged copy set aside by an earlier run removed" in back
+        assert "not back yet" not in back
+
+    def test_without_the_integrity_check_the_message_is_read_all_the_same(self, tmp_path):
+        store, _ids, victim = self._with_a_damaged_entry(tmp_path)
+        check(tmp_path, contents=True, quarantine=True)
+        store.add(b"Message-Id: <1@example.com>\r\n\r\nbody 1\r\n")
+        tamper(victim, b"broken again")
+
+        after = check(tmp_path, contents=False)
+
+        assert after.set_aside_removed == 0, "what came back is damaged too"
+        assert victim.with_name(victim.name + ".corrupt").exists()
 
     def test_a_second_quarantine_does_not_overwrite_the_first(self, tmp_path):
         _store, _ids, victim = self._with_a_damaged_entry(tmp_path)

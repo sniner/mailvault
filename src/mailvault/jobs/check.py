@@ -27,11 +27,13 @@ half of the wait -- and a run that did that says so, because otherwise "nothing
 found" would mean two different things on two different days.
 
 Nothing here repairs. What it removes is what cannot be data: the transient file
-of a write that was interrupted, under the same age rule `compact` uses. A
-message that is missing comes back through a command that has a server to ask.
-The one exception is `quarantine`, which does not repair either -- it takes the
-name away from an entry that has been proved not to deserve it, so that the
-store stops answering "yes, that one is here" and something can fetch it again.
+of a write that was interrupted, under the same age rule `compact` uses, and the
+damaged copy of a message that an earlier run set aside once the message is
+back under its name, intact. A message that is missing comes back through a
+command that has a server to ask. The one exception is `quarantine`, which does
+not repair either -- it takes the name away from an entry that has been proved
+not to deserve it, so that the store stops answering "yes, that one is here" and
+something can fetch it again.
 """
 
 from __future__ import annotations
@@ -86,7 +88,10 @@ class CheckResult:
     places: int = 0
     log_files: int = 0
     transient_removed: int = 0
-    quarantined_before: int = 0
+    # Damaged copies an earlier run set aside: the ones whose message is not back
+    # yet, by store id and file, and how many were removed because it is.
+    set_aside: list[tuple[str, pathlib.Path]] = dataclasses.field(default_factory=list)
+    set_aside_removed: int = 0
     contents_checked: bool = False
     missing: dict[str, str] = dataclasses.field(default_factory=dict)
     broken_chains: list[str] = dataclasses.field(default_factory=list)
@@ -182,8 +187,8 @@ def _classify(
             entries[hashval] = path
         elif store.is_stale_transient(path):
             result.transient_removed += int(store.drop_transient(path))
-        elif _quarantined_origin(store, path) is not None:
-            result.quarantined_before += 1
+        elif (origin := _quarantined_origin(store, path)) is not None:
+            result.set_aside.append((origin, path))
         elif store.transient_origin(path) is None:
             # Whatever is left is neither an entry, nor something an earlier run
             # set aside, nor a transient file a *running* writer may still hold
@@ -323,6 +328,49 @@ def _check_seals(meta: pathlib.Path, result: CheckResult) -> None:
             result.damaged_seals.append(found.path)
 
 
+def _drop_what_came_back(
+    store: cas.ContentAddressedStorage,
+    entries: dict[str, pathlib.Path],
+    result: CheckResult,
+) -> None:
+    """Remove the damaged copies whose message is back under its name, intact.
+
+    The hash of the entry proves it holds the right bytes, so the damaged copy
+    has nothing left to give. One whose message is not back stays: it may be all
+    that is left of it. Without the integrity check, only these entries are read.
+    """
+    damaged = {*result.corrupt, *result.unreadable}
+    kept = []
+    for store_id, path in result.set_aside:
+        entry = entries.get(store_id)
+        if entry is None or not _intact(store, entry, damaged, result.contents_checked):
+            kept.append((store_id, path))
+            continue
+        try:
+            utils.remove_file(path)
+        except OSError as exc:
+            log.warning("%s: not removed: %s", _where(path), exc)
+            kept.append((store_id, path))
+            continue
+        log.info("%s: removed, the message is back intact", _where(path))
+        result.set_aside_removed += 1
+    result.set_aside = kept
+
+
+def _intact(
+    store: cas.ContentAddressedStorage,
+    entry: pathlib.Path,
+    damaged: set[pathlib.Path],
+    checked: bool,
+) -> bool:
+    if checked:
+        return entry not in damaged
+    try:
+        return store.verify(entry)
+    except OSError:
+        return False
+
+
 def _check_contents(
     store: cas.ContentAddressedStorage,
     entries: dict[str, pathlib.Path],
@@ -458,6 +506,7 @@ def check(
             utils.counted(result.entries, "message"),
         )
         _check_contents(store, entries, result, step=f"step 3 of {steps}")
+    _drop_what_came_back(store, entries, result)
     if quarantine:
         result.quarantined = [
             target for path in result.corrupt if (target := quarantine_entry(path))

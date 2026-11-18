@@ -399,8 +399,9 @@ def build_parser() -> argparse.ArgumentParser:
             " wrote down about them is undamaged, and every message still matches"
             " its checksum -- the last one being the only way to find one whose"
             " bytes have changed under it. --no-integrity-check leaves that last"
-            " check out. Reports what it finds and repairs nothing; the only thing"
-            " it removes is the leftover of a write that was interrupted."
+            " check out. Reports what it finds and repairs nothing; it removes only"
+            " the leftover of a write that was interrupted, and a damaged message set"
+            " aside earlier once the message is back intact."
         ),
     )
     a_check.add_argument(

@@ -631,9 +631,15 @@ def report_check(source: pathlib.Path, result: jobs.CheckResult) -> int:
         plural="files in the archive that are not messages",
     )
     _report_orphans(ids(result.orphans))
-    if result.quarantined_before:
-        aside = utils.counted(result.quarantined_before, "message")
-        print(f"{aside} set aside by an earlier run")
+    if result.set_aside_removed:
+        removed = utils.counted(result.set_aside_removed, "damaged copy", "damaged copies")
+        print(f"{removed} set aside by an earlier run removed -- the messages are back, intact")
+    report_items(
+        sorted({store_id for store_id, _path in result.set_aside}),
+        "message",
+        "set aside as damaged by an earlier run and not back yet -- fetch them again with"
+        " `verify --repair` or `backup --full`",
+    )
     if result.transient_removed:
         leftovers = utils.counted(result.transient_removed, "leftover")
         print(f"{leftovers} of an interrupted write removed")
