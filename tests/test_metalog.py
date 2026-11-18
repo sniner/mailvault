@@ -577,6 +577,29 @@ class TestTheChain:
 
         assert head.log == second.name.removesuffix(".jsonl")
 
+    def test_the_heads_move_after_one_flush_of_the_drive_for_all_the_files(
+        self, tmp_path, monkeypatch
+    ):
+        """On macOS fsync stops at the drive's cache; a head must not be ahead of its file."""
+        root = tmp_path / "meta"
+        order: list[str] = []
+        monkeypatch.setattr(
+            metalog.atomic, "flush_drive_cache", lambda path: order.append("drive")
+        )
+        real_write = heads.write
+
+        def write(heads_root, head):
+            order.append(f"head {head.folder}")
+            real_write(heads_root, head)
+
+        monkeypatch.setattr(heads, "write", write)
+        writer = metalog.LogWriter(root, _heads(root))
+        writer.add("job", ["INBOX", "Sent"], "aa")
+
+        writer.flush(WHEN)
+
+        assert order == ["drive", "head INBOX", "head Sent"]
+
     def test_following_it_back_reaches_every_file_of_the_place(self, tmp_path):
         root = tmp_path / "meta"
         names = [self._flush(root, [sid])[0].name.removesuffix(".jsonl") for sid in "abc"]

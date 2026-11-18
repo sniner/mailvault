@@ -93,13 +93,14 @@ def _fsync_path(path: pathlib.Path) -> None:
 if sys.platform == "darwin":
     import fcntl
 
-    def _flush_drive_cache(path: pathlib.Path) -> None:
-        """Make the drive write out its cache.
+    def flush_drive_cache(path: pathlib.Path) -> None:
+        """Make the drive write out its cache, after a group of fsyncs.
 
         `fsync` on macOS hands the data to the drive and returns; `F_FULLFSYNC`
         on any file makes the drive flush everything it holds, so one call
         covers all the fsyncs before it. A share refuses it, and there the
         fsyncs have already gone to the server, which is all a share offers.
+        Never raises.
         """
         try:
             fd = os.open(path, os.O_RDONLY)
@@ -112,7 +113,7 @@ if sys.platform == "darwin":
 
 else:
 
-    def _flush_drive_cache(path: pathlib.Path) -> None:
+    def flush_drive_cache(path: pathlib.Path) -> None:
         """Nothing to do: `fsync` reaches past the drive's cache here."""
 
 
@@ -137,7 +138,7 @@ def sync_together(paths: collections.abc.Iterable[pathlib.Path]) -> None:
             pass
         for _ in pool.map(sync_directory, directories):
             pass
-    _flush_drive_cache(files[0])
+    flush_drive_cache(files[0])
 
 
 def write_text(path: pathlib.Path, text: str) -> None:

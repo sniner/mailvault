@@ -82,7 +82,7 @@ from datetime import datetime
 from typing import Any
 
 from mailvault import utils
-from mailvault.store import cas, heads, seals
+from mailvault.store import atomic, cas, heads, seals
 
 log = logging.getLogger(__name__)
 
@@ -361,23 +361,34 @@ class LogWriter:
         if not self._places:
             return []
         written: list[pathlib.Path] = []
+        moves: list[tuple[heads.Head | None, str]] = []
         store = open_store(self.root)
-        for (mailbox, folder), store_ids in sorted(
-            self._places.items(),
-            key=lambda item: (item[0][0] or "", item[0][1] or ""),
-        ):
-            head = _head_of(self.heads_root, mailbox, folder)
-            _status, hashval, path = store.add(
-                _serialize(mailbox, folder, date.isoformat(), store_ids, prev=_chain(head))
-            )
-            log.debug(
-                "%s: %s in %s",
-                where(path),
-                utils.counted(len(store_ids), "message"),
-                heads.place_name(mailbox, folder),
-            )
-            _move_head(self.heads_root, head, hashval)
-            written.append(path)
+        try:
+            for (mailbox, folder), store_ids in sorted(
+                self._places.items(),
+                key=lambda item: (item[0][0] or "", item[0][1] or ""),
+            ):
+                head = _head_of(self.heads_root, mailbox, folder)
+                _status, hashval, path = store.add(
+                    _serialize(mailbox, folder, date.isoformat(), store_ids, prev=_chain(head))
+                )
+                log.debug(
+                    "%s: %s in %s",
+                    where(path),
+                    utils.counted(len(store_ids), "message"),
+                    heads.place_name(mailbox, folder),
+                )
+                moves.append((head, hashval))
+                written.append(path)
+        finally:
+            # The heads move only once the files they name are on the disk, and
+            # on macOS that takes one flush of the drive's cache for all of them.
+            # Also when a later file failed: those written are chained all the
+            # same.
+            if written:
+                atomic.flush_drive_cache(written[0])
+            for head, hashval in moves:
+                _move_head(self.heads_root, head, hashval)
         self._places = {}
         return written
 

@@ -26,6 +26,9 @@
 
 - **`archive check` reports a compressed message that cannot be decompressed as damaged.** It
   stopped with a zstd error at the first such message, and `--quarantine` could not set it aside
+- **macOS: after a power loss, where a folder resumes is no longer ahead of what was recorded
+  about it.** Writes there stop in the disk's cache unless it is told to flush, and it never was.
+  Now it is, once per folder before the resume point moves
 
 ## 0.25.0 (2026-11-03)
 
