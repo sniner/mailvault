@@ -18,6 +18,7 @@ from mailvault.cli.common import (
     archive_path,
     config_file,
     report_items,
+    report_read_back,
     require_archive,
     use_archive_hash,
 )
@@ -317,7 +318,7 @@ def run(args: argparse.Namespace) -> int:
             # `-v` still has.
             utils.log_failure(log, exc, "Job '%s' failed", job.name)
             exit_code = 1
-    return exit_code
+    return exit_code | report_read_back(opened, fetching=True)
 
 
 # --- archive -------------------------------------------------------------------

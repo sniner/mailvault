@@ -11,8 +11,9 @@
 - **Every command that stores messages first reads back what earlier runs stored**, once it is an
   hour old, and sets a damaged message aside: `backup`, `verify --repair`, `archive import`,
   `adopt`, `compress`, `decompress` and `compact`. `backup` then compares the folder the message
-  was in with the server and fetches it again; for an imported message, the log names the import
-  to run again
+  was in with the server and fetches it again; for an imported message, the command names the
+  import to run again. A command that set a message aside and does not fetch it again itself
+  says so in its last lines and exits non-zero
 - **Before mailvault removes the source of a message, it flushes the message first**: `backup`
   with `delete_after_export` before it deletes on the server, `archive import --move` before it
   removes the files, `archive compress` and `decompress` before they remove the originals. The

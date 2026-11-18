@@ -56,14 +56,16 @@ class ReadBackResult:
     `damaged` holds the store ids of the messages that were set aside or that the
     log names and the archive no longer holds; both are fetched again. `folders`
     names the places whose resume points were dropped for them, as
-    `job::folder`, and `imports` the imports whose messages have to be imported
-    again. `unreadable` counts the messages that could not be read
-    at all; their places are read back again next time.
+    `job::folder`, `mailboxes` the jobs that recorded a damaged message, and
+    `imports` the imports whose messages have to be imported again.
+    `unreadable` counts the messages that could not be read at all; their
+    places are read back again next time.
     """
 
     read: int = 0
     damaged: list[str] = dataclasses.field(default_factory=list)
     folders: list[str] = dataclasses.field(default_factory=list)
+    mailboxes: set[str] = dataclasses.field(default_factory=set)
     imports: set[str] = dataclasses.field(default_factory=set)
     unreadable: int = 0
 
@@ -164,14 +166,16 @@ def _to_drop(
     damaged: set[str],
     result: ReadBackResult,
 ) -> set[pathlib.Path]:
-    """The heads whose resume points go, and in `result` the imports to run again."""
+    """The heads whose resume points go, and in `result` whose messages were damaged."""
     dropped: set[pathlib.Path] = set()
     for entry in pending:
         if not damaged.intersection(entry.store_ids):
             continue
         if entry.head.job is None:
             result.imports.add(entry.head.folder or "?")
-        elif entry.head.resume is not None:
+            continue
+        result.mailboxes.add(entry.head.job)
+        if entry.head.resume is not None:
             dropped.add(entry.path)
     return dropped
 

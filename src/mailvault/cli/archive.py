@@ -18,6 +18,7 @@ from mailvault.cli.common import (
     REPORT_LIMIT,
     archive_path,
     report_items,
+    report_read_back,
     require_archive,
     shorten,
     use_archive_hash,
@@ -753,12 +754,12 @@ def run(args: argparse.Namespace) -> int:
         source = _external(args.source, args.docuware)
         # `--move` removes each source, so its message has to be on the disk first.
         flush = cas.Flush.ON_REQUEST if args.move else cas.Flush.NEVER
-        if args.dry_run:
+        opened = None if args.dry_run else jobs.open_for_writing(archive)
+        if opened is None:
             destination = cas.mail_store(archive, compress=args.compress)
         else:
-            opened = jobs.open_for_writing(archive)
             destination = opened.store(compress=args.compress, flush=flush)
-        return report_import(
+        code = report_import(
             args.source,
             archive,
             source.archive_to_cas(
@@ -768,32 +769,38 @@ def run(args: argparse.Namespace) -> int:
                 dry_run=args.dry_run,
             ),
         )
+        return code | report_read_back(opened)
     elif cmd == "places":
         return report_places(metalog.summarize(archive / metalog.DEFAULT_LOG_DIR))
     elif cmd == "adopt":
-        return report_adopt(jobs.adopt(archive, args.name, dry_run=args.dry_run))
+        opened = None if args.dry_run else jobs.open_for_writing(archive)
+        result = jobs.adopt(archive, args.name, dry_run=args.dry_run, archive=opened)
+        return report_adopt(result) | report_read_back(opened)
     elif cmd == "compress":
-        store = jobs.open_for_writing(archive).store()
-        return report_conversion(
-            archive, store.compress_all(), "compressed", "already compressed"
+        opened = jobs.open_for_writing(archive)
+        code = report_conversion(
+            archive, opened.store().compress_all(), "compressed", "already compressed"
         )
+        return code | report_read_back(opened)
     elif cmd == "decompress":
-        store = jobs.open_for_writing(archive).store()
-        return report_conversion(
-            archive, store.decompress_all(), "decompressed", "already plain"
+        opened = jobs.open_for_writing(archive)
+        code = report_conversion(
+            archive, opened.store().decompress_all(), "decompressed", "already plain"
         )
+        return code | report_read_back(opened)
     elif cmd == "migrate":
         return report_migration(archive, jobs.migrate_archive(archive))
     elif cmd == "compact":
         # Not for a store: so that `compact` finds as much as possible read back
         # and writes one file per place.
-        jobs.open_for_writing(archive)
-        return report_compact(
+        opened = jobs.open_for_writing(archive)
+        code = report_compact(
             metalog.compact(
                 archive / metalog.DEFAULT_LOG_DIR,
                 archive / heads.DEFAULT_HEADS_DIR,
             )
         )
+        return code | report_read_back(opened)
     elif cmd == "seal":
         if args.check:
             return report_seal_check(archive, jobs.check_seal(archive, args.check))

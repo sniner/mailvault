@@ -162,6 +162,7 @@ class TestADamagedMessage:
 
         assert result.imports == {"docuware-2019"}
         assert result.folders == []
+        assert result.mailboxes == set()
 
 
 class TestWhatIsLeftForNextTime:
