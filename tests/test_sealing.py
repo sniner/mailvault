@@ -17,7 +17,7 @@ from mailvault.jobs.check import check
 from mailvault.jobs.common import JobError
 from mailvault.jobs.sealing import check_seal, seal_archive, seal_hash
 from mailvault.store import cas, heads, marker, metalog, seals
-from tests.tamper import tamper
+from tests.tamper import remove, tamper
 
 WHEN = datetime(2026, 10, 22, 2, 15, 7, tzinfo=UTC)
 
@@ -122,7 +122,7 @@ class TestRefusals:
         _store(tmp_path, "a")
         sealed = seal_archive(tmp_path, now=WHEN).seal
         (path,) = metalog.log_files(_meta(tmp_path))
-        path.unlink()
+        remove(path)
         _store(tmp_path, "b")
 
         result = seal_archive(tmp_path, now=WHEN + timedelta(days=1))
@@ -289,10 +289,10 @@ class TestCheckingASeal:
         """
         seal, (kept, removed) = _sealed(tmp_path, "a", "b")
         (sealed_log,) = metalog.log_files(_meta(tmp_path))
-        sealed_log.unlink()
+        remove(sealed_log)
         for head in (tmp_path / heads.DEFAULT_HEADS_DIR).iterdir():
             head.unlink()
-        _message(tmp_path, removed).unlink()
+        remove(_message(tmp_path, removed))
         writer = metalog.LogWriter(_meta(tmp_path), tmp_path / heads.DEFAULT_HEADS_DIR)
         writer.add("job", ["INBOX"], kept)
         writer.flush(WHEN)
@@ -314,8 +314,8 @@ class TestCheckingASeal:
         (other_log,) = writer.flush(WHEN)
         seal = seal_archive(tmp_path, now=WHEN).seal
         assert seal is not None
-        other_log.unlink()
-        other_message.unlink()
+        remove(other_log)
+        remove(other_message)
         for head in (tmp_path / heads.DEFAULT_HEADS_DIR).glob("other*"):
             head.unlink()
 
@@ -336,7 +336,7 @@ class TestCheckingASeal:
 
     def test_a_message_that_is_gone_is_named_with_its_place(self, tmp_path):
         seal, (store_id,) = _sealed(tmp_path, "a")
-        _message(tmp_path, store_id).unlink()
+        remove(_message(tmp_path, store_id))
 
         result = check_seal(tmp_path, seal.seal_id)
 
@@ -349,7 +349,7 @@ class TestCheckingASeal:
         tamper(path, path.read_bytes().replace(b"2026", b"2025"))
         assert check_seal(tmp_path, seal.seal_id).unusable is seals.Unusable.DAMAGED
 
-        path.unlink()
+        remove(path)
         result = check_seal(tmp_path, seal.seal_id)
         assert result.unusable is seals.Unusable.GONE
         assert not result.holds
@@ -440,7 +440,7 @@ class TestTheCheckCommand:
     ):
         marker.write(tmp_path)
         seal, (store_id,) = _sealed(tmp_path, "a")
-        _message(tmp_path, store_id).unlink()
+        remove(_message(tmp_path, store_id))
 
         assert _run(tmp_path, check=seal.seal_id) == 1
 

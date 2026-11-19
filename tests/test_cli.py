@@ -252,6 +252,9 @@ class TestAPathThatLeadsNowhere:
     names it.
     """
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows does not remove a current directory"
+    )
     def test_a_run_from_a_directory_that_is_gone_says_so(self, tmp_path, monkeypatch, caplog):
         """Asking where one is standing fails before a command has done anything."""
         workdir = tmp_path / "archive-on-the-nas"
@@ -763,7 +766,7 @@ class TestTerminated:
 
         def _terminated(_args: argparse.Namespace) -> int:
             try:
-                os.kill(os.getpid(), signal.SIGTERM)
+                signal.raise_signal(signal.SIGTERM)
                 return 0
             finally:
                 unwound.append(True)
@@ -1401,13 +1404,15 @@ class TestTheArchiveHash:
         assert conf.load(archive / DEFAULT_CONFIG_NAME).hash == "sha384"
         assert self._import(archive, tmp_path / "source", self.OTHER) == 0
 
-    def test_opening_the_archive_runs_no_password_command(self, tmp_path):
+    def test_opening_the_archive_runs_no_password_command(self, tmp_path, record_command):
         archive = tmp_path / "archive"
         self._init(archive)
         ran = tmp_path / "ran"
         config = archive / DEFAULT_CONFIG_NAME
         config.write_text(
-            config.read_text().replace('password = ""', f'password_cmd = "touch {ran}"')
+            config.read_text().replace(
+                'password = ""', f"password_cmd = '{record_command(ran)}'"
+            )
         )
 
         run_archive(_check_args(archive))

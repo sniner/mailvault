@@ -14,7 +14,7 @@ from mailvault.cli.archive import report_check
 from mailvault.jobs.check import check
 from mailvault.jobs.common import JobError
 from mailvault.store import cas, heads, metalog, seals
-from tests.tamper import tamper
+from tests.tamper import remove, tamper
 
 WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
 
@@ -97,7 +97,7 @@ class TestWhatItFinds:
         store, ids = _archive(tmp_path)
         gone = store.locate(ids[1], exists=True)
         assert gone is not None
-        gone.unlink()
+        remove(gone)
 
         result = check(tmp_path)
 
@@ -395,7 +395,7 @@ class TestTheLogChain:
         store, ids = _archive(tmp_path)
         (first,) = self._place(tmp_path, [ids[0]], folder="Sent")
         self._place(tmp_path, [ids[1]], folder="Sent")
-        first.unlink()
+        remove(first)
 
         result = check(tmp_path)
 
@@ -510,7 +510,7 @@ class TestTheLogChain:
         store, ids = _archive(tmp_path)
         (first,) = self._place(tmp_path, [ids[0]], folder="Sent")
         self._place(tmp_path, [ids[1]], folder="Sent")
-        first.unlink()
+        remove(first)
 
         report_check(tmp_path, check(tmp_path))
 

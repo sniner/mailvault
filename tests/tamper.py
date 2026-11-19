@@ -28,3 +28,14 @@ def tamper(path: pathlib.Path, content: bytes | str) -> None:
     else:
         path.write_text(content, encoding="utf-8")
     path.chmod(mode)
+
+
+def remove(path: pathlib.Path) -> None:
+    """Delete a stored file, write protection or not.
+
+    POSIX deletes a protected file without asking. Windows refuses while the
+    read-only attribute is set, so whoever deletes an entry by hand there has to
+    lift it first, and so does a test.
+    """
+    path.chmod(stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR)
+    path.unlink()

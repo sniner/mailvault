@@ -3,13 +3,14 @@ import io
 import os
 import pathlib
 import stat
+import sys
 import time
 
 import pytest
 
 from mailvault.store import cas
 from mailvault.utils import fs
-from tests.tamper import tamper
+from tests.tamper import remove, tamper
 
 
 def test_cas_init_directory(tmp_path):
@@ -91,7 +92,7 @@ def test_cas_prune_empty_dirs(tmp_path):
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas")
     _, _, kept = store.add(b"keep me")
     _, _, gone = store.add(b"remove me")
-    gone.unlink()
+    remove(gone)
 
     removed = store.prune_empty_dirs()
 
@@ -103,7 +104,7 @@ def test_cas_prune_empty_dirs(tmp_path):
 def test_cas_prune_empty_dirs_keeps_the_root(tmp_path):
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas")
     _, _, path = store.add(b"lonely")
-    path.unlink()
+    remove(path)
 
     store.prune_empty_dirs()
 
@@ -571,6 +572,10 @@ def test_cas_failed_write_leaves_nothing_behind(tmp_path):
     assert store.locate(store.hashval(b"a message that gets cut off"), exists=True) is None
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows does not replace a read-only file, so the second writer fails there",
+)
 def test_cas_transient_files_do_not_collide(tmp_path, monkeypatch):
     """Two writers storing the same message must not share a transient file.
 

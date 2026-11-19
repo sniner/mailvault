@@ -110,13 +110,20 @@ class TestCounted:
         assert utils.counted(131000, "message") == "131,000 messages"
 
 
+def _native(path: str) -> str:
+    """`path` with the separator of the platform, which is what mailvault prints."""
+    return str(pathlib.PurePath(path))
+
+
 class TestUnder:
     """A path as it reads inside the thing a run is about."""
 
     def test_a_path_below_the_root_loses_the_prefix(self):
         root = pathlib.Path("/srv/archive")
 
-        assert utils.under(root, root / "meta" / "a1" / "a1b2.jsonl") == "meta/a1/a1b2.jsonl"
+        assert utils.under(root, root / "meta" / "a1" / "a1b2.jsonl") == _native(
+            "meta/a1/a1b2.jsonl"
+        )
 
     def test_a_path_from_somewhere_else_is_returned_whole(self):
         """`archive import` reads elsewhere; shortening that would be a lie."""
@@ -131,20 +138,20 @@ class TestUnderDir:
     def test_it_cuts_at_the_named_directory(self):
         path = pathlib.Path("/srv/archive/meta/a1/a1b2.jsonl")
 
-        assert utils.under_dir("meta", path) == "meta/a1/a1b2.jsonl"
+        assert utils.under_dir("meta", path) == _native("meta/a1/a1b2.jsonl")
 
     def test_the_depth_below_it_does_not_matter(self):
         """How deep a store shards its files stays the store's own business."""
-        assert utils.under_dir("heads", pathlib.Path("/srv/a/heads/x")) == "heads/x"
-        assert (
-            utils.under_dir("mail", pathlib.Path("/srv/a/mail/a/b/c.eml")) == "mail/a/b/c.eml"
+        assert utils.under_dir("heads", pathlib.Path("/srv/a/heads/x")) == _native("heads/x")
+        assert utils.under_dir("mail", pathlib.Path("/srv/a/mail/a/b/c.eml")) == _native(
+            "mail/a/b/c.eml"
         )
 
     def test_the_last_one_of_that_name_wins(self):
         """An archive may well lie in a directory called like one of its own."""
         path = pathlib.Path("/srv/mail/archive/mail/a1/a1b2.eml")
 
-        assert utils.under_dir("mail", path) == "mail/a1/a1b2.eml"
+        assert utils.under_dir("mail", path) == _native("mail/a1/a1b2.eml")
 
     def test_a_path_that_is_not_below_one_is_returned_whole(self):
         path = pathlib.Path("/tmp/loose/a1b2.jsonl")
