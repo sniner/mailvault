@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from mailvault import cli, conf, jobs
+from mailvault import cli, conf, jobs, utils
 from mailvault.backend import base
 from mailvault.cli import archive, mailbox, mcp
 from mailvault.cli.archive import report_check, report_places
@@ -684,11 +684,12 @@ def _stdout_nobody_reads(monkeypatch):
 
     Entered inside the test rather than set up as a fixture: pytest puts its own
     capture back in front of `sys.stdout` when the test body begins, and would
-    undo it.
+    undo it. Wrapped the way `main` wraps standard output, for the tests that
+    run a command group without it.
     """
     read, write = os.pipe()
     os.close(read)
-    stdout = os.fdopen(write, "w")
+    stdout = utils.standard_output(os.fdopen(write, "w"))
     monkeypatch.setattr(sys, "stdout", stdout)
     try:
         yield stdout

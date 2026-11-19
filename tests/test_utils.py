@@ -8,14 +8,18 @@ same expectations.
 
 from __future__ import annotations
 
+import errno
+import io
 import logging
+import os
 import pathlib
 import stat
+import sys
 
 import pytest
 
 from mailvault import utils
-from mailvault.utils import fs
+from mailvault.utils import fs, osutils
 
 
 @pytest.fixture(autouse=True)
@@ -325,3 +329,53 @@ class TestRemoveFile:
             utils.remove_file(missing)
 
         utils.remove_file(missing, missing_ok=True)
+
+
+class _PipeThatRefuses:
+    """A stream whose every write fails with `code`, its binary side included."""
+
+    encoding = "cp1252"
+
+    def __init__(self, code: int) -> None:
+        self.code = code
+        self.buffer = self
+
+    def write(self, _data: str | bytes) -> int:
+        raise OSError(self.code, os.strerror(self.code))
+
+    def flush(self) -> None:
+        raise OSError(self.code, os.strerror(self.code))
+
+
+class TestAPipeOnWindows:
+    """Windows says EINVAL where POSIX says EPIPE, for a pipe whose reader has gone."""
+
+    def test_a_write_and_a_flush_raise_a_broken_pipe(self):
+        stdout = osutils._WindowsStdout(_PipeThatRefuses(errno.EINVAL))
+
+        with pytest.raises(BrokenPipeError):
+            stdout.write("a report nobody is reading any more")
+        with pytest.raises(BrokenPipeError):
+            stdout.flush()
+
+    def test_so_does_the_binary_side_get_writes_a_message_to(self):
+        stdout = osutils._WindowsStdout(_PipeThatRefuses(errno.EINVAL))
+
+        with pytest.raises(BrokenPipeError):
+            stdout.buffer.write(b"a message")
+
+    def test_any_other_failure_stays_what_it_is(self):
+        stdout = osutils._WindowsStdout(_PipeThatRefuses(errno.ENOSPC))
+
+        with pytest.raises(OSError) as excinfo:
+            stdout.write("a report")
+        assert excinfo.value.errno == errno.ENOSPC
+
+    def test_the_rest_is_the_stream_it_wraps(self):
+        assert osutils._WindowsStdout(_PipeThatRefuses(errno.EINVAL)).encoding == "cp1252"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="the wrapper is the one for Windows")
+    def test_elsewhere_the_stream_is_left_as_it_is(self):
+        stream = io.StringIO()
+
+        assert utils.standard_output(stream) is stream
