@@ -337,13 +337,20 @@ class IndexDatabase:
 
     def __enter__(self) -> IndexDatabaseConnection:
         self.dbconn = connect(self.path)
-        self.dbconn.execute(f"PRAGMA cache_size = -{CACHE_KIB}")
-        self.client = IndexDatabaseConnection(self.dbconn)
-        if self.create and self.client.is_new:
-            # Before the first byte of content: a page size is fixed when a
-            # database gets its first page and is ignored afterwards.
-            self.dbconn.execute(f"PRAGMA page_size = {PAGE_SIZE:d}")
-            self.client.create()
+        try:
+            self.dbconn.execute(f"PRAGMA cache_size = -{CACHE_KIB}")
+            self.client = IndexDatabaseConnection(self.dbconn)
+            if self.create and self.client.is_new:
+                # Before the first byte of content: a page size is fixed when a
+                # database gets its first page and is ignored afterwards.
+                self.dbconn.execute(f"PRAGMA page_size = {PAGE_SIZE:d}")
+                self.client.create()
+        except BaseException:
+            # A damaged file fails here, and `__exit__` does not run when
+            # `__enter__` raises. Left open, the connection keeps Windows from
+            # deleting the file, which is how a damaged database is rebuilt.
+            self._close()
+            raise
         return self.client
 
     def __exit__(
@@ -352,6 +359,9 @@ class IndexDatabase:
         exc_val: BaseException | None,
         exc_tb: types.TracebackType | None,
     ) -> None:
+        self._close()
+
+    def _close(self) -> None:
         if self.dbconn:
             self.dbconn.close()
             self.dbconn = None

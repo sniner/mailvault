@@ -8,6 +8,8 @@
   drive where the read-only attribute cannot be changed.** Messages there are not write-protected,
   and the flush now leaves the attribute alone; before, the source was kept every time. A write
   protection that cannot be put back after the flush no longer counts as a failed flush either
+- **Windows: a damaged query database is built again.** `db update` and the update at the end of
+  `backup` failed instead, because the file was still in use when they went to replace it
 
 ## 0.26.0 (2026-11-18)
 
