@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Windows: the flush before mailvault removes the source of a message no longer fails on a
+  drive where the read-only attribute cannot be changed.** Messages there are not write-protected,
+  and the flush now leaves the attribute alone; before, the source was kept every time. A write
+  protection that cannot be put back after the flush no longer counts as a failed flush either
+- **Windows: a damaged query database is built again.** `db update` and the update at the end of
+  `backup` failed instead, because the file was still in use when they went to replace it
+- **Windows: output into a pipe whose reader has quit ends the run quietly**, as on Linux and
+  macOS: `mailvault get ID | more`, quit early, exits with 141. Before, it printed "Fatal error:
+  [Errno 22] Invalid argument", and `backup` and `verify` failed every remaining job in turn
+
 ## 0.26.0 (2026-11-18)
 
 ### Changed

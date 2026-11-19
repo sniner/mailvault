@@ -654,9 +654,12 @@ def main() -> int:
     # Not for `mcp`. It writes nothing that would need unwinding, and the stdio
     # server reads stdin in a worker thread that the interpreter joins on exit:
     # with SIGTERM raised as an exception, the process keeps running until the
-    # client closes stdin.
+    # client closes stdin. Its standard output is left alone as well: it
+    # carries the protocol, which the SDK writes through a stream of its own.
+    stdout = sys.stdout
     if args.command != "mcp":
         signal.signal(signal.SIGTERM, _terminate)
+        sys.stdout = utils.standard_output(stdout)
     try:
         # The archive is named once, here, and nowhere else. Every line after
         # this is about it, and repeating the path on each of them buries the
@@ -718,6 +721,7 @@ def main() -> int:
         exit_code = 1
     finally:
         signal.signal(signal.SIGTERM, previous_sigterm)
+        sys.stdout = stdout
         log.info("FINISHED")
     return exit_code
 

@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 from mailvault.jobs import readback
 from mailvault.store import cas, heads, metalog
-from tests.tamper import tamper
+from tests.tamper import remove, tamper
 
 WHEN = datetime(2026, 11, 18, 9, 0, tzinfo=UTC)
 LATER = time.time() + readback.MIN_AGE + 60
@@ -147,7 +147,7 @@ class TestADamagedMessage:
     def test_one_the_archive_no_longer_holds_is_fetched_again_too(self, tmp_path):
         _resume(tmp_path, "job", "INBOX")
         (victim,) = _record(tmp_path, [_mail(1)])
-        victim.unlink()
+        remove(victim)
 
         result = readback.read_back(tmp_path, now=LATER)
 

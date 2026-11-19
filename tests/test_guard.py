@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import pathlib
 from datetime import UTC, datetime
 
 import pytest
@@ -211,7 +212,7 @@ class TestTheHashFitsTheArchive:
             guard.check_hash(tmp_path, "sha256", tmp_path / "mailvault.toml")
 
         message = str(excinfo.value)
-        assert message.startswith("mail/ab/cd/abcd")
+        assert message.startswith(str(pathlib.PurePath("mail/ab/cd/abcd")))
         assert "fits no hash" in message
 
     def test_an_archive_without_a_mail_directory_is_not_given_one(self, tmp_path):

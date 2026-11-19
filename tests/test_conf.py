@@ -148,9 +148,9 @@ def test_a_failing_cmd_leaves_the_value_given_outright(tmp_path):
 class TestCommandsRunWhenTheJobRuns:
     """Loading runs no command; `resolve` does, when the job is about to run."""
 
-    def test_loading_runs_nothing(self, tmp_path):
+    def test_loading_runs_nothing(self, tmp_path, record_command):
         ran = tmp_path / "ran"
-        toml_file = _write_job(tmp_path, f'password_cmd = "touch {ran}; echo pw"\n')
+        toml_file = _write_job(tmp_path, f"password_cmd = '{record_command(ran, 'pw')}'\n")
 
         job = conf.load(toml_file).jobs[0]
 
@@ -159,12 +159,12 @@ class TestCommandsRunWhenTheJobRuns:
         assert job.resolve().password == "pw"
         assert ran.exists()
 
-    def test_only_the_job_that_runs_runs_its_command(self, tmp_path):
+    def test_only_the_job_that_runs_runs_its_command(self, tmp_path, record_command):
         first, second = tmp_path / "first", tmp_path / "second"
         toml_file = tmp_path / "test.toml"
         toml_file.write_text(
-            f'[[job]]\nname = "one"\npassword_cmd = "touch {first}"\n'
-            f'[[job]]\nname = "two"\npassword_cmd = "touch {second}"\n'
+            f"[[job]]\nname = \"one\"\npassword_cmd = '{record_command(first)}'\n"
+            f"[[job]]\nname = \"two\"\npassword_cmd = '{record_command(second)}'\n"
         )
 
         conf.load(toml_file).jobs[1].resolve()
@@ -172,25 +172,29 @@ class TestCommandsRunWhenTheJobRuns:
         assert not first.exists()
         assert second.exists()
 
-    def test_a_resolved_job_runs_nothing_again(self, tmp_path):
+    def test_a_resolved_job_runs_nothing_again(self, tmp_path, record_command):
         count = tmp_path / "count"
-        toml_file = _write_job(tmp_path, f'password_cmd = "echo x >> {count}; echo pw"\n')
+        toml_file = _write_job(tmp_path, f"password_cmd = '{record_command(count, 'pw')}'\n")
 
         conf.load(toml_file).jobs[0].resolve().resolve()
 
         assert count.read_text() == "x\n"
 
-    def test_a_command_for_a_field_that_is_not_a_string_is_refused_on_loading(self, tmp_path):
+    def test_a_command_for_a_field_that_is_not_a_string_is_refused_on_loading(
+        self, tmp_path, record_command
+    ):
         ran = tmp_path / "ran"
-        toml_file = _write_job(tmp_path, f'port_cmd = "touch {ran}; echo 993"\n')
+        toml_file = _write_job(tmp_path, f"port_cmd = '{record_command(ran, '993')}'\n")
 
         with pytest.raises(conf.ConfigError, match="'port' must be a number"):
             conf.load(toml_file)
         assert not ran.exists()
 
-    def test_a_command_for_an_unknown_field_is_named_and_never_run(self, tmp_path, caplog):
+    def test_a_command_for_an_unknown_field_is_named_and_never_run(
+        self, tmp_path, caplog, record_command
+    ):
         ran = tmp_path / "ran"
-        toml_file = _write_job(tmp_path, f'colour_cmd = "touch {ran}"\n')
+        toml_file = _write_job(tmp_path, f"colour_cmd = '{record_command(ran)}'\n")
 
         with caplog.at_level(logging.WARNING, logger="mailvault.conf"):
             job = conf.load(toml_file).jobs[0]

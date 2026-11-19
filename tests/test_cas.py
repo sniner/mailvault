@@ -3,13 +3,14 @@ import io
 import os
 import pathlib
 import stat
+import sys
 import time
 
 import pytest
 
 from mailvault.store import cas
 from mailvault.utils import fs
-from tests.tamper import tamper
+from tests.tamper import remove, tamper
 
 
 def test_cas_init_directory(tmp_path):
@@ -91,7 +92,7 @@ def test_cas_prune_empty_dirs(tmp_path):
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas")
     _, _, kept = store.add(b"keep me")
     _, _, gone = store.add(b"remove me")
-    gone.unlink()
+    remove(gone)
 
     removed = store.prune_empty_dirs()
 
@@ -103,7 +104,7 @@ def test_cas_prune_empty_dirs(tmp_path):
 def test_cas_prune_empty_dirs_keeps_the_root(tmp_path):
     store = cas.ContentAddressedStorage(root_dir=tmp_path / "cas")
     _, _, path = store.add(b"lonely")
-    path.unlink()
+    remove(path)
 
     store.prune_empty_dirs()
 
@@ -571,6 +572,10 @@ def test_cas_failed_write_leaves_nothing_behind(tmp_path):
     assert store.locate(store.hashval(b"a message that gets cut off"), exists=True) is None
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows does not replace a read-only file, so the second writer fails there",
+)
 def test_cas_transient_files_do_not_collide(tmp_path, monkeypatch):
     """Two writers storing the same message must not share a transient file.
 
@@ -853,6 +858,78 @@ def test_sync_together_flushes_each_file_and_then_each_directory(tmp_path, monke
 def test_sync_together_raises_when_a_file_cannot_be_flushed(tmp_path):
     with pytest.raises(OSError):
         cas.atomic.sync_together([tmp_path / "gone"])
+
+
+def _count_fsyncs(monkeypatch) -> list[int]:
+    calls: list[int] = []
+    real_fsync = cas.atomic.os.fsync
+
+    def fsync(fd: int) -> None:
+        calls.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(cas.atomic.os, "fsync", fsync)
+    return calls
+
+
+def _refuse_chmod(monkeypatch, allowed: int = 0) -> None:
+    """Let the first `allowed` chmod calls through and refuse the rest."""
+    real_chmod = pathlib.Path.chmod
+    left = [allowed]
+
+    def chmod(self, mode, *, follow_symlinks=True):
+        if left[0] == 0:
+            raise PermissionError(13, "chmod refused", str(self))
+        left[0] -= 1
+        real_chmod(self, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(pathlib.Path, "chmod", chmod)
+
+
+class TestTheWindowsFlush:
+    """`_fsync_windows` runs on every platform; only Windows picks it."""
+
+    def test_a_writable_file_is_flushed_without_a_chmod(self, tmp_path, monkeypatch):
+        path = tmp_path / "entry.eml"
+        path.write_bytes(b"content")
+        fsyncs = _count_fsyncs(monkeypatch)
+        _refuse_chmod(monkeypatch)
+
+        cas.atomic._fsync_windows(path)
+
+        assert len(fsyncs) == 1
+
+    def test_a_protected_file_is_flushed_and_protected_again(self, tmp_path, monkeypatch):
+        path = tmp_path / "entry.eml"
+        path.write_bytes(b"content")
+        path.chmod(0o444)
+        fsyncs = _count_fsyncs(monkeypatch)
+
+        cas.atomic._fsync_windows(path)
+
+        assert len(fsyncs) == 1
+        assert not path.stat().st_mode & stat.S_IWRITE
+
+    def test_a_protection_that_cannot_come_off_fails_the_flush(self, tmp_path, monkeypatch):
+        path = tmp_path / "entry.eml"
+        path.write_bytes(b"content")
+        path.chmod(0o444)
+        _refuse_chmod(monkeypatch)
+
+        with pytest.raises(OSError):
+            cas.atomic._fsync_windows(path)
+
+    def test_a_protection_that_cannot_go_back_keeps_the_flush(self, tmp_path, monkeypatch):
+        path = tmp_path / "entry.eml"
+        path.write_bytes(b"content")
+        path.chmod(0o444)
+        fsyncs = _count_fsyncs(monkeypatch)
+        _refuse_chmod(monkeypatch, allowed=1)
+
+        cas.atomic._fsync_windows(path)
+
+        assert len(fsyncs) == 1
+        assert path.stat().st_mode & stat.S_IWRITE, "flushed, and merely writable"
 
 
 def test_cas_conversion_removes_an_original_only_once_its_batch_is_flushed(

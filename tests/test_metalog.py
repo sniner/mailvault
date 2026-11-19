@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 import pytest
 
 from mailvault.store import cas, heads, metalog, seals
-from tests.tamper import tamper
+from tests.tamper import remove, tamper
 
 WHEN = datetime(2026, 8, 1, 18, 2, 21, tzinfo=UTC)
 STORE_ID = "df3823f1cd1638d0f374745bb0e200e3"
@@ -777,7 +777,7 @@ class TestCompactOnASealedArchive:
         TestTheChain._flush(root, ["bb"])
         seals.write(root, _log_names(root), WHEN)
         for path in seals.seal_files(root):
-            path.unlink()
+            remove(path)
 
         result = metalog.compact(root, _heads(root))
 

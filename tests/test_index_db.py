@@ -1,4 +1,5 @@
 import logging
+import sqlite3
 from datetime import UTC, datetime
 
 import pytest
@@ -473,3 +474,24 @@ def test_a_new_database_carries_the_page_size_this_version_writes(tmp_path):
     with index_db.IndexDatabase(db_path, create=True) as db:
         assert db.execute("PRAGMA page_size").fetchone()[0] == index_db.PAGE_SIZE
         assert db.schema_version() == index_db.SCHEMA_VERSION
+
+
+def test_a_damaged_file_leaves_no_connection_open(tmp_path, monkeypatch):
+    """Rebuilding deletes the file, and Windows deletes none a connection holds."""
+    db_path = tmp_path / "index.db"
+    db_path.write_bytes(b"this is not a sqlite database at all")
+    opened: list[sqlite3.Connection] = []
+    real_connect = index_db.connect
+
+    def connect(path):
+        dbconn = real_connect(path)
+        opened.append(dbconn)
+        return dbconn
+
+    monkeypatch.setattr(index_db, "connect", connect)
+
+    with pytest.raises(sqlite3.DatabaseError), index_db.IndexDatabase(db_path):
+        pass
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0].execute("SELECT 1")
