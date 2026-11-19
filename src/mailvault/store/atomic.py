@@ -64,30 +64,46 @@ def sync_directory(path: pathlib.Path) -> None:
         os.close(fd)
 
 
-def _fsync_path(path: pathlib.Path) -> None:
-    """Flush the content of the file at `path`, which nobody has open for writing.
+def _fsync_opened(path: pathlib.Path, flags: int) -> None:
+    fd = os.open(path, flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
-    Windows flushes a file only through a handle that may write to it, and an
-    entry of the store is read-only, so the protection comes off for the moment
-    the flush takes. POSIX flushes through any descriptor.
+
+def _fsync_posix(path: pathlib.Path) -> None:
+    """Flush the content of the file at `path`; POSIX flushes through any descriptor."""
+    _fsync_opened(path, os.O_RDONLY)
+
+
+def _fsync_windows(path: pathlib.Path) -> None:
+    """Flush the content of the file at `path` through a handle that may write.
+
+    Windows flushes through no other kind, and an entry of the store is
+    read-only, so the protection comes off for the moment the flush takes. A
+    file that is not protected is flushed as it is: where the protection cannot
+    be set, lifting it would fail every flush for nothing. A protected file
+    whose protection cannot come off cannot be flushed, and raises. Putting the
+    protection back is not part of the flush: when that fails, the file is
+    flushed and merely writable.
     """
-    if os.name != "nt":
-        fd = os.open(path, os.O_RDONLY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        return
     mode = path.stat().st_mode
+    if mode & stat.S_IWRITE:
+        _fsync_opened(path, os.O_RDWR)
+        return
     path.chmod(mode | stat.S_IWRITE)
     try:
-        fd = os.open(path, os.O_RDWR)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        _fsync_opened(path, os.O_RDWR)
     finally:
-        path.chmod(mode)
+        try:
+            path.chmod(mode)
+        except OSError as exc:
+            log.debug("%s: write protection not restored: %s", path, exc)
+
+
+# What `sync_together` flushes each file with.
+_fsync_path = _fsync_windows if os.name == "nt" else _fsync_posix
 
 
 if sys.platform == "darwin":

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Windows: the flush before mailvault removes the source of a message no longer fails on a
+  drive where the read-only attribute cannot be changed.** Messages there are not write-protected,
+  and the flush now leaves the attribute alone; before, the source was kept every time. A write
+  protection that cannot be put back after the flush no longer counts as a failed flush either
+
 ## 0.26.0 (2026-11-18)
 
 ### Changed

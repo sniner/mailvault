@@ -855,6 +855,78 @@ def test_sync_together_raises_when_a_file_cannot_be_flushed(tmp_path):
         cas.atomic.sync_together([tmp_path / "gone"])
 
 
+def _count_fsyncs(monkeypatch) -> list[int]:
+    calls: list[int] = []
+    real_fsync = cas.atomic.os.fsync
+
+    def fsync(fd: int) -> None:
+        calls.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(cas.atomic.os, "fsync", fsync)
+    return calls
+
+
+def _refuse_chmod(monkeypatch, allowed: int = 0) -> None:
+    """Let the first `allowed` chmod calls through and refuse the rest."""
+    real_chmod = pathlib.Path.chmod
+    left = [allowed]
+
+    def chmod(self, mode, *, follow_symlinks=True):
+        if left[0] == 0:
+            raise PermissionError(13, "chmod refused", str(self))
+        left[0] -= 1
+        real_chmod(self, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(pathlib.Path, "chmod", chmod)
+
+
+class TestTheWindowsFlush:
+    """`_fsync_windows` runs on every platform; only Windows picks it."""
+
+    def test_a_writable_file_is_flushed_without_a_chmod(self, tmp_path, monkeypatch):
+        path = tmp_path / "entry.eml"
+        path.write_bytes(b"content")
+        fsyncs = _count_fsyncs(monkeypatch)
+        _refuse_chmod(monkeypatch)
+
+        cas.atomic._fsync_windows(path)
+
+        assert len(fsyncs) == 1
+
+    def test_a_protected_file_is_flushed_and_protected_again(self, tmp_path, monkeypatch):
+        path = tmp_path / "entry.eml"
+        path.write_bytes(b"content")
+        path.chmod(0o444)
+        fsyncs = _count_fsyncs(monkeypatch)
+
+        cas.atomic._fsync_windows(path)
+
+        assert len(fsyncs) == 1
+        assert not path.stat().st_mode & stat.S_IWRITE
+
+    def test_a_protection_that_cannot_come_off_fails_the_flush(self, tmp_path, monkeypatch):
+        path = tmp_path / "entry.eml"
+        path.write_bytes(b"content")
+        path.chmod(0o444)
+        _refuse_chmod(monkeypatch)
+
+        with pytest.raises(OSError):
+            cas.atomic._fsync_windows(path)
+
+    def test_a_protection_that_cannot_go_back_keeps_the_flush(self, tmp_path, monkeypatch):
+        path = tmp_path / "entry.eml"
+        path.write_bytes(b"content")
+        path.chmod(0o444)
+        fsyncs = _count_fsyncs(monkeypatch)
+        _refuse_chmod(monkeypatch, allowed=1)
+
+        cas.atomic._fsync_windows(path)
+
+        assert len(fsyncs) == 1
+        assert path.stat().st_mode & stat.S_IWRITE, "flushed, and merely writable"
+
+
 def test_cas_conversion_removes_an_original_only_once_its_batch_is_flushed(
     tmp_path, monkeypatch
 ):
