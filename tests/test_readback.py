@@ -13,8 +13,16 @@ from mailvault.store import cas, heads, metalog
 from tests.tamper import remove, tamper
 
 WHEN = datetime(2026, 11, 18, 9, 0, tzinfo=UTC)
-LATER = time.time() + readback.MIN_AGE + 60
 RESUME = {"kind": "imap", "uidvalidity": 7, "uid": 42}
+
+
+def _later() -> float:
+    """A `now` at which every log file a test has just written is old enough.
+
+    Taken at the call, not when the module is loaded: a suite that takes longer
+    than the minute it allows for would otherwise outrun it.
+    """
+    return time.time() + readback.MIN_AGE + 60
 
 
 def _heads(archive: pathlib.Path) -> pathlib.Path:
@@ -59,13 +67,13 @@ class TestWhatIsReadBack:
     def test_the_messages_recorded_since_once_they_are_old_enough(self, tmp_path):
         _record(tmp_path, [_mail(1), _mail(2)])
 
-        result = readback.read_back(tmp_path, now=LATER)
+        result = readback.read_back(tmp_path, now=_later())
 
         assert result.read == 2
         assert result.damaged == []
         head = _head(tmp_path)
         assert head.checked == head.log
-        assert readback.read_back(tmp_path, now=LATER).read == 0, "once is enough"
+        assert readback.read_back(tmp_path, now=_later()).read == 0, "once is enough"
 
     def test_nothing_that_was_written_within_the_hour(self, tmp_path):
         """Read back so soon, the bytes would come from memory and prove nothing."""
@@ -94,7 +102,7 @@ class TestWhatIsReadBack:
         del payload["checked"]
         path.write_text(json.dumps(payload))
 
-        assert readback.read_back(tmp_path, now=LATER).read == 0
+        assert readback.read_back(tmp_path, now=_later()).read == 0
 
 
 class TestADamagedMessage:
@@ -105,7 +113,7 @@ class TestADamagedMessage:
         victim, _intact = _record(tmp_path, [_mail(1), _mail(2)])
         tamper(victim, b"")
 
-        result = readback.read_back(tmp_path, now=LATER)
+        result = readback.read_back(tmp_path, now=_later())
 
         assert len(result.damaged) == 1
         assert result.folders == ["job::INBOX"]
@@ -127,7 +135,7 @@ class TestADamagedMessage:
         writer.flush(WHEN)
         tamper(victim, b"")
 
-        result = readback.read_back(tmp_path, now=LATER)
+        result = readback.read_back(tmp_path, now=_later())
 
         assert result.folders == ["job::[Gmail]/All Mail"]
         assert _head(tmp_path, "job", "INBOX").resume == RESUME
@@ -138,7 +146,7 @@ class TestADamagedMessage:
         (victim,) = _record(tmp_path, [_mail(1)])
         tamper(victim, b"")
 
-        result = readback.read_back(tmp_path, now=LATER)
+        result = readback.read_back(tmp_path, now=_later())
 
         assert len(result.damaged) == 1
         assert result.folders == []
@@ -149,7 +157,7 @@ class TestADamagedMessage:
         (victim,) = _record(tmp_path, [_mail(1)])
         remove(victim)
 
-        result = readback.read_back(tmp_path, now=LATER)
+        result = readback.read_back(tmp_path, now=_later())
 
         assert len(result.damaged) == 1
         assert _head(tmp_path).resume is None
@@ -158,7 +166,7 @@ class TestADamagedMessage:
         (victim,) = _record(tmp_path, [_mail(1)], job=None, folder="docuware-2019")
         tamper(victim, b"cut sh")
 
-        result = readback.read_back(tmp_path, now=LATER)
+        result = readback.read_back(tmp_path, now=_later())
 
         assert result.imports == {"docuware-2019"}
         assert result.folders == []
@@ -174,7 +182,7 @@ class TestWhatIsLeftForNextTime:
 
         monkeypatch.setattr(cas.ContentAddressedStorage, "verify_entry", refuse)
 
-        result = readback.read_back(tmp_path, now=LATER)
+        result = readback.read_back(tmp_path, now=_later())
 
         assert result.unreadable == 1
         assert _head(tmp_path).checked is None
@@ -195,7 +203,7 @@ class TestWhatIsLeftForNextTime:
             cas.ContentAddressedStorage, "verify_entry", verify_while_a_backup_writes
         )
 
-        readback.read_back(tmp_path, now=LATER)
+        readback.read_back(tmp_path, now=_later())
 
         head = _head(tmp_path)
         assert head.log == moved[0]
@@ -205,13 +213,13 @@ class TestWhatIsLeftForNextTime:
 def test_compact_keeps_what_was_read_back(tmp_path):
     _record(tmp_path, [_mail(1)])
     _record(tmp_path, [_mail(2)])
-    readback.read_back(tmp_path, now=LATER)
+    readback.read_back(tmp_path, now=_later())
 
     metalog.compact(tmp_path / metalog.DEFAULT_LOG_DIR, _heads(tmp_path))
 
     head = _head(tmp_path)
     assert head.checked == head.log
-    assert readback.read_back(tmp_path, now=LATER).read == 0
+    assert readback.read_back(tmp_path, now=_later()).read == 0
 
 
 def _age(archive: pathlib.Path) -> None:
@@ -231,14 +239,14 @@ def test_compact_soon_after_a_backup_leaves_only_the_new_messages_to_read_back(t
     metalog.compact(tmp_path / metalog.DEFAULT_LOG_DIR, _heads(tmp_path))
 
     assert _head(tmp_path).checked != _head(tmp_path).log
-    assert readback.read_back(tmp_path, now=LATER).read == 1
+    assert readback.read_back(tmp_path, now=_later()).read == 1
     assert _head(tmp_path).checked == _head(tmp_path).log
 
 
 def test_compact_leaves_a_log_file_no_chain_reaches_to_read_back(tmp_path):
     """A power loss between the log file and its head, and the message cut short."""
     _record(tmp_path, [_mail(1)])
-    readback.read_back(tmp_path, now=LATER)
+    readback.read_back(tmp_path, now=_later())
     _status, store_id, path = cas.mail_store(tmp_path).add(_mail(2))
     log_root = tmp_path / metalog.DEFAULT_LOG_DIR
     metalog.open_store(log_root).add(
@@ -247,7 +255,7 @@ def test_compact_leaves_a_log_file_no_chain_reaches_to_read_back(tmp_path):
     tamper(path, b"Message-Id: <2@")
 
     metalog.compact(log_root, _heads(tmp_path))
-    result = readback.read_back(tmp_path, now=LATER)
+    result = readback.read_back(tmp_path, now=_later())
 
     assert result.damaged == [store_id]
     assert not path.exists()
